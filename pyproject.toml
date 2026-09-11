@@ -26,6 +26,8 @@ keywords = [
 # through GHIDRA_INSTALL_DIR. pyghidra is the bridge to it.
 dependencies = [
     "pyghidra>=3.0",
+    "pefile>=2023.2.7",
+    "pyelftools>=0.31",
 ]
 
 [project.optional-dependencies]
