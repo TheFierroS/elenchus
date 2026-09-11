@@ -11,6 +11,7 @@ from elenchus.db import connect, finish_run, set_run_tool_version, start_run
 from elenchus.extract.ghidra import (
     extract_calls,
     extract_functions,
+    extract_imports,
     extract_strings,
     ghidra_version,
     register_binary,
@@ -42,6 +43,7 @@ def cmd_scan(args):
 
             binary_id = register_binary(conn, args.binary, arch)
             functions = extract_functions(conn, binary_id, run_id, program)
+            imports = extract_imports(conn, binary_id, run_id, program)
             calls = extract_calls(conn, binary_id, run_id, program, functions)
             strings = extract_strings(
                 conn,
@@ -63,6 +65,7 @@ def cmd_scan(args):
     print(f"run      : {run_id}")
     print(f"id       : {binary_id}")
     print(f"functions: {len(functions)}")
+    print(f"imports  : {len(imports)}")
     print(f"calls    : {calls}")
     print(f"strings  : {strings}")
     print(f"elapsed  : {time.time() - started:.1f}s")

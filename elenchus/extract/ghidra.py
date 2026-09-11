@@ -53,14 +53,19 @@ def ghidra_version(program):
 
 
 def extract_functions(conn, binary_id, run_id, program):
-    """Record every function Ghidra sees, and that this run saw it.
+    """Record every internal function Ghidra sees, and that this run saw it.
 
-    Returns {address: function_id}.
+    Imports are handled separately by extract_imports; here we take the
+    functions Ghidra places in the binary itself.
+
+    Returns {address: function_id} for internal functions.
     """
     id_by_address = {
         row["address"]: row["id"]
         for row in conn.execute(
-            "SELECT id, address FROM functions WHERE binary_id = ?", (binary_id,)
+            "SELECT id, address FROM functions "
+            "WHERE binary_id = ? AND is_external = 0",
+            (binary_id,),
         )
     }
 
@@ -74,13 +79,12 @@ def extract_functions(conn, binary_id, run_id, program):
                 cur = conn.execute(
                     "INSERT INTO functions "
                     "(binary_id, address, size, raw_name, is_external, is_thunk) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, 0, ?)",
                     (
                         binary_id,
                         address,
                         f.getBody().getNumAddresses(),
                         f.getName(),
-                        int(f.isExternal()),
                         int(f.isThunk()),
                     ),
                 )
@@ -96,25 +100,96 @@ def extract_functions(conn, binary_id, run_id, program):
     return id_by_address
 
 
-def extract_calls(conn, binary_id, run_id, program, id_by_address):
-    """Record every call relationship Ghidra found, as observation events."""
-    records = []
+def _import_index(conn, binary_id):
+    """Return {(library, name): function_id} for this binary's imports."""
+    return {
+        (row["library"], row["raw_name"]): row["id"]
+        for row in conn.execute(
+            "SELECT id, library, raw_name FROM functions "
+            "WHERE binary_id = ? AND is_external = 1",
+            (binary_id,),
+        )
+    }
 
+
+def extract_imports(conn, binary_id, run_id, program):
+    """Record every imported function: name, source library, that it was seen.
+
+    Imports are the strongest readable signal in a stripped Windows binary -
+    a function that calls CreateFileW and ReadFile is doing file I/O whatever
+    its own name was stripped to. They live in the functions table with
+    is_external = 1, keyed by (library, name) rather than by address, since an
+    external function has no address of its own inside the binary.
+
+    Returns {(library, name): function_id}.
+    """
+    id_by_key = _import_index(conn, binary_id)
+
+    records = []
+    with conn:
+        for f in program.getFunctionManager().getExternalFunctions():
+            name = f.getName()
+            library = f.getExternalLocation().getLibraryName()
+            key = (library, name)
+            known = key in id_by_key
+
+            if not known:
+                # No real address for an external function. Use a stable
+                # negative synthetic so UNIQUE (binary_id, address) still holds
+                # and internal addresses (always >= 0) never collide.
+                address = -(len(id_by_key) + 1)
+
+                cur = conn.execute(
+                    "INSERT INTO functions "
+                    "(binary_id, address, size, raw_name, library, "
+                    " is_external, is_thunk) "
+                    "VALUES (?, ?, 0, ?, ?, 1, 0)",
+                    (binary_id, address, name, library),
+                )
+                id_by_key[key] = cur.lastrowid
+
+            records.append((
+                "observation.import",
+                {"first_seen": not known, "library": library, "name": name},
+                [("function", id_by_key[key], "subject")],
+            ))
+
+    add_events(conn, binary_id, run_id, records)
+    return id_by_key
+
+
+def extract_calls(conn, binary_id, run_id, program, id_by_address):
+    """Record every call relationship Ghidra found, as observation events.
+
+    Both internal calls and calls into imports are recorded. Import targets
+    are looked up by (library, name) since they have no meaningful address.
+    Run extract_imports first so those targets already exist.
+    """
+    import_id = _import_index(conn, binary_id)
+
+    records = []
     for f in program.getFunctionManager().getFunctions(True):
         caller_addr = f.getEntryPoint().getOffset()
+        if caller_addr not in id_by_address:
+            continue
+        caller_id = id_by_address[caller_addr]
 
         for callee in f.getCalledFunctions(None):
-            callee_addr = callee.getEntryPoint().getOffset()
+            if callee.isExternal():
+                key = (callee.getExternalLocation().getLibraryName(), callee.getName())
+                callee_id = import_id.get(key)
+            else:
+                callee_id = id_by_address.get(callee.getEntryPoint().getOffset())
 
-            if callee_addr not in id_by_address or caller_addr not in id_by_address:
+            if callee_id is None:
                 continue
 
             records.append((
                 "observation.call",
                 {},
                 [
-                    ("function", id_by_address[caller_addr], "subject"),
-                    ("function", id_by_address[callee_addr], "target"),
+                    ("function", caller_id, "subject"),
+                    ("function", callee_id, "target"),
                 ],
             ))
 

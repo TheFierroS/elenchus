@@ -9,7 +9,7 @@ append-only: once released, a migration is never edited or removed, because
 someone may still hold a database that has not passed through it yet.
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _migration_001_runs(conn):
@@ -55,10 +55,23 @@ def _migration_001_runs(conn):
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_type ON events (binary_id, type)"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_run ON events (run_id)"
+    )
+
+
+def _migration_002_function_library(conn):
+    """Add functions.library, holding the source DLL for imported functions.
+
+    Nullable, so a plain ALTER suffices - no rebuild. Internal functions
+    leave it null; only imports carry a library name.
+    """
+    conn.execute("ALTER TABLE functions ADD COLUMN library TEXT")
 
 
 MIGRATIONS = [
     (1, "runs table, events.run_id", _migration_001_runs),
+    (2, "functions.library for imports", _migration_002_function_library),
 ]
 
 

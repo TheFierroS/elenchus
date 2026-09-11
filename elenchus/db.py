@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS functions (
     address     INTEGER NOT NULL,
     size        INTEGER,
     raw_name    TEXT,
+    library     TEXT,
     is_external INTEGER NOT NULL DEFAULT 0,
     is_thunk    INTEGER NOT NULL DEFAULT 0,
     UNIQUE (binary_id, address)
