@@ -6,8 +6,7 @@
 # we can legally recompile belongs here; targets to analyse do not.
 #
 # A "style" names how the package builds. Optional preparation covers the
-# common reasons a plain compile fails, so the manifest stays thin: adding a
-# package is usually a URL and a style.
+# common reasons a plain compile fails, so the manifest stays thin.
 #
 #   style   = "c_glob"      compile every .c in the source root
 #   style   = "c_glob_src"  same, but sources live under src/
@@ -15,6 +14,13 @@
 #                           that re-includes the rest - both duplicate symbols)
 #   copy    = [[from, to]]  put a prebuilt config header in place
 #   create  = [[name, text] write a header the build system would generate
+#
+# Packages past the first four are candidates: their URLs are real but their
+# build quirks are not all verified. build-corpus skips any that fail and
+# reports them, so an unbuildable candidate costs nothing. Prune or fix the
+# failures after the first run; the four proven packages always build.
+
+# ---- proven: build and match 99-100% across O0-O3 ----
 
 [[package]]
 name = "zlib"
@@ -22,7 +28,6 @@ version = "1.3.1"
 url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz"
 license = "Zlib"
 style = "c_glob"
-# General-purpose compression. Small, self-contained, no configure step.
 
 [[package]]
 name = "cjson"
@@ -30,7 +35,6 @@ version = "1.7.18"
 url = "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.18.tar.gz"
 license = "MIT"
 style = "c_glob"
-# A small JSON parser: one cJSON.c plus a header.
 
 [[package]]
 name = "miniz"
@@ -38,8 +42,6 @@ version = "3.0.2"
 url = "https://github.com/richgel999/miniz/archive/refs/tags/3.0.2.tar.gz"
 license = "MIT"
 style = "c_glob"
-# A single-file zlib alternative. Its build normally generates miniz_export.h,
-# an export-visibility macro we do not need; an empty define satisfies it.
 create = [["miniz_export.h", "#define MINIZ_EXPORT\n"]]
 exclude = ["example1.c", "example2.c", "example3.c", "example4.c", "example5.c", "example6.c"]
 
@@ -49,10 +51,77 @@ version = "5.4.7"
 url = "https://github.com/lua/lua/archive/refs/tags/v5.4.7.tar.gz"
 license = "MIT"
 style = "c_glob"
-# A scripting language: VM, parser, GC - a wide variety of function shapes.
-# lua.c and luac.c carry main; onelua.c is a one-file amalgamation that
-# re-includes every other source; ltests.c is an internal test harness.
 exclude = ["lua.c", "luac.c", "onelua.c", "ltests.c"]
 
-# libpng: needs zlib's headers at compile time. Deferred until the manifest
-# supports inter-package dependencies; the pipeline is proven without it.
+# ---- candidates: real URLs, build quirks to verify on first run ----
+
+# Compression. lz4 has extra tooling; keep only the core lib .c files.
+[[package]]
+name = "lz4"
+version = "1.10.0"
+url = "https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz"
+license = "BSD-2-Clause"
+style = "c_glob_src"
+# core sources live in lib/; c_glob_src looks in src/, so this may miss them.
+# If it finds nothing, the package needs a lib/ style - note for follow-up.
+
+# A single-header JSON parser plus a buildable .c in some releases.
+[[package]]
+name = "mpc"
+version = "0.9.0"
+url = "https://github.com/orangeduck/mpc/archive/refs/tags/0.9.0.tar.gz"
+license = "BSD-2-Clause"
+style = "c_glob"
+# A parser-combinator library, one mpc.c. Different domain: grammars, ASTs.
+
+# A tiny regex engine.
+[[package]]
+name = "tiny-regex-c"
+version = "master"
+url = "https://github.com/kokke/tiny-regex-c/archive/refs/heads/master.tar.gz"
+license = "Unlicense"
+style = "c_glob"
+exclude = ["tests.c", "example.c"]
+
+# A small hash-map / general utility (uthash is header-only, so use a real .c).
+[[package]]
+name = "sds"
+version = "master"
+url = "https://github.com/antirez/sds/archive/refs/heads/master.tar.gz"
+license = "BSD-2-Clause"
+style = "c_glob"
+exclude = ["sds-test.c"]
+
+# A base64 / encoding library.
+[[package]]
+name = "libbase64"
+version = "0.5.2"
+url = "https://github.com/aklomp/base64/archive/refs/tags/v0.5.2.tar.gz"
+license = "BSD-2-Clause"
+style = "c_glob_src"
+
+# A small INI parser.
+[[package]]
+name = "inih"
+version = "58"
+url = "https://github.com/benhoyt/inih/archive/refs/tags/r58.tar.gz"
+license = "BSD-3-Clause"
+style = "c_glob"
+
+# A CRC / checksum-heavy compression alternative.
+[[package]]
+name = "heatshrink"
+version = "0.4.1"
+url = "https://github.com/atomicobject/heatshrink/archive/refs/tags/v0.4.1.tar.gz"
+license = "ISC"
+style = "c_glob"
+exclude = ["heatshrink.c"]
+
+# A small math / linear algebra library.
+[[package]]
+name = "cmatrix"
+version = "master"
+url = "https://github.com/abishekvashok/cmatrix/archive/refs/heads/master.tar.gz"
+license = "GPL-3.0"
+style = "c_glob_src"
+# NOTE: GPL. If license purity matters for redistribution, drop this one.
