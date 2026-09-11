@@ -65,6 +65,36 @@ CREATE TABLE IF NOT EXISTS strings (
     UNIQUE (binary_id, address)
 );
 
+-- A binary that belongs to the corpus carries extra identity: which package
+-- and build it came from, and which twin it pairs with. A plain scan of some
+-- unknown .exe has no row here; only compiled corpus members do.
+CREATE TABLE IF NOT EXISTS corpus_binaries (
+    binary_id INTEGER PRIMARY KEY REFERENCES binaries(id),
+    package   TEXT NOT NULL,
+    version   TEXT,
+    compiler  TEXT NOT NULL,
+    opt_level TEXT NOT NULL,
+    stripped  INTEGER NOT NULL,
+    twin_id   INTEGER REFERENCES binaries(id)
+);
+
+-- Ground truth: what the compiler recorded, before stripping. This is truth,
+-- not an observation - the standard the agent's claims are measured against -
+-- so it lives in its own table rather than mixing with Ghidra's guesses in
+-- functions. Attached to the stripped binary by address; function_id is null
+-- when a ground-truth function has no stripped counterpart (inlined away).
+CREATE TABLE IF NOT EXISTS ground_truth (
+    id          INTEGER PRIMARY KEY,
+    binary_id   INTEGER NOT NULL REFERENCES binaries(id),
+    function_id INTEGER REFERENCES functions(id),
+    address     INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    return_type TEXT,
+    param_types TEXT,
+    decl_line   INTEGER,
+    UNIQUE (binary_id, address)
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id         INTEGER PRIMARY KEY,
     binary_id  INTEGER NOT NULL REFERENCES binaries(id),
@@ -84,10 +114,11 @@ CREATE TABLE IF NOT EXISTS event_links (
     PRIMARY KEY (event_id, entity_kind, entity_id, role)
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_type    ON events (binary_id, type);
-CREATE INDEX IF NOT EXISTS idx_events_run     ON events (run_id);
-CREATE INDEX IF NOT EXISTS idx_links_entity   ON event_links (entity_kind, entity_id);
-CREATE INDEX IF NOT EXISTS idx_blocks_func    ON basic_blocks (function_id);
+CREATE INDEX IF NOT EXISTS idx_events_type   ON events (binary_id, type);
+CREATE INDEX IF NOT EXISTS idx_events_run    ON events (run_id);
+CREATE INDEX IF NOT EXISTS idx_links_entity  ON event_links (entity_kind, entity_id);
+CREATE INDEX IF NOT EXISTS idx_blocks_func   ON basic_blocks (function_id);
+CREATE INDEX IF NOT EXISTS idx_gt_function   ON ground_truth (function_id);
 """
 
 

@@ -9,7 +9,7 @@ append-only: once released, a migration is never edited or removed, because
 someone may still hold a database that has not passed through it yet.
 """
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _migration_001_runs(conn):
@@ -90,10 +90,47 @@ def _migration_003_basic_blocks(conn):
     )
 
 
+def _migration_004_corpus(conn):
+    """Add corpus_binaries and ground_truth for the self-labelling corpus.
+
+    Both are new tables, so CREATE suffices. corpus_binaries records which
+    package and build a binary came from and its twin; ground_truth holds the
+    compiler's truth, attached to the stripped binary by address.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS corpus_binaries (
+            binary_id INTEGER PRIMARY KEY REFERENCES binaries(id),
+            package   TEXT NOT NULL,
+            version   TEXT,
+            compiler  TEXT NOT NULL,
+            opt_level TEXT NOT NULL,
+            stripped  INTEGER NOT NULL,
+            twin_id   INTEGER REFERENCES binaries(id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ground_truth (
+            id          INTEGER PRIMARY KEY,
+            binary_id   INTEGER NOT NULL REFERENCES binaries(id),
+            function_id INTEGER REFERENCES functions(id),
+            address     INTEGER NOT NULL,
+            name        TEXT NOT NULL,
+            return_type TEXT,
+            param_types TEXT,
+            decl_line   INTEGER,
+            UNIQUE (binary_id, address)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_gt_function ON ground_truth (function_id)"
+    )
+
+
 MIGRATIONS = [
     (1, "runs table, events.run_id", _migration_001_runs),
     (2, "functions.library for imports", _migration_002_function_library),
     (3, "basic_blocks table", _migration_003_basic_blocks),
+    (4, "corpus_binaries and ground_truth", _migration_004_corpus),
 ]
 
 
