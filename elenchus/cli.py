@@ -7,7 +7,7 @@ import time
 import pyghidra
 
 from elenchus.check import check_links
-from elenchus.db import connect
+from elenchus.db import connect, start_run, finish_run
 from elenchus.extract.ghidra import (
     register_binary,
     extract_functions,
@@ -21,25 +21,43 @@ def cmd_scan(args):
     started = time.time()
     pyghidra.start()
     conn = connect(args.db)
+    run_id = start_run(
+        conn,
+        "extract",
+        tool="ghidra",
+        params={
+            "binary": args.binary,
+            "min_string_length": args.min_string_length,
+            "keep_unreferenced_strings": args.keep_unreferenced_strings,
+        },
+    )
 
-    with pyghidra.open_program(args.binary) as api:
-        program = api.getCurrentProgram()
-        arch = str(program.getLanguageID())
+    try:
+        with pyghidra.open_program(args.binary) as api:
+            program = api.getCurrentProgram()
+            arch = str(program.getLanguageID())
 
-        binary_id = register_binary(conn, args.binary, arch)
-        functions = extract_functions(conn, binary_id, program)
-        calls = extract_calls(conn, binary_id, program, functions)
-        strings = extract_strings(
-            conn,
-            binary_id,
-            program,
-            functions,
-            args.min_string_length,
-            args.keep_unreferenced_strings,
-        )
+            binary_id = register_binary(conn, args.binary, arch)
+            functions = extract_functions(conn, binary_id, program)
+            calls = extract_calls(conn, binary_id, run_id, program, functions)
+            strings = extract_strings(
+                conn,
+                binary_id,
+                run_id,
+                program,
+                functions,
+                args.min_string_length,
+                args.keep_unreferenced_strings,
+            )
+    except Exception:
+        finish_run(conn, run_id, "failed")
+        raise
+
+    finish_run(conn, run_id, "ok")
 
     print(f"binary   : {args.binary}")
     print(f"arch     : {arch}")
+    print(f"run      : {run_id}")
     print(f"id       : {binary_id}")
     print(f"functions: {len(functions)}")
     print(f"calls    : {calls}")

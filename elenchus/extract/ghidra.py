@@ -65,7 +65,7 @@ def extract_functions(conn, binary_id, program):
     return id_by_address
 
 
-def extract_calls(conn, binary_id, program, id_by_address):
+def extract_calls(conn, binary_id, run_id, program, id_by_address):
     """Record every call relationship Ghidra found, as observation events."""
     ghidra_version = str(program.getMetadata()["Created With Ghidra Version"])
     records = []
@@ -91,7 +91,7 @@ def extract_calls(conn, binary_id, program, id_by_address):
                 ],
             ))
 
-    return add_events(conn, binary_id, records)
+    return add_events(conn, binary_id, run_id, records)
 
 
 def _collect_strings(program, id_by_address, min_length):
@@ -140,6 +140,7 @@ def _collect_strings(program, id_by_address, min_length):
 def extract_strings(
     conn,
     binary_id,
+    run_id,
     program,
     id_by_address,
     min_length=4,
@@ -201,5 +202,5 @@ def extract_strings(
                 ],
             ))
 
-    add_events(conn, binary_id, records)
+    add_events(conn, binary_id, run_id, records)
     return len(kept)
