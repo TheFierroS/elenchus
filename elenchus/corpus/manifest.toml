@@ -1,0 +1,62 @@
+# Corpus package manifest.
+#
+# Each package is an open-source C library we compile ourselves, so the
+# compiler can write down the ground truth (real names, signatures, types)
+# that the encoder trains on and the agent is measured against. Only source
+# we can legally recompile belongs here; targets to analyse do not.
+#
+# A "style" names how the package builds. The build driver knows each style,
+# so the manifest stays thin: adding a package is a URL and a style, not a
+# script. Start small to prove the pipeline, then grow - the goal is a broad
+# corpus, not a large manifest.
+#
+# style = "c_glob"     compile every .c in the source root into one shared lib
+# style = "c_glob_src" same, but sources live in a src/ subdirectory
+
+[[package]]
+name = "zlib"
+version = "1.3.1"
+url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz"
+license = "Zlib"
+style = "c_glob"
+# General-purpose compression. Small, self-contained, no configure step.
+# Already proven end to end: 100% ground-truth match across -O0..-O3.
+
+[[package]]
+name = "miniz"
+version = "3.0.2"
+url = "https://github.com/richgel999/miniz/archive/refs/tags/3.0.2.tar.gz"
+license = "MIT"
+style = "c_glob"
+# A single-file zlib alternative. Different implementation of the same
+# problem, which is good: the encoder should learn that two different codebases
+# solving compression look related.
+
+[[package]]
+name = "libpng"
+version = "1.6.43"
+url = "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.43.tar.gz"
+license = "libpng"
+style = "c_glob"
+# PNG image codec. Depends on zlib at the source level but the .c files
+# compile standalone for our purposes; image processing brings a different
+# flavour of code - checksums, filters, bit manipulation.
+
+[[package]]
+name = "lua"
+version = "5.4.7"
+url = "https://github.com/lua/lua/archive/refs/tags/v5.4.7.tar.gz"
+license = "MIT"
+style = "c_glob"
+# A small scripting language interpreter. Very different from the codecs:
+# a virtual machine, a parser, a garbage collector. Wide variety of function
+# shapes in one package.
+
+[[package]]
+name = "cjson"
+version = "1.7.18"
+url = "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.18.tar.gz"
+license = "MIT"
+style = "c_glob"
+# A small JSON parser as one cJSON.c plus a header. Real functions, quick to
+# compile - the small package to iterate the build driver on.

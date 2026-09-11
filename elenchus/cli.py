@@ -7,6 +7,7 @@ import time
 import pyghidra
 
 from elenchus.check import CHECKS
+from elenchus.corpus.cli import cmd_build_corpus
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
 from elenchus.extract.ghidra import (
     extract_blocks,
@@ -121,6 +122,21 @@ def build_parser():
 
     check = sub.add_parser("check", help="run consistency checks on the database")
     check.set_defaults(func=cmd_check)
+
+    corpus = sub.add_parser(
+        "build-corpus", help="compile, scan, and store ground truth for packages"
+    )
+    corpus.add_argument(
+        "--manifest",
+        default="elenchus/corpus/manifest.toml",
+        help="path to the package manifest",
+    )
+    corpus.add_argument(
+        "--work-dir",
+        default="data/corpus",
+        help="where to download sources and write built binaries",
+    )
+    corpus.set_defaults(func=cmd_build_corpus)
 
     return parser
 
