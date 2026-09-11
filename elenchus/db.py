@@ -4,7 +4,12 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA = """
+from elenchus.entities import entity_kind_check
+
+
+def schema() -> str:
+    """Return the full schema DDL, with entity kinds injected from the registry."""
+    return f"""
 CREATE TABLE IF NOT EXISTS binaries (
     id          INTEGER PRIMARY KEY,
     path        TEXT NOT NULL,
@@ -46,7 +51,7 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE TABLE IF NOT EXISTS event_links (
     event_id    INTEGER NOT NULL REFERENCES events(id),
-    entity_kind TEXT NOT NULL CHECK (entity_kind IN ('function', 'string')),
+    entity_kind TEXT NOT NULL {entity_kind_check()},
     entity_id   INTEGER NOT NULL,
     role        TEXT NOT NULL,
     PRIMARY KEY (event_id, entity_kind, entity_id, role)
@@ -63,7 +68,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.executescript(SCHEMA)
+    conn.executescript(schema())
     return conn
 
 

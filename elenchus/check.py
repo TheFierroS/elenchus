@@ -1,6 +1,6 @@
 """Consistency checks over the database."""
 
-ENTITY_TABLES = {"function": "functions", "string": "strings"}
+from elenchus.entities import ENTITY_TABLES
 
 
 def check_links(conn):
