@@ -5,4 +5,4 @@ data/
 ghidra_projeleri/
 *.db
 *.db-wal
-*.db-shm
+*.db-shm*.egg-info/

@@ -1,0 +1,74 @@
+# Project identity, dependencies, and tool configuration.
+# https://packaging.python.org/en/latest/specifications/pyproject-toml/
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elenchus"
+version = "0.1.0"
+description = "A refutation-driven agent for reverse engineering: it proposes claims about a binary and keeps only the ones it cannot refute."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "TheFierroS" }]
+keywords = [
+    "reverse-engineering",
+    "ghidra",
+    "binary-analysis",
+    "machine-learning",
+    "event-sourcing",
+]
+
+# Runtime dependencies needed just to scan a binary and query the database.
+# Ghidra itself is not a pip package: it is installed separately and found
+# through GHIDRA_INSTALL_DIR. pyghidra is the bridge to it.
+dependencies = [
+    "pyghidra>=3.0",
+]
+
+[project.optional-dependencies]
+# Everything needed to develop on elenchus, but not to run it.
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+# The model side lands in later weeks (encoder training). Kept separate so a
+# user who only wants to scan binaries is not forced to install a deep-learning
+# stack. Versions are left open until week 6 pins them against Python 3.14.
+ml = [
+    "torch",
+    "numpy",
+]
+
+[project.scripts]
+# Makes `elenchus ...` work as a command once the package is installed,
+# instead of only `python -m elenchus`.
+elenchus = "elenchus.cli:main"
+
+[project.urls]
+Repository = "https://github.com/TheFierroS/elenchus"
+
+[tool.setuptools.packages.find]
+# Ship the elenchus package; leave docs, tests, and scratch out of the wheel.
+include = ["elenchus*"]
+
+[tool.ruff]
+# Ruff is the linter and formatter. Keep the line length generous enough for
+# the SQL strings in db.py without forcing awkward wraps.
+line-length = 90
+target-version = "py311"
+
+[tool.ruff.lint]
+# A pragmatic starter set: pyflakes (F) catches real bugs like unused or
+# undefined names, pycodestyle (E, W) enforces style, isort (I) keeps imports
+# ordered, and pyupgrade (UP) flags outdated syntax.
+select = ["E", "W", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+# Tests live in tests/. addopts keeps output quiet but shows a short summary
+# of anything that is not a plain pass.
+testpaths = ["tests"]
+addopts = "-ra -q"
