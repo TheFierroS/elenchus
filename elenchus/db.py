@@ -153,6 +153,14 @@ def start_run(conn, kind, tool=None, tool_version=None, params=None, seed=None):
     return cur.lastrowid
 
 
+def set_run_tool_version(conn, run_id, version):
+    """Record the tool version, often known only once the tool has started."""
+    with conn:
+        conn.execute(
+            "UPDATE runs SET tool_version = ? WHERE id = ?", (version, run_id)
+        )
+
+
 def finish_run(conn, run_id, status):
     """Close a run, recording how it ended: 'ok' or 'failed'.
 

@@ -7,12 +7,13 @@ import time
 import pyghidra
 
 from elenchus.check import check_links
-from elenchus.db import connect, start_run, finish_run
+from elenchus.db import connect, finish_run, set_run_tool_version, start_run
 from elenchus.extract.ghidra import (
-    register_binary,
-    extract_functions,
     extract_calls,
+    extract_functions,
     extract_strings,
+    ghidra_version,
+    register_binary,
 )
 
 
@@ -21,6 +22,7 @@ def cmd_scan(args):
     started = time.time()
     pyghidra.start()
     conn = connect(args.db)
+
     run_id = start_run(
         conn,
         "extract",
@@ -36,9 +38,10 @@ def cmd_scan(args):
         with pyghidra.open_program(args.binary) as api:
             program = api.getCurrentProgram()
             arch = str(program.getLanguageID())
+            set_run_tool_version(conn, run_id, ghidra_version(program))
 
             binary_id = register_binary(conn, args.binary, arch)
-            functions = extract_functions(conn, binary_id, program)
+            functions = extract_functions(conn, binary_id, run_id, program)
             calls = extract_calls(conn, binary_id, run_id, program, functions)
             strings = extract_strings(
                 conn,

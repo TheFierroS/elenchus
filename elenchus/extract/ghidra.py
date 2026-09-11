@@ -1,4 +1,20 @@
-"""Extract facts from a binary using Ghidra, and record them in the database."""
+"""Extract facts from a binary using Ghidra, and record them in the database.
+
+Two kinds of thing are written here, and the distinction matters.
+
+Entities - functions, strings - exist or they do not. The function at a
+given address is the same function on every scan, so it is written once
+and reused.
+
+Observations - that a run saw a function, a call, a string reference -
+happen on every scan. Two runs may disagree: a different Ghidra version,
+or a deeper analysis pass, can surface what an earlier run missed. That
+disagreement is evidence, so each run records what it saw.
+
+Provenance (which tool, which version, which parameters) lives on the run,
+not in every payload. A payload carries only what is specific to that one
+observation.
+"""
 
 import hashlib
 from pathlib import Path
@@ -31,43 +47,57 @@ def register_binary(conn, path, arch):
     return cur.lastrowid
 
 
-def extract_functions(conn, binary_id, program):
-    """Read every function from the Ghidra program and store it.
+def ghidra_version(program):
+    """Return the Ghidra version that analysed this program."""
+    return str(program.getMetadata()["Created With Ghidra Version"])
+
+
+def extract_functions(conn, binary_id, run_id, program):
+    """Record every function Ghidra sees, and that this run saw it.
 
     Returns {address: function_id}.
     """
-    id_by_address = {}
+    id_by_address = {
+        row["address"]: row["id"]
+        for row in conn.execute(
+            "SELECT id, address FROM functions WHERE binary_id = ?", (binary_id,)
+        )
+    }
 
-    existing = conn.execute(
-        "SELECT id, address FROM functions WHERE binary_id = ?", (binary_id,)
-    ).fetchall()
-    if existing:
-        for row in existing:
-            id_by_address[row["address"]] = row["id"]
-        return id_by_address
-
+    records = []
     with conn:
         for f in program.getFunctionManager().getFunctions(True):
             address = f.getEntryPoint().getOffset()
-            size = f.getBody().getNumAddresses()
-            raw_name = f.getName()
-            is_external = int(f.isExternal())
-            is_thunk = int(f.isThunk())
+            known = address in id_by_address
 
-            cur = conn.execute(
-                "INSERT INTO functions "
-                "(binary_id, address, size, raw_name, is_external, is_thunk) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (binary_id, address, size, raw_name, is_external, is_thunk),
-            )
-            id_by_address[address] = cur.lastrowid
+            if not known:
+                cur = conn.execute(
+                    "INSERT INTO functions "
+                    "(binary_id, address, size, raw_name, is_external, is_thunk) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        binary_id,
+                        address,
+                        f.getBody().getNumAddresses(),
+                        f.getName(),
+                        int(f.isExternal()),
+                        int(f.isThunk()),
+                    ),
+                )
+                id_by_address[address] = cur.lastrowid
 
+            records.append((
+                "observation.function",
+                {"first_seen": not known},
+                [("function", id_by_address[address], "subject")],
+            ))
+
+    add_events(conn, binary_id, run_id, records)
     return id_by_address
 
 
 def extract_calls(conn, binary_id, run_id, program, id_by_address):
     """Record every call relationship Ghidra found, as observation events."""
-    ghidra_version = str(program.getMetadata()["Created With Ghidra Version"])
     records = []
 
     for f in program.getFunctionManager().getFunctions(True):
@@ -79,15 +109,12 @@ def extract_calls(conn, binary_id, run_id, program, id_by_address):
             if callee_addr not in id_by_address or caller_addr not in id_by_address:
                 continue
 
-            caller_id = id_by_address[caller_addr]
-            callee_id = id_by_address[callee_addr]
-
             records.append((
                 "observation.call",
-                {"tool": "ghidra", "tool_version": ghidra_version},
+                {},
                 [
-                    ("function", caller_id, "subject"),
-                    ("function", callee_id, "target"),
+                    ("function", id_by_address[caller_addr], "subject"),
+                    ("function", id_by_address[callee_addr], "target"),
                 ],
             ))
 
@@ -151,56 +178,53 @@ def extract_strings(
     By default only strings reachable from code are kept. Unreferenced strings
     are mostly debug metadata, but occasionally interesting on their own, so
     keep_unreferenced makes that a choice rather than a hardcoded rule.
+
+    Returns the number of strings this run observed.
     """
-    existing = conn.execute(
-        "SELECT COUNT(*) AS n FROM strings WHERE binary_id = ?", (binary_id,)
-    ).fetchone()["n"]
-    if existing:
-        return 0
+    id_by_string_address = {
+        row["address"]: row["id"]
+        for row in conn.execute(
+            "SELECT id, address FROM strings WHERE binary_id = ?", (binary_id,)
+        )
+    }
 
-    ghidra_version = str(program.getMetadata()["Created With Ghidra Version"])
     candidates = _collect_strings(program, id_by_address, min_length)
-
     kept = [c for c in candidates if c[3] or keep_unreferenced]
     if not kept:
         return 0
 
-    string_ids = {}
-    with conn:
-        for address, value, encoding, _ in kept:
-            cur = conn.execute(
-                "INSERT INTO strings (binary_id, address, value, encoding, length) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (binary_id, address.getOffset(), value, encoding, len(value)),
-            )
-            string_ids[address.getOffset()] = cur.lastrowid
-
-    provenance = {
-        "tool": "ghidra",
-        "tool_version": ghidra_version,
-        "min_length": min_length,
-        "keep_unreferenced": keep_unreferenced,
-    }
-
     records = []
-    for address, value, encoding, referenced_by in kept:
-        string_id = string_ids[address.getOffset()]
+    with conn:
+        for address, value, encoding, referenced_by in kept:
+            offset = address.getOffset()
+            known = offset in id_by_string_address
 
-        records.append((
-            "observation.string",
-            dict(provenance, referenced=bool(referenced_by)),
-            [("string", string_id, "subject")],
-        ))
+            if not known:
+                cur = conn.execute(
+                    "INSERT INTO strings "
+                    "(binary_id, address, value, encoding, length) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (binary_id, offset, value, encoding, len(value)),
+                )
+                id_by_string_address[offset] = cur.lastrowid
 
-        for function_id, site in referenced_by:
+            string_id = id_by_string_address[offset]
+
             records.append((
-                "observation.string_ref",
-                dict(provenance, site=site),
-                [
-                    ("function", function_id, "subject"),
-                    ("string", string_id, "target"),
-                ],
+                "observation.string",
+                {"first_seen": not known, "referenced": bool(referenced_by)},
+                [("string", string_id, "subject")],
             ))
+
+            for function_id, site in referenced_by:
+                records.append((
+                    "observation.string_ref",
+                    {"site": site},
+                    [
+                        ("function", function_id, "subject"),
+                        ("string", string_id, "target"),
+                    ],
+                ))
 
     add_events(conn, binary_id, run_id, records)
     return len(kept)
