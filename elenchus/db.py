@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS functions (
     UNIQUE (binary_id, address)
 );
 
+CREATE TABLE IF NOT EXISTS basic_blocks (
+    id          INTEGER PRIMARY KEY,
+    binary_id   INTEGER NOT NULL REFERENCES binaries(id),
+    function_id INTEGER NOT NULL REFERENCES functions(id),
+    address     INTEGER NOT NULL,
+    size        INTEGER NOT NULL,
+    UNIQUE (binary_id, address)
+);
+
 CREATE TABLE IF NOT EXISTS strings (
     id        INTEGER PRIMARY KEY,
     binary_id INTEGER NOT NULL REFERENCES binaries(id),
@@ -75,9 +84,10 @@ CREATE TABLE IF NOT EXISTS event_links (
     PRIMARY KEY (event_id, entity_kind, entity_id, role)
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_type  ON events (binary_id, type);
-CREATE INDEX IF NOT EXISTS idx_events_run   ON events (run_id);
-CREATE INDEX IF NOT EXISTS idx_links_entity ON event_links (entity_kind, entity_id);
+CREATE INDEX IF NOT EXISTS idx_events_type    ON events (binary_id, type);
+CREATE INDEX IF NOT EXISTS idx_events_run     ON events (run_id);
+CREATE INDEX IF NOT EXISTS idx_links_entity   ON event_links (entity_kind, entity_id);
+CREATE INDEX IF NOT EXISTS idx_blocks_func    ON basic_blocks (function_id);
 """
 
 

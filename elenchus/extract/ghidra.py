@@ -2,14 +2,14 @@
 
 Two kinds of thing are written here, and the distinction matters.
 
-Entities - functions, strings - exist or they do not. The function at a
-given address is the same function on every scan, so it is written once
-and reused.
+Entities - functions, basic blocks, strings - exist or they do not. The
+function at a given address is the same function on every scan, so it is
+written once and reused.
 
-Observations - that a run saw a function, a call, a string reference -
-happen on every scan. Two runs may disagree: a different Ghidra version,
-or a deeper analysis pass, can surface what an earlier run missed. That
-disagreement is evidence, so each run records what it saw.
+Observations - that a run saw a function, a call, an edge, a string
+reference - happen on every scan. Two runs may disagree: a different Ghidra
+version, or a deeper analysis pass, can surface what an earlier run missed.
+That disagreement is evidence, so each run records what it saw.
 
 Provenance (which tool, which version, which parameters) lives on the run,
 not in every payload. A payload carries only what is specific to that one
@@ -194,6 +194,103 @@ def extract_calls(conn, binary_id, run_id, program, id_by_address):
             ))
 
     return add_events(conn, binary_id, run_id, records)
+
+
+def extract_blocks(conn, binary_id, run_id, program, id_by_address):
+    """Record basic blocks and the control-flow edges between them.
+
+    A basic block is a straight run of instructions with one way in and one
+    way out. The edges between them - a branch, a loop's back edge, a
+    fall-through - are the shape of the function, and that shape survives
+    optimisation better than the individual instructions do. It is the
+    encoder's primary structural signal.
+
+    Blocks are entities keyed by address; edges are observations linking two
+    blocks with a flow type. Returns the number of blocks this run observed.
+    """
+    from ghidra.program.model.block import BasicBlockModel
+    from ghidra.util.task import ConsoleTaskMonitor
+
+    monitor = ConsoleTaskMonitor()
+    bbm = BasicBlockModel(program)
+    fm = program.getFunctionManager()
+
+    id_by_block_address = {
+        row["address"]: row["id"]
+        for row in conn.execute(
+            "SELECT id, address FROM basic_blocks WHERE binary_id = ?", (binary_id,)
+        )
+    }
+
+    block_records = []
+    edge_records = []
+    seen = 0
+
+    with conn:
+        for f in fm.getFunctions(True):
+            func_addr = f.getEntryPoint().getOffset()
+            function_id = id_by_address.get(func_addr)
+            if function_id is None:
+                continue
+
+            blocks = bbm.getCodeBlocksContaining(f.getBody(), monitor)
+            while blocks.hasNext():
+                block = blocks.next()
+                addr = block.getMinAddress().getOffset()
+                size = block.getMaxAddress().getOffset() - addr + 1
+                known = addr in id_by_block_address
+
+                if not known:
+                    cur = conn.execute(
+                        "INSERT INTO basic_blocks "
+                        "(binary_id, function_id, address, size) "
+                        "VALUES (?, ?, ?, ?)",
+                        (binary_id, function_id, addr, size),
+                    )
+                    id_by_block_address[addr] = cur.lastrowid
+
+                block_records.append((
+                    "observation.basic_block",
+                    {"first_seen": not known},
+                    [("basic_block", id_by_block_address[addr], "subject")],
+                ))
+                seen += 1
+
+        # A second pass for edges: every block now has an id, so both ends of
+        # an edge can be linked. Edges that leave the binary (returns, tail
+        # calls into unknown code) have no destination block and are skipped.
+        for f in fm.getFunctions(True):
+            if id_by_address.get(f.getEntryPoint().getOffset()) is None:
+                continue
+
+            blocks = bbm.getCodeBlocksContaining(f.getBody(), monitor)
+            while blocks.hasNext():
+                block = blocks.next()
+                src_addr = block.getMinAddress().getOffset()
+                src_id = id_by_block_address.get(src_addr)
+                if src_id is None:
+                    continue
+
+                dests = block.getDestinations(monitor)
+                while dests.hasNext():
+                    d = dests.next()
+                    dst_addr = d.getDestinationAddress().getOffset()
+                    dst_id = id_by_block_address.get(dst_addr)
+                    if dst_id is None:
+                        continue
+
+                    edge_records.append((
+                        "observation.cfg_edge",
+                        {"flow": str(d.getFlowType())},
+                        [
+                            ("basic_block", src_id, "subject"),
+                            ("basic_block", dst_id, "target"),
+                        ],
+                    ))
+
+    add_events(conn, binary_id, run_id, block_records)
+    add_events(conn, binary_id, run_id, edge_records)
+    return seen
 
 
 def _collect_strings(program, id_by_address, min_length):

@@ -9,6 +9,7 @@ import pyghidra
 from elenchus.check import check_links
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
 from elenchus.extract.ghidra import (
+    extract_blocks,
     extract_calls,
     extract_functions,
     extract_imports,
@@ -45,6 +46,7 @@ def cmd_scan(args):
             functions = extract_functions(conn, binary_id, run_id, program)
             imports = extract_imports(conn, binary_id, run_id, program)
             calls = extract_calls(conn, binary_id, run_id, program, functions)
+            blocks = extract_blocks(conn, binary_id, run_id, program, functions)
             strings = extract_strings(
                 conn,
                 binary_id,
@@ -67,6 +69,7 @@ def cmd_scan(args):
     print(f"functions: {len(functions)}")
     print(f"imports  : {len(imports)}")
     print(f"calls    : {calls}")
+    print(f"blocks   : {blocks}")
     print(f"strings  : {strings}")
     print(f"elapsed  : {time.time() - started:.1f}s")
     return 0

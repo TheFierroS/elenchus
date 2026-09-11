@@ -9,7 +9,7 @@ append-only: once released, a migration is never edited or removed, because
 someone may still hold a database that has not passed through it yet.
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _migration_001_runs(conn):
@@ -69,9 +69,31 @@ def _migration_002_function_library(conn):
     conn.execute("ALTER TABLE functions ADD COLUMN library TEXT")
 
 
+def _migration_003_basic_blocks(conn):
+    """Add the basic_blocks table for control-flow structure.
+
+    A brand new table, so CREATE is enough - nothing to migrate into it.
+    Existing binaries gain blocks the next time they are scanned.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS basic_blocks (
+            id          INTEGER PRIMARY KEY,
+            binary_id   INTEGER NOT NULL REFERENCES binaries(id),
+            function_id INTEGER NOT NULL REFERENCES functions(id),
+            address     INTEGER NOT NULL,
+            size        INTEGER NOT NULL,
+            UNIQUE (binary_id, address)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_blocks_func ON basic_blocks (function_id)"
+    )
+
+
 MIGRATIONS = [
     (1, "runs table, events.run_id", _migration_001_runs),
     (2, "functions.library for imports", _migration_002_function_library),
+    (3, "basic_blocks table", _migration_003_basic_blocks),
 ]
 
 

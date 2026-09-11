@@ -4,9 +4,12 @@ import re
 
 _VALID_NAME = re.compile(r"[a-z_]+")
 
+# Imports are functions too - they live in the functions table with
+# is_external = 1 - so they share it rather than getting a table of their own.
 ENTITY_TABLES = {
     "function": "functions",
     "string": "strings",
+    "basic_block": "basic_blocks",
 }
 
 
