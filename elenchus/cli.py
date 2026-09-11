@@ -6,7 +6,7 @@ import time
 
 import pyghidra
 
-from elenchus.check import check_links
+from elenchus.check import CHECKS
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
 from elenchus.extract.ghidra import (
     extract_blocks,
@@ -76,17 +76,23 @@ def cmd_scan(args):
 
 
 def cmd_check(args):
-    """Verify that every event link points at an entity that exists."""
+    """Run every consistency check and report. Exit non-zero on any violation."""
     conn = connect(args.db)
-    broken = check_links(conn)
 
-    total = conn.execute("SELECT COUNT(*) AS n FROM event_links").fetchone()["n"]
-    print(f"checked {total} links, {len(broken)} broken")
+    total = 0
+    for label, check in CHECKS:
+        violations = check(conn)
+        count = len(violations)
+        total += count
+        status = "ok" if count == 0 else f"{count} FAILED"
+        print(f"{label:16} {status}")
 
-    for event_id, kind, entity_id in broken:
-        print(f"  event {event_id} -> missing {kind} {entity_id}")
+        for v in violations[:10]:
+            print(f"    {v}")
+        if count > 10:
+            print(f"    ... and {count - 10} more")
 
-    return 1 if broken else 0
+    return 1 if total else 0
 
 
 def build_parser():
