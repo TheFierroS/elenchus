@@ -21,6 +21,9 @@ from elenchus.corpus.dataset import (
 )
 from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
+from elenchus.evaluation.baselines import all_baselines
+from elenchus.evaluation.metrics import evaluate, format_table
+from elenchus.evaluation.task import retrieval_task
 from elenchus.extract.ghidra import (
     extract_blocks,
     extract_calls,
@@ -256,6 +259,45 @@ def cmd_dataset(args):
     return 1
 
 
+def cmd_baselines(args):
+    """Measure the model-free baselines on cross-optimisation retrieval.
+
+    This is the bar. Run before any encoder exists, so that whatever the
+    encoder scores later can be read as better or worse than something,
+    rather than as a number on its own.
+    """
+    conn = connect(args.db)
+
+    queries, pool, gold = retrieval_task(
+        conn,
+        split=args.split,
+        query_opt=args.query_opt,
+        pool_opt=args.pool_opt,
+    )
+
+    if not queries:
+        print(f"no queries for split={args.split} "
+              f"{args.query_opt} -> {args.pool_opt}; run dataset --assign first")
+        return 1
+
+    print(f"task    : {args.split} split, -{args.query_opt} query "
+          f"-> -{args.pool_opt} pool")
+    print(f"queries : {len(queries)}   pool: {len(pool)}")
+    print()
+
+    results = {}
+    for scorer in all_baselines(args.seed):
+        started = time.time()
+        results[scorer.name] = evaluate(scorer, queries, pool, gold)
+        print(f"  {scorer.name:<24} {time.time() - started:6.1f}s", flush=True)
+
+    print()
+    for line in format_table(results):
+        print(line)
+
+    return 0
+
+
 def cmd_check(args):
     """Run every consistency check and report. Exit non-zero on any violation."""
     conn = connect(args.db)
@@ -362,6 +404,11 @@ def build_parser():
         "build-corpus", help="compile, scan, and store ground truth for packages"
     )
     corpus.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="rebuild packages already in the corpus instead of skipping them",
+    )
+    corpus.add_argument(
         "--manifest",
         default="elenchus/corpus/manifest.toml",
         help="path to the package manifest",
@@ -389,6 +436,16 @@ def build_parser():
         help="recompute and store the package split",
     )
     dataset.set_defaults(func=cmd_dataset)
+
+    bases = sub.add_parser(
+        "baselines",
+        help="measure model-free retrieval baselines (the week 6 bar)",
+    )
+    bases.add_argument("--split", default="test", help="which split to score")
+    bases.add_argument("--query-opt", default="O0", help="query side, e.g. O0")
+    bases.add_argument("--pool-opt", default="O3", help="pool side, e.g. O3")
+    bases.add_argument("--seed", type=int, default=1)
+    bases.set_defaults(func=cmd_baselines)
 
     return parser
 
