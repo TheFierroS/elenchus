@@ -112,6 +112,7 @@ url = "https://github.com/aklomp/base64/archive/refs/tags/v0.5.2.tar.gz"
 license = "BSD-2-Clause"
 sources = ["lib/*.c", "lib/arch/generic/*.c", "lib/tables/*.c"]
 include_dirs = ["include", "lib"]
+defines = ["BASE64_STATIC_DEFINE"]   # its header declares the API dllimport
 exclude = ["lib_openmp.c"]
 # cmake normally generates this, switching SIMD codecs on per machine. All
 # off: the generic codec is the one worth learning, and per-machine SIMD
@@ -163,7 +164,9 @@ url = "https://github.com/Mbed-TLS/mbedtls/archive/refs/tags/v3.6.0.tar.gz"
 license = "Apache-2.0"
 sources = ["library/*.c"]
 include_dirs = ["include", "library"]
-libs = ["advapi32", "bcrypt"]   # entropy comes from the Windows crypto API
+# Entropy comes from the Windows crypto API, and net_sockets.c is part of
+# the library whether or not TLS is the part we care about.
+libs = ["advapi32", "bcrypt", "ws2_32"]
 
 # ---------------- parsing and text ----------------
 
