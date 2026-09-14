@@ -25,23 +25,47 @@ def check_links(conn):
     Every event link points at an entity - a function, block, or string.
     A link to a row that does not exist is a dangling reference: the event
     claims something about an entity the database cannot produce.
+
+    One query per entity kind, not one per link. The first version asked
+    about each link separately, which is unnoticeable over a few thousand
+    and takes minutes over the several million a real corpus holds - and a
+    check nobody is willing to wait for is a check nobody runs.
     """
     broken = []
-    rows = conn.execute(
-        "SELECT event_id, entity_kind, entity_id FROM event_links"
-    ).fetchall()
 
-    for row in rows:
-        table = ENTITY_TABLES.get(row["entity_kind"])
+    kinds = [
+        row["entity_kind"]
+        for row in conn.execute(
+            "SELECT DISTINCT entity_kind FROM event_links"
+        )
+    ]
+
+    for kind in kinds:
+        table = ENTITY_TABLES.get(kind)
+
         if table is None:
-            broken.append((row["event_id"], row["entity_kind"], row["entity_id"]))
-            continue
+            # An entity kind with no table at all: every link using it is
+            # dangling, whatever it points to.
+            rows = conn.execute(
+                "SELECT event_id, entity_kind, entity_id FROM event_links "
+                "WHERE entity_kind = ?",
+                (kind,),
+            )
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT el.event_id, el.entity_kind, el.entity_id
+                FROM event_links el
+                LEFT JOIN {table} t ON t.id = el.entity_id
+                WHERE el.entity_kind = ? AND t.id IS NULL
+                """,
+                (kind,),
+            )
 
-        found = conn.execute(
-            f"SELECT 1 FROM {table} WHERE id = ?", (row["entity_id"],)
-        ).fetchone()
-        if found is None:
-            broken.append((row["event_id"], row["entity_kind"], row["entity_id"]))
+        broken.extend(
+            (row["event_id"], row["entity_kind"], row["entity_id"])
+            for row in rows
+        )
 
     return broken
 
@@ -70,21 +94,33 @@ def check_seq_gaps(conn):
     were written with the same position. Either breaks the ability to replay
     a binary's history in order.
     """
-    violations = []
-    binaries = conn.execute(
-        "SELECT DISTINCT binary_id FROM events"
-    ).fetchall()
+    # Two passes, because the cheap one answers for almost every binary.
+    # Events carry UNIQUE (binary_id, seq), so duplicates cannot exist; a
+    # sequence is therefore unbroken exactly when it starts at 1 and its
+    # highest value equals how many there are. That is one aggregate query
+    # over the whole table instead of one scan per binary, which matters at
+    # a few million events.
+    suspect = conn.execute("""
+        SELECT binary_id
+        FROM events
+        GROUP BY binary_id
+        HAVING MIN(seq) != 1 OR MAX(seq) != COUNT(*)
+    """).fetchall()
 
-    for b in binaries:
-        binary_id = b["binary_id"]
-        rows = conn.execute(
+    violations = []
+
+    # Only the binaries that failed are walked row by row, to say where.
+    # A number without a position is hard to act on.
+    for row in suspect:
+        binary_id = row["binary_id"]
+        seqs = conn.execute(
             "SELECT seq FROM events WHERE binary_id = ? ORDER BY seq",
             (binary_id,),
         ).fetchall()
 
-        for expected, row in enumerate(rows, start=1):
-            if row["seq"] != expected:
-                violations.append((binary_id, expected, row["seq"]))
+        for expected, found in enumerate(seqs, start=1):
+            if found["seq"] != expected:
+                violations.append((binary_id, expected, found["seq"]))
                 break
 
     return violations

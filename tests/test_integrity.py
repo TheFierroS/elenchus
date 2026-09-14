@@ -10,6 +10,8 @@ a healthy database stays silent.
 import sys
 import types
 
+import pytest
+
 from elenchus.check import (
     CHECKS,
     WARNINGS,
@@ -368,3 +370,137 @@ def test_pruning_clears_a_twin_link_into_the_removed_binary(db):
         "SELECT twin_id FROM corpus_binaries WHERE binary_id = ?", (partner,)
     ).fetchone()["twin_id"]
     assert twin is None
+
+
+# ------------------------------------------------------------ at some scale
+
+
+def populate(conn, binaries=40, events_each=250):
+    """Build a database large enough that a per-row check would be felt."""
+    run_id = new_run(conn)
+    with conn:
+        for index in range(binaries):
+            binary_id = conn.execute(
+                "INSERT INTO binaries (path, sha256, arch, imported_at) "
+                "VALUES (?, ?, 'x86:LE:64:default', datetime('now'))",
+                (f"/tmp/b{index}.dll", f"sha{index}"),
+            ).lastrowid
+
+            function_id = conn.execute(
+                "INSERT INTO functions (binary_id, address, size, raw_name) "
+                "VALUES (?, 4096, 16, 'FUN')",
+                (binary_id,),
+            ).lastrowid
+
+            conn.executemany(
+                "INSERT INTO events "
+                "(binary_id, run_id, seq, created_at, type, payload) "
+                "VALUES (?, ?, ?, datetime('now'), 'observation.function', '{}')",
+                [(binary_id, run_id, seq) for seq in range(1, events_each + 1)],
+            )
+
+            links = conn.execute(
+                "SELECT id FROM events WHERE binary_id = ?", (binary_id,)
+            ).fetchall()
+            conn.executemany(
+                "INSERT INTO event_links "
+                "(event_id, entity_kind, entity_id, role) "
+                "VALUES (?, 'function', ?, 'subject')",
+                [(row["id"], function_id) for row in links],
+            )
+    return conn
+
+
+def test_checks_stay_quick_on_ten_thousand_events(db):
+    """A check nobody is willing to wait for is a check nobody runs.
+
+    The first version asked the database about each link separately. Over a
+    few thousand rows that is invisible; over the several million a real
+    corpus holds it takes minutes, and the command looks hung.
+    """
+    import time
+
+    populate(db)
+
+    started = time.time()
+    for _label, check in CHECKS:
+        check(db)
+    elapsed = time.time() - started
+
+    assert elapsed < 2.0, f"checks took {elapsed:.1f}s"
+
+
+def test_a_gap_is_still_found_and_located(db):
+    """Speed must not cost the position: a count says less than a place."""
+    from elenchus.check import check_seq_gaps
+
+    populate(db, binaries=3, events_each=20)
+
+    # The links have to go first: event_links references events, and the
+    # database will not let a referenced row disappear. That constraint is
+    # the reason a gap is rare enough to be worth a check rather than a
+    # routine occurrence.
+    with db:
+        db.execute(
+            "DELETE FROM event_links WHERE event_id IN "
+            "(SELECT id FROM events WHERE binary_id = 2 AND seq = 7)"
+        )
+        db.execute("DELETE FROM events WHERE binary_id = 2 AND seq = 7")
+
+    found = check_seq_gaps(db)
+    assert len(found) == 1
+    assert found[0][0] == 2      # which binary
+    assert found[0][1] == 7      # where the sequence first disagrees
+
+
+def test_a_sequence_starting_late_is_found(db):
+    from elenchus.check import check_seq_gaps
+
+    populate(db, binaries=2, events_each=10)
+    with db:
+        db.execute(
+            "DELETE FROM event_links WHERE event_id IN "
+            "(SELECT id FROM events WHERE binary_id = 1 AND seq = 1)"
+        )
+        db.execute("DELETE FROM events WHERE binary_id = 1 AND seq = 1")
+
+    assert [row[0] for row in check_seq_gaps(db)] == [1]
+
+
+def test_a_dangling_link_is_found_among_many_good_ones(db):
+    """The fast path must not lose the needle in the haystack."""
+    from elenchus.check import check_links
+
+    populate(db, binaries=5, events_each=50)
+    assert check_links(db) == []
+
+    without_foreign_keys(db)
+    with db:
+        db.execute(
+            "INSERT INTO event_links (event_id, entity_kind, entity_id, role) "
+            "VALUES (1, 'function', 999999, 'subject')"
+        )
+
+    found = check_links(db)
+    assert found == [(1, "function", 999999)]
+
+
+def test_an_unknown_entity_kind_cannot_be_written_at_all(db):
+    """The registry is enforced by the database, not only by the code.
+
+    check_links still handles an unknown kind, because a database can arrive
+    from elsewhere - but the first line of defence is this constraint, which
+    is generated from the same entity registry the code reads. A claim link
+    cannot be written until claims are a real entity with a real table.
+    """
+    import sqlite3
+
+    populate(db, binaries=1, events_each=2)
+
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+        with db:
+            db.execute(
+                "INSERT INTO event_links "
+                "(event_id, entity_kind, entity_id, role) "
+                "VALUES (1, 'claim', 1, 'subject')"
+            )
