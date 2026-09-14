@@ -5,43 +5,53 @@
 # that the encoder trains on and the agent is measured against. Only source
 # we can legally recompile belongs here; targets to analyse do not.
 #
-# A "style" names how the package builds. Optional preparation covers the
-# common reasons a plain compile fails, so the manifest stays thin.
+# Fields:
 #
-#   style   = "c_glob"      compile every .c in the source root
-#   style   = "c_glob_src"  same, but sources live under src/
-#   exclude = [...]         .c files to skip (own main, or an amalgamation
-#                           that re-includes the rest - both duplicate symbols)
-#   copy    = [[from, to]]  put a prebuilt config header in place
-#   create  = [[name, text] write a header the build system would generate
+#   sources      = ["lib/*.c"]     glob patterns, relative to the source root
+#   include_dirs = ["include"]     added as -I
+#   defines      = ["NO_SSL"]      added as -D
+#   exclude      = ["test.c"]      .c files to skip, matched by name
+#   copy         = [[from, to]]    put a prebuilt config header in place
+#   create       = [[name, text]]  write a header the build system generates
 #
-# Packages past the first four are candidates: their URLs are real but their
-# build quirks are not all verified. build-corpus skips any that fail and
-# reports them, so an unbuildable candidate costs nothing. Prune or fix the
-# failures after the first run; the four proven packages always build.
+# Two things commonly make a package fail, and both are worth knowing when
+# adding one. A source file carrying its own main() is harmless in a shared
+# library but fills the ground truth with test-harness functions, so exclude
+# it. A source file that another one #includes must be excluded, or every
+# symbol in it is defined twice.
+#
+# Diversity matters more than count. An encoder trained only on compressors
+# learns compressors. The mix below is deliberate: compression, parsing,
+# cryptography, text processing, networking, paths and logging.
+#
+# Packages marked verified have compiled and matched ground truth at 99-100%
+# across -O0..-O3. The rest have had their layout checked against the real
+# tarball but not their compile; build-corpus skips failures and reports
+# them, so an unbuildable candidate costs one line in a log.
 
-# ---- proven: build and match 99-100% across O0-O3 ----
+# ---------------- verified ----------------
 
 [[package]]
 name = "zlib"
 version = "1.3.1"
 url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz"
 license = "Zlib"
-style = "c_glob"
+sources = ["*.c"]
 
 [[package]]
 name = "cjson"
 version = "1.7.18"
 url = "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.18.tar.gz"
 license = "MIT"
-style = "c_glob"
+sources = ["*.c"]
+exclude = ["test.c"]
 
 [[package]]
 name = "miniz"
 version = "3.0.2"
 url = "https://github.com/richgel999/miniz/archive/refs/tags/3.0.2.tar.gz"
 license = "MIT"
-style = "c_glob"
+sources = ["*.c"]
 create = [["miniz_export.h", "#define MINIZ_EXPORT\n"]]
 exclude = ["example1.c", "example2.c", "example3.c", "example4.c", "example5.c", "example6.c"]
 
@@ -50,78 +60,213 @@ name = "lua"
 version = "5.4.7"
 url = "https://github.com/lua/lua/archive/refs/tags/v5.4.7.tar.gz"
 license = "MIT"
-style = "c_glob"
+sources = ["*.c"]
 exclude = ["lua.c", "luac.c", "onelua.c", "ltests.c"]
 
-# ---- candidates: real URLs, build quirks to verify on first run ----
-
-# Compression. lz4 has extra tooling; keep only the core lib .c files.
-[[package]]
-name = "lz4"
-version = "1.10.0"
-url = "https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz"
-license = "BSD-2-Clause"
-style = "c_glob_src"
-# core sources live in lib/; c_glob_src looks in src/, so this may miss them.
-# If it finds nothing, the package needs a lib/ style - note for follow-up.
-
-# A single-header JSON parser plus a buildable .c in some releases.
 [[package]]
 name = "mpc"
 version = "0.9.0"
 url = "https://github.com/orangeduck/mpc/archive/refs/tags/0.9.0.tar.gz"
 license = "BSD-2-Clause"
-style = "c_glob"
-# A parser-combinator library, one mpc.c. Different domain: grammars, ASTs.
+sources = ["*.c"]
 
-# A tiny regex engine.
-[[package]]
-name = "tiny-regex-c"
-version = "master"
-url = "https://github.com/kokke/tiny-regex-c/archive/refs/heads/master.tar.gz"
-license = "Unlicense"
-style = "c_glob"
-exclude = ["tests.c", "example.c"]
-
-# A small hash-map / general utility (uthash is header-only, so use a real .c).
 [[package]]
 name = "sds"
 version = "master"
 url = "https://github.com/antirez/sds/archive/refs/heads/master.tar.gz"
 license = "BSD-2-Clause"
-style = "c_glob"
+sources = ["*.c"]
 exclude = ["sds-test.c"]
 
-# A base64 / encoding library.
 [[package]]
-name = "libbase64"
-version = "0.5.2"
-url = "https://github.com/aklomp/base64/archive/refs/tags/v0.5.2.tar.gz"
-license = "BSD-2-Clause"
-style = "c_glob_src"
+name = "tiny-regex-c"
+version = "master"
+url = "https://github.com/kokke/tiny-regex-c/archive/refs/heads/master.tar.gz"
+license = "Unlicense"
+sources = ["*.c"]
+exclude = ["tests.c", "example.c"]
 
-# A small INI parser.
 [[package]]
 name = "inih"
 version = "58"
 url = "https://github.com/benhoyt/inih/archive/refs/tags/r58.tar.gz"
 license = "BSD-3-Clause"
-style = "c_glob"
+sources = ["*.c"]
 
-# A CRC / checksum-heavy compression alternative.
+# ---------------- previously failed, cause found ----------------
+# Three of these failed for one reason: the old schema could only look in the
+# source root or in src/, and they keep their sources in lib/. The fourth was
+# missing an exclude.
+
+[[package]]
+name = "lz4"
+version = "1.10.0"
+url = "https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz"
+license = "BSD-2-Clause"
+sources = ["lib/*.c"]
+
+[[package]]
+name = "libbase64"
+version = "0.5.2"
+url = "https://github.com/aklomp/base64/archive/refs/tags/v0.5.2.tar.gz"
+license = "BSD-2-Clause"
+sources = ["lib/*.c", "lib/arch/generic/*.c", "lib/tables/*.c"]
+exclude = ["lib_openmp.c"]
+
 [[package]]
 name = "heatshrink"
 version = "0.4.1"
 url = "https://github.com/atomicobject/heatshrink/archive/refs/tags/v0.4.1.tar.gz"
 license = "ISC"
-style = "c_glob"
-exclude = ["heatshrink.c"]
+sources = ["heatshrink_*.c"]
 
-# A small math / linear algebra library.
+# ---------------- compression ----------------
+
 [[package]]
-name = "cmatrix"
+name = "zstd"
+version = "1.5.6"
+url = "https://github.com/facebook/zstd/archive/refs/tags/v1.5.6.tar.gz"
+license = "BSD-3-Clause"
+sources = ["lib/common/*.c", "lib/compress/*.c", "lib/decompress/*.c", "lib/dictBuilder/*.c"]
+include_dirs = ["lib", "lib/common"]
+defines = ["ZSTD_DISABLE_ASM=1"]
+
+[[package]]
+name = "libdeflate"
+version = "1.20"
+url = "https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.20.tar.gz"
+license = "MIT"
+sources = ["lib/*.c", "lib/x86/*.c"]
+include_dirs = ["."]
+
+[[package]]
+name = "xxhash"
+version = "0.8.2"
+url = "https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.2.tar.gz"
+license = "BSD-2-Clause"
+sources = ["xxhash.c"]
+
+# ---------------- cryptography ----------------
+# The most valuable entry here. Cryptographic primitives are what reverse
+# engineering most often needs to identify, and their shapes are distinctive
+# enough that an encoder either learns them or plainly does not.
+
+[[package]]
+name = "mbedtls"
+version = "3.6.0"
+url = "https://github.com/Mbed-TLS/mbedtls/archive/refs/tags/v3.6.0.tar.gz"
+license = "Apache-2.0"
+sources = ["library/*.c"]
+include_dirs = ["include", "library"]
+
+# ---------------- parsing and text ----------------
+
+[[package]]
+name = "libexpat"
+version = "2.6.2"
+url = "https://github.com/libexpat/libexpat/archive/refs/tags/R_2_6_2.tar.gz"
+license = "MIT"
+sources = ["expat/lib/*.c"]
+include_dirs = ["expat/lib", "expat"]
+exclude = ["xmltok_impl.c", "xmltok_ns.c"]
+create = [["expat/lib/expat_config.h", "#define XML_CONTEXT_BYTES 1024\n#define XML_DTD 1\n#define XML_GE 1\n#define XML_NS 1\n#define HAVE_MEMMOVE 1\n#define PACKAGE_VERSION \"2.6.2\"\n"]]
+
+[[package]]
+name = "libyaml"
+version = "0.2.5"
+url = "https://github.com/yaml/libyaml/archive/refs/tags/0.2.5.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]
+include_dirs = ["include", "src"]
+create = [["src/config.h", "#define YAML_VERSION_MAJOR 0\n#define YAML_VERSION_MINOR 2\n#define YAML_VERSION_PATCH 5\n#define YAML_VERSION_STRING \"0.2.5\"\n"]]
+
+[[package]]
+name = "jansson"
+version = "2.14"
+url = "https://github.com/akheron/jansson/archive/refs/tags/v2.14.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]
+include_dirs = ["src"]
+copy = [["src/jansson_config.h.in", "src/jansson_config.h"]]
+
+[[package]]
+name = "yyjson"
+version = "0.10.0"
+url = "https://github.com/ibireme/yyjson/archive/refs/tags/0.10.0.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]
+
+[[package]]
+name = "tomlc99"
 version = "master"
-url = "https://github.com/abishekvashok/cmatrix/archive/refs/heads/master.tar.gz"
-license = "GPL-3.0"
-style = "c_glob_src"
-# NOTE: GPL. If license purity matters for redistribution, drop this one.
+url = "https://github.com/cktan/tomlc99/archive/refs/heads/master.tar.gz"
+license = "MIT"
+sources = ["toml.c"]
+
+[[package]]
+name = "parson"
+version = "master"
+url = "https://github.com/kgabis/parson/archive/refs/heads/master.tar.gz"
+license = "MIT"
+sources = ["parson.c"]
+
+[[package]]
+name = "pdjson"
+version = "master"
+url = "https://github.com/skeeto/pdjson/archive/refs/heads/master.tar.gz"
+license = "Unlicense"
+sources = ["pdjson.c"]
+
+[[package]]
+name = "libcsv"
+version = "master"
+url = "https://github.com/rgamble/libcsv/archive/refs/heads/master.tar.gz"
+license = "LGPL-2.1"
+sources = ["libcsv.c"]
+
+[[package]]
+name = "utf8proc"
+version = "2.9.0"
+url = "https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v2.9.0.tar.gz"
+license = "MIT"
+sources = ["utf8proc.c"]
+
+[[package]]
+name = "tinyexpr"
+version = "master"
+url = "https://github.com/codeplea/tinyexpr/archive/refs/heads/master.tar.gz"
+license = "Zlib"
+sources = ["tinyexpr.c"]
+
+# ---------------- networking and utility ----------------
+
+[[package]]
+name = "mongoose"
+version = "7.14"
+url = "https://github.com/cesanta/mongoose/archive/refs/tags/7.14.tar.gz"
+license = "GPL-2.0"
+sources = ["mongoose.c"]
+
+[[package]]
+name = "civetweb"
+version = "1.16"
+url = "https://github.com/civetweb/civetweb/archive/refs/tags/v1.16.tar.gz"
+license = "MIT"
+sources = ["src/civetweb.c"]
+include_dirs = ["include", "src"]
+defines = ["NO_SSL", "USE_STACK_SIZE=102400"]
+
+[[package]]
+name = "cwalk"
+version = "1.2.9"
+url = "https://github.com/likle/cwalk/archive/refs/tags/v1.2.9.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]
+include_dirs = ["include"]
+
+[[package]]
+name = "logc"
+version = "master"
+url = "https://github.com/rxi/log.c/archive/refs/heads/master.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]

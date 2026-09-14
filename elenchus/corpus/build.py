@@ -52,11 +52,29 @@ _STRIP = "x86_64-w64-mingw32-strip"
 
 @dataclass
 class Package:
+    """One library to compile, and what it takes to compile it.
+
+    sources is a list of glob patterns relative to the extracted source root.
+    It replaced a two-valued style field that could only express "the .c files
+    in the root" or "the .c files in src/", which is not where most libraries
+    keep them - lz4, libdeflate and zstd all use lib/, and that single
+    limitation was the reason three of four candidate packages failed. A glob
+    list costs nothing and expresses all of them.
+
+    include_dirs and defines exist for the same reason: a library whose
+    headers sit in include/, or that expects one macro to be set, is not a
+    hard package to build, and without these fields it is simply impossible
+    to describe.
+    """
+
     name: str
     version: str
     url: str
     license: str
-    style: str
+    style: str = "c_glob"
+    sources: list[str] = field(default_factory=list)
+    include_dirs: list[str] = field(default_factory=list)
+    defines: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
     copy: list[list[str]] = field(default_factory=list)
     create: list[list[str]] = field(default_factory=list)
@@ -104,13 +122,34 @@ def _prepare(root, package):
 
 
 def _c_sources(root, package):
-    """Return the .c files to compile, honouring the package's exclude list."""
-    search = root / "src" if package.style == "c_glob_src" else root
+    """Return the .c files to compile, honouring the package's exclude list.
+
+    Raises when a package matches nothing. That failure used to surface as a
+    compiler error about missing input, one step removed from the cause; said
+    plainly it points straight at the pattern that is wrong.
+    """
+    patterns = package.sources or (
+        ["src/*.c"] if package.style == "c_glob_src" else ["*.c"]
+    )
+
     excluded = set(package.exclude)
-    return sorted(s for s in search.glob("*.c") if s.name not in excluded)
+    found = {
+        path
+        for pattern in patterns
+        for path in root.glob(pattern)
+        if path.name not in excluded
+    }
+
+    if not found:
+        raise ValueError(
+            f"no sources matched {patterns} under {root} "
+            f"(excluding {sorted(excluded)})"
+        )
+
+    return sorted(found)
 
 
-def _compile_level(sources, out_debug, out_stripped, opt):
+def _compile_level(sources, out_debug, out_stripped, opt, package=None, root=None):
     """Compile sources into a debug shared lib at opt, then strip a copy.
 
     --exclude-all-symbols is what makes the stripped twin actually stripped.
@@ -129,10 +168,18 @@ def _compile_level(sources, out_debug, out_stripped, opt):
     Returns (debug_path, stripped_path). Raises on compiler failure so the
     caller can mark the whole package failed.
     """
+    includes = []
+    defines = []
+    if package is not None and root is not None:
+        includes = [f"-I{root / d}" for d in package.include_dirs]
+        defines = [f"-D{d}" for d in package.defines]
+
     cmd = [
         _CC,
         f"-{opt}",
         *_COMMON_FLAGS,
+        *includes,
+        *defines,
         "-shared",
         "-Wl,--exclude-all-symbols",
         "-o",
@@ -173,7 +220,7 @@ def build_package(package, work_dir):
         for opt in OPT_LEVELS:
             debug = out_dir / f"{package.name}_{opt}.dll"
             stripped = out_dir / f"{package.name}_{opt}_stripped.dll"
-            _compile_level(sources, debug, stripped, opt)
+            _compile_level(sources, debug, stripped, opt, package, src_root)
             produced.extend([debug, stripped])
 
         return BuildResult(package.name, ok=True, binaries=produced)
