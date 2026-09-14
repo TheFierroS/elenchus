@@ -90,6 +90,27 @@ def _packages_in_corpus(conn):
     }
 
 
+def active_runs(conn, kind="extract", within_minutes=60):
+    """Return runs of this kind opened recently and never closed.
+
+    Two corpus builds writing to one database is not a hypothetical: it
+    happened, three at once, because the command is long, silent and easy to
+    start twice. SQLite takes one writer, Ghidra locks its project
+    directories, and the result is two processes quietly spoiling each
+    other's work.
+
+    The time window keeps this from tripping over the wreckage of an old
+    crash. A run opened yesterday and never closed is a dead process, not a
+    competitor - `check --close-stale` is for those.
+    """
+    return conn.execute(
+        "SELECT id, kind, started_at FROM runs "
+        "WHERE status = 'running' AND kind = ? "
+        "AND started_at > datetime('now', ?) ORDER BY id",
+        (kind, f"-{int(within_minutes)} minutes"),
+    ).fetchall()
+
+
 def store_level(conn, pkg, opt, debug_path, strip_path):
     """Scan one optimisation level's twins and store their ground truth.
 
@@ -124,6 +145,16 @@ def cmd_build_corpus(args):
     started = time.time()
     packages = load_manifest(args.manifest)
     conn = connect(args.db)
+
+    active = active_runs(conn)
+    if active and not getattr(args, "force", False):
+        print(f"another run appears to be working on {args.db}:")
+        for row in active:
+            print(f"  run {row['id']} ({row['kind']}) started {row['started_at']}")
+        print()
+        print("Wait for it, or pass --force if you are certain it is dead.")
+        print("If it died, `elenchus check --close-stale` will tidy up.")
+        return 1
 
     pyghidra.start()
 

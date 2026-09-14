@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pyghidra
 
-from elenchus.check import CHECKS
+from elenchus.check import CHECKS, WARNINGS, close_stale_runs
 from elenchus.corpus.cli import cmd_build_corpus
 from elenchus.corpus.dataset import (
     assign_splits,
@@ -332,23 +332,49 @@ def cmd_measurements(args):
 
 
 def cmd_check(args):
-    """Run every consistency check and report. Exit non-zero on any violation."""
+    """Run every consistency check and report.
+
+    Exits non-zero on a defect, not on a warning: an interrupted run is
+    worth seeing but does not mean the database is broken, and a command
+    that goes red for something harmless gets ignored when it goes red for
+    something real.
+    """
     conn = connect(args.db)
 
-    total = 0
+    if args.close_stale:
+        closed = close_stale_runs(conn, args.stale_minutes)
+        print(f"closed {closed} run(s) open for over "
+              f"{args.stale_minutes} minutes")
+        print()
+
+    defects = 0
+    warnings = 0
+
     for label, check in CHECKS:
         violations = check(conn)
         count = len(violations)
-        total += count
-        status = "ok" if count == 0 else f"{count} FAILED"
-        print(f"{label:16} {status}")
 
-        for v in violations[:10]:
-            print(f"    {v}")
+        if count == 0:
+            status = "ok"
+        elif label in WARNINGS:
+            status = f"{count} warning"
+            warnings += count
+        else:
+            status = f"{count} FAILED"
+            defects += count
+
+        print(f"{label:22} {status}")
+
+        for violation in violations[:10]:
+            print(f"    {violation}")
         if count > 10:
             print(f"    ... and {count - 10} more")
 
-    return 1 if total else 0
+    if warnings and not defects:
+        print()
+        print("warnings only: nothing is corrupt, but some run was cut short")
+
+    return 1 if defects else 0
 
 
 def build_parser():
@@ -376,6 +402,17 @@ def build_parser():
     scan.set_defaults(func=cmd_scan)
 
     check = sub.add_parser("check", help="run consistency checks on the database")
+    check.add_argument(
+        "--close-stale",
+        action="store_true",
+        help="mark long-open runs as failed before checking",
+    )
+    check.add_argument(
+        "--stale-minutes",
+        type=int,
+        default=60,
+        help="how old an open run must be to count as abandoned (default: 60)",
+    )
     check.set_defaults(func=cmd_check)
 
     code = sub.add_parser(
@@ -435,6 +472,11 @@ def build_parser():
 
     corpus = sub.add_parser(
         "build-corpus", help="compile, scan, and store ground truth for packages"
+    )
+    corpus.add_argument(
+        "--force",
+        action="store_true",
+        help="start even if another run looks active on this database",
     )
     corpus.add_argument(
         "--rebuild",
