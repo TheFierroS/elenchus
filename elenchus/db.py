@@ -160,6 +160,7 @@ CREATE INDEX IF NOT EXISTS idx_blocks_func   ON basic_blocks (function_id);
 CREATE INDEX IF NOT EXISTS idx_gt_function   ON ground_truth (function_id);
 CREATE INDEX IF NOT EXISTS idx_code_hash     ON function_code (byte_hash);
 CREATE INDEX IF NOT EXISTS idx_code_binary   ON function_code (binary_id);
+CREATE INDEX IF NOT EXISTS idx_meas_split    ON measurements (split, method);
 """
 
 
@@ -168,19 +169,29 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
     A database created now is stamped as current and skips the migrations
     entirely: schema() already produces the shape they would build.
+
+    An existing one is migrated *before* schema() runs, and the order is not
+    cosmetic. schema() describes today's tables, so running it first on an
+    old database creates tomorrow's shape behind the migrations' backs - and
+    a migration that adds a column then finds it already there and fails.
+    That is not hypothetical: a database from before the corpus tables
+    existed could not be opened at all, because migration 6 tried to add a
+    column schema() had just created.
+
+    schema() still runs afterwards, where it is a no-op for everything the
+    migrations built and a safety net for indexes.
     """
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
 
-    fresh = migrations.is_fresh(conn)
-    conn.executescript(schema())
-
-    if fresh:
+    if migrations.is_fresh(conn):
+        conn.executescript(schema())
         migrations.stamp(conn, migrations.SCHEMA_VERSION)
     else:
         migrations.migrate(conn)
+        conn.executescript(schema())
 
     return conn
 

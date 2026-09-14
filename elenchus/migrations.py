@@ -12,6 +12,20 @@ someone may still hold a database that has not passed through it yet.
 SCHEMA_VERSION = 8
 
 
+def has_column(conn, table, column):
+    """True if table already has this column.
+
+    Migrations run against databases that have been through who knows what -
+    a restore, a manual fix, an older version of this code that ordered its
+    steps differently. Asking first costs one query and turns a crash into a
+    no-op.
+    """
+    return any(
+        row[1] == column
+        for row in conn.execute(f"PRAGMA table_info({table})")
+    )
+
+
 def _migration_001_runs(conn):
     """Introduce the runs table and attach every existing event to a run.
 
@@ -22,7 +36,28 @@ def _migration_001_runs(conn):
 
     SQLite cannot add a NOT NULL column to a populated table, and cannot
     alter a column afterwards, so events is rebuilt rather than altered.
+
+    The runs table is created here rather than left to schema(). A migration
+    that assumes another step ran first is a migration that works until the
+    order changes - and the order did change, once, to fix a different bug.
+    Each one builds what it needs.
     """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS runs (
+            id           INTEGER PRIMARY KEY,
+            kind         TEXT NOT NULL,
+            tool         TEXT,
+            tool_version TEXT,
+            code_version TEXT,
+            params       TEXT NOT NULL,
+            seed         INTEGER,
+            started_at   TEXT NOT NULL,
+            ended_at     TEXT,
+            status       TEXT NOT NULL
+                         CHECK (status IN ('running', 'ok', 'failed'))
+        )
+    """)
+
     legacy_id = conn.execute(
         "INSERT INTO runs "
         "(kind, tool, code_version, params, started_at, ended_at, status) "
@@ -66,7 +101,8 @@ def _migration_002_function_library(conn):
     Nullable, so a plain ALTER suffices - no rebuild. Internal functions
     leave it null; only imports carry a library name.
     """
-    conn.execute("ALTER TABLE functions ADD COLUMN library TEXT")
+    if not has_column(conn, "functions", "library"):
+        conn.execute("ALTER TABLE functions ADD COLUMN library TEXT")
 
 
 def _migration_003_basic_blocks(conn):
@@ -162,7 +198,8 @@ def _migration_006_decl_file(conn):
     linked in. Without it the two are told apart by keeping a list of C
     runtime function names, which is wrong the moment the toolchain changes.
     """
-    conn.execute("ALTER TABLE ground_truth ADD COLUMN decl_file TEXT")
+    if not has_column(conn, "ground_truth", "decl_file"):
+        conn.execute("ALTER TABLE ground_truth ADD COLUMN decl_file TEXT")
 
 
 def _migration_007_dataset_split(conn):
