@@ -19,6 +19,7 @@ from elenchus.corpus.dataset import (
     report,
     store_splits,
 )
+from elenchus.corpus.prune import cmd_prune_corpus
 from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
 from elenchus.evaluation.baselines import all_baselines
@@ -500,6 +501,17 @@ def build_parser():
         help="re-read ground truth from the debug twins, no Ghidra needed",
     )
     refresh.set_defaults(func=cmd_refresh_truth)
+
+    prune = sub.add_parser(
+        "prune-corpus",
+        help="unregister duplicate corpus binaries left by a repeated build",
+    )
+    prune.add_argument(
+        "--apply",
+        action="store_true",
+        help="actually unregister them (otherwise only report)",
+    )
+    prune.set_defaults(func=cmd_prune_corpus)
 
     dataset = sub.add_parser(
         "dataset",

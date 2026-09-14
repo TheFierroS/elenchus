@@ -202,11 +202,55 @@ def check_measurement_runs(conn):
     ]
 
 
+def check_corpus_duplicates(conn):
+    """Return (package, level, stripped) recorded more than once.
+
+    A compiled binary carries a timestamp, so recompiling the same source
+    produces a different file hash and registers as a new binary rather than
+    matching the old one. Build a package twice and the corpus holds both,
+    and every function in it is counted twice - in the training set, in the
+    pool, and in any measurement over either.
+
+    It takes an interrupted run and a restart to get here, which is exactly
+    what a long build invites.
+    """
+    return [
+        (row["package"], row["opt_level"], row["stripped"], row["n"])
+        for row in conn.execute("""
+            SELECT package, opt_level, stripped, COUNT(*) AS n
+            FROM corpus_binaries
+            GROUP BY package, opt_level, stripped
+            HAVING n > 1
+            ORDER BY package, opt_level
+        """)
+    ]
+
+
+def check_corpus_completeness(conn, levels=4):
+    """Return packages missing some of their twins.
+
+    A package should hold one stripped and one debug binary at every
+    optimisation level. Fewer means a run stopped part way through it, and
+    the package will contribute lopsided data: present at -O0, absent at -O3,
+    so its functions can never form a cross-optimisation pair.
+
+    A warning rather than a defect - the corpus is usable, just uneven.
+    """
+    return [
+        (row["package"], row["n"])
+        for row in conn.execute(
+            "SELECT package, COUNT(*) AS n FROM corpus_binaries "
+            "GROUP BY package HAVING n < ? ORDER BY package",
+            (2 * levels,),
+        )
+    ]
+
+
 # Checks that report a situation rather than a defect. An unfinished run
 # means a process died; that is worth seeing, but it is not a broken
 # database, and failing the command over it would teach everyone to ignore
 # a red result - which would cost more than the warning is worth.
-WARNINGS = {"unfinished runs"}
+WARNINGS = {"unfinished runs", "corpus completeness"}
 
 
 def close_stale_runs(conn, older_than_minutes=60):
@@ -241,4 +285,6 @@ CHECKS = [
     ("twin links", check_twin_links),
     ("split packages", check_split_packages),
     ("measurement runs", check_measurement_runs),
+    ("corpus duplicates", check_corpus_duplicates),
+    ("corpus completeness", check_corpus_completeness),
 ]

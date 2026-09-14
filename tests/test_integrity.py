@@ -277,3 +277,94 @@ def test_a_finished_run_does_not_block(db):
     new_run(db, status="ok", kind="extract", age_minutes=1)
     new_run(db, status="failed", kind="extract", age_minutes=1)
     assert active_runs(db) == []
+
+
+# ---------------------------------------------------- corpus registrations
+
+
+def test_a_package_built_twice_is_caught(db):
+    """Recompiling changes the file hash, so both copies register."""
+    from elenchus.check import check_corpus_duplicates
+
+    first = new_binary(db, "/tmp/zlib_O0_a.dll", "a")
+    second = new_binary(db, "/tmp/zlib_O0_b.dll", "b")
+    corpus_row(db, first, "zlib", "O0", stripped=True)
+    corpus_row(db, second, "zlib", "O0", stripped=True)
+
+    found = check_corpus_duplicates(db)
+    assert found == [("zlib", "O0", 1, 2)]
+
+
+def test_the_two_sides_of_one_level_are_not_duplicates(db):
+    from elenchus.check import check_corpus_duplicates
+
+    debug = new_binary(db, "/tmp/d.dll", "d")
+    strip = new_binary(db, "/tmp/s.dll", "s")
+    corpus_row(db, debug, "zlib", "O0", stripped=False)
+    corpus_row(db, strip, "zlib", "O0", stripped=True)
+
+    assert check_corpus_duplicates(db) == []
+
+
+def test_a_half_stored_package_is_reported_as_incomplete(db):
+    from elenchus.check import check_corpus_completeness
+
+    for index, opt in enumerate(("O0", "O1", "O2", "O3")):
+        for stripped in (True, False):
+            binary_id = new_binary(
+                db, f"/tmp/full_{opt}_{stripped}.dll", f"f{index}{stripped}"
+            )
+            corpus_row(db, binary_id, "complete", opt, stripped=stripped)
+
+    partial = new_binary(db, "/tmp/partial.dll", "p")
+    corpus_row(db, partial, "cut-short", "O0", stripped=True)
+
+    assert check_corpus_completeness(db) == [("cut-short", 1)]
+
+
+def test_pruning_keeps_the_newest_and_leaves_the_data_alone(db):
+    """Unregister, never delete: an event log must not lose its subject."""
+    from elenchus.corpus.prune import duplicate_registrations, unregister
+
+    old = new_binary(db, "/tmp/old.dll", "old")
+    new = new_binary(db, "/tmp/new.dll", "new")
+    corpus_row(db, old, "cwalk", "O0", stripped=True)
+    corpus_row(db, new, "cwalk", "O0", stripped=True)
+    new_function(db, old)
+
+    duplicates = duplicate_registrations(db)
+    assert [row["binary_id"] for row in duplicates] == [old]
+
+    assert unregister(db, [old]) == 1
+
+    remaining = db.execute(
+        "SELECT binary_id FROM corpus_binaries"
+    ).fetchall()
+    assert [row["binary_id"] for row in remaining] == [new]
+
+    # The binary and its functions are still there, just not in the corpus.
+    assert db.execute(
+        "SELECT COUNT(*) AS n FROM binaries WHERE id = ?", (old,)
+    ).fetchone()["n"] == 1
+    assert db.execute(
+        "SELECT COUNT(*) AS n FROM functions WHERE binary_id = ?", (old,)
+    ).fetchone()["n"] == 1
+
+
+def test_pruning_clears_a_twin_link_into_the_removed_binary(db):
+    from elenchus.corpus.prune import unregister
+
+    old = new_binary(db, "/tmp/old.dll", "old")
+    new = new_binary(db, "/tmp/new.dll", "new")
+    partner = new_binary(db, "/tmp/partner.dll", "p")
+
+    corpus_row(db, old, "cwalk", "O0", stripped=True)
+    corpus_row(db, new, "cwalk", "O0", stripped=True)
+    corpus_row(db, partner, "cwalk", "O0", stripped=False, twin=old)
+
+    unregister(db, [old])
+
+    twin = db.execute(
+        "SELECT twin_id FROM corpus_binaries WHERE binary_id = ?", (partner,)
+    ).fetchone()["twin_id"]
+    assert twin is None

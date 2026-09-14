@@ -271,7 +271,7 @@ license = "MIT"
 sources = ["src/civetweb.c"]
 include_dirs = ["include", "src"]
 defines = ["NO_SSL", "USE_STACK_SIZE=102400"]
-libs = ["ws2_32", "winmm"]
+libs = ["ws2_32", "winmm", "winpthread"]   # clock_gettime lives in pthreads
 
 [[package]]
 name = "cwalk"
