@@ -3,11 +3,23 @@
 import argparse
 import sys
 import time
+from pathlib import Path
 
 import pyghidra
 
 from elenchus.check import CHECKS
 from elenchus.corpus.cli import cmd_build_corpus
+from elenchus.corpus.dataset import (
+    assign_splits,
+    candidate_rows,
+    eligible_rows,
+    leakage,
+    load_splits,
+    package_sizes,
+    report,
+    store_splits,
+)
+from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
 from elenchus.extract.ghidra import (
     extract_blocks,
@@ -18,6 +30,8 @@ from elenchus.extract.ghidra import (
     ghidra_version,
     register_binary,
 )
+from elenchus.extract.instructions import extract_code, function_index
+from elenchus.inspect import find_functions, render, sample_functions, summarise
 
 
 def cmd_scan(args):
@@ -48,6 +62,7 @@ def cmd_scan(args):
             imports = extract_imports(conn, binary_id, run_id, program)
             calls = extract_calls(conn, binary_id, run_id, program, functions)
             blocks = extract_blocks(conn, binary_id, run_id, program, functions)
+            coded = extract_code(conn, binary_id, run_id, program, functions)
             strings = extract_strings(
                 conn,
                 binary_id,
@@ -71,9 +86,174 @@ def cmd_scan(args):
     print(f"imports  : {len(imports)}")
     print(f"calls    : {calls}")
     print(f"blocks   : {blocks}")
+    print(f"code     : {coded} functions")
     print(f"strings  : {strings}")
     print(f"elapsed  : {time.time() - started:.1f}s")
     return 0
+
+
+def cmd_extract_code(args):
+    """Add instruction listings to binaries already in the database.
+
+    Week 4 introduced function_code, so every binary scanned before it has
+    functions, blocks and calls but no code. Rescanning through build-corpus
+    would recompile everything for nothing; this walks the binaries already
+    recorded and extracts only what is missing. Ghidra reuses its cached
+    analysis, so the second pass over a binary is cheap.
+    """
+    pyghidra.start()
+    conn = connect(args.db)
+
+    # The debug twin of a corpus binary is never an analysis target - it
+    # exists to be read for DWARF - and its code is the stripped twin's code
+    # stored twice, so it is left out whatever else is asked for.
+    conditions = [
+        "id NOT IN (SELECT binary_id FROM corpus_binaries WHERE stripped = 0)"
+    ]
+    if args.only_corpus:
+        conditions.append("id IN (SELECT binary_id FROM corpus_binaries)")
+
+    rows = conn.execute(
+        "SELECT id, path FROM binaries WHERE "
+        + " AND ".join(conditions)
+        + " ORDER BY id"
+    ).fetchall()
+
+    done = 0
+    skipped = []
+    for row in rows:
+        path = Path(row["path"])
+
+        if args.skip_existing and conn.execute(
+            "SELECT 1 FROM function_code WHERE binary_id = ? LIMIT 1",
+            (row["id"],),
+        ).fetchone():
+            continue
+
+        if not path.exists():
+            skipped.append((row["id"], "file is gone"))
+            continue
+
+        run_id = start_run(
+            conn, "extract", tool="ghidra", params={"binary": str(path),
+                                                    "stage": "instructions"}
+        )
+        try:
+            with pyghidra.open_program(str(path)) as api:
+                program = api.getCurrentProgram()
+                set_run_tool_version(conn, run_id, ghidra_version(program))
+                count = extract_code(
+                    conn, row["id"], run_id,
+                    program, function_index(conn, row["id"]),
+                )
+        except Exception as exc:
+            finish_run(conn, run_id, "failed")
+            skipped.append((row["id"], str(exc)[:120]))
+            print(f"  {path.name:34} FAILED")
+            continue
+
+        finish_run(conn, run_id, "ok")
+        done += 1
+        print(f"  {path.name:34} {count} functions", flush=True)
+
+    print()
+    print(f"binaries done   : {done}/{len(rows)}")
+    for binary_id, reason in skipped:
+        print(f"  skipped {binary_id}: {reason}")
+    return 0
+
+
+def cmd_inspect(args):
+    """Show functions with their ground truth, instructions, and tokens.
+
+    Without arguments this is a filter over the corpus; with --sample it is
+    the hand-check the week's exit criterion asks for, drawn reproducibly so
+    the same fifty functions can be pulled up again.
+    """
+    conn = connect(args.db)
+
+    truth = None
+    if args.with_truth:
+        truth = True
+    if args.without_truth:
+        truth = False
+
+    rows = find_functions(
+        conn,
+        function_id=args.function_id,
+        package=args.package,
+        opt=args.opt,
+        name=args.name,
+        truth=truth,
+    )
+
+    if not rows:
+        print("no function matched")
+        return 1
+
+    if args.sample:
+        rows = sample_functions(rows, args.sample, args.seed)
+
+    if args.list:
+        print(f"{len(rows)} functions")
+        for row in rows:
+            print(summarise(row))
+        return 0
+
+    for index, row in enumerate(rows):
+        if index:
+            print()
+            print("=" * 72)
+            print()
+        limit = args.max_instructions or None
+        for line in render(conn, row, limit=limit):
+            print(line)
+
+    return 0
+
+
+def cmd_dataset(args):
+    """Report the trainable dataset, and assign or verify its split.
+
+    Running this without --assign is a read: it says what would be excluded
+    and what the current split looks like. With --assign it writes the
+    assignment. Either way it ends with the leakage check, because a split
+    that has never been checked is a split that cannot be trusted.
+    """
+    conn = connect(args.db)
+
+    # Normalising every function is the expensive part, so it happens once
+    # here and the candidates are handed to each step that needs them.
+    rows = candidate_rows(conn)
+    assignment = load_splits(conn)
+
+    if args.assign or not assignment:
+        sizes = package_sizes(eligible_rows(conn, rows))
+        if not sizes:
+            print("no eligible functions - run refresh-truth and extract-code first")
+            return 1
+
+        assignment = assign_splits(sizes)
+        if args.assign:
+            store_splits(conn, assignment)
+        else:
+            print("(no split recorded yet - showing what would be assigned)")
+
+    for line in report(conn, assignment, rows):
+        print(line)
+
+    print()
+    violations = leakage(conn, assignment, rows)
+    if not violations:
+        print("leakage check    : ok, no function appears in two splits")
+        return 0
+
+    print(f"leakage check    : {len(violations)} FAILED")
+    for key, where in violations[:15]:
+        print(f"    {key}  {' = '.join(where)}")
+    if len(violations) > 15:
+        print(f"    ... and {len(violations) - 15} more")
+    return 1
 
 
 def cmd_check(args):
@@ -123,6 +303,61 @@ def build_parser():
     check = sub.add_parser("check", help="run consistency checks on the database")
     check.set_defaults(func=cmd_check)
 
+    code = sub.add_parser(
+        "extract-code",
+        help="add instruction listings to binaries already in the database",
+    )
+    code.add_argument(
+        "--only-corpus",
+        action="store_true",
+        help="restrict to corpus binaries, leaving one-off scans alone",
+    )
+    code.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="skip binaries that already have listings",
+    )
+    code.set_defaults(func=cmd_extract_code)
+
+    inspect = sub.add_parser(
+        "inspect",
+        help="show a function's ground truth, instructions, and tokens",
+    )
+    inspect.add_argument(
+        "--function-id", type=int, help="inspect one function by its id"
+    )
+    inspect.add_argument("--package", help="restrict to one corpus package")
+    inspect.add_argument("--opt", help="restrict to one optimisation level, e.g. O0")
+    inspect.add_argument("--name", help="restrict to one ground-truth name")
+    inspect.add_argument(
+        "--with-truth",
+        action="store_true",
+        help="only functions the compiler named",
+    )
+    inspect.add_argument(
+        "--without-truth",
+        action="store_true",
+        help="only functions with no ground truth, i.e. runtime glue",
+    )
+    inspect.add_argument(
+        "--sample", type=int, help="draw this many at random instead of all"
+    )
+    inspect.add_argument(
+        "--seed", type=int, default=1, help="seed for --sample (default: 1)"
+    )
+    inspect.add_argument(
+        "--list",
+        action="store_true",
+        help="one line per function instead of the full listing",
+    )
+    inspect.add_argument(
+        "--max-instructions",
+        type=int,
+        default=40,
+        help="truncate long listings (default: 40, 0 for all)",
+    )
+    inspect.set_defaults(func=cmd_inspect)
+
     corpus = sub.add_parser(
         "build-corpus", help="compile, scan, and store ground truth for packages"
     )
@@ -137,6 +372,23 @@ def build_parser():
         help="where to download sources and write built binaries",
     )
     corpus.set_defaults(func=cmd_build_corpus)
+
+    refresh = sub.add_parser(
+        "refresh-truth",
+        help="re-read ground truth from the debug twins, no Ghidra needed",
+    )
+    refresh.set_defaults(func=cmd_refresh_truth)
+
+    dataset = sub.add_parser(
+        "dataset",
+        help="report the trainable dataset and check its split for leakage",
+    )
+    dataset.add_argument(
+        "--assign",
+        action="store_true",
+        help="recompute and store the package split",
+    )
+    dataset.set_defaults(func=cmd_dataset)
 
     return parser
 
