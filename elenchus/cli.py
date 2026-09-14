@@ -196,6 +196,7 @@ def cmd_inspect(args):
         opt=args.opt,
         name=args.name,
         truth=truth,
+        eligible=args.eligible,
     )
 
     if not rows:
@@ -467,6 +468,11 @@ def build_parser():
         "--without-truth",
         action="store_true",
         help="only functions with no ground truth, i.e. runtime glue",
+    )
+    inspect.add_argument(
+        "--eligible",
+        action="store_true",
+        help="only functions the dataset actually keeps",
     )
     inspect.add_argument(
         "--sample", type=int, help="draw this many at random instead of all"

@@ -50,11 +50,17 @@ LEFT JOIN ground_truth gt ON gt.function_id = f.id
 
 
 def find_functions(conn, function_id=None, package=None, opt=None,
-                   name=None, truth=None):
+                   name=None, truth=None, eligible=False):
     """Return function rows matching the filters, in corpus order.
 
     truth=True keeps only functions the compiler named, truth=False only
     those it did not, and None keeps both.
+
+    eligible=True narrows further, to what the dataset actually contains -
+    runtime excluded, duplicates dropped, stubs too short to mean anything
+    removed. The difference matters when the point of looking is to check
+    the data a model will be trained on: sampling from all ground truth
+    turns up C runtime functions that were never going to be used.
     """
     clauses = []
     params = []
@@ -82,7 +88,15 @@ def find_functions(conn, function_id=None, package=None, opt=None,
         query += " WHERE " + " AND ".join(clauses)
     query += " ORDER BY cb.package, cb.opt_level, f.address"
 
-    return conn.execute(query, params).fetchall()
+    rows = conn.execute(query, params).fetchall()
+
+    if eligible:
+        from elenchus.corpus.dataset import eligible_rows
+
+        keep = {row["function_id"] for row in eligible_rows(conn)}
+        rows = [row for row in rows if row["function_id"] in keep]
+
+    return rows
 
 
 def sample_functions(rows, count, seed):
