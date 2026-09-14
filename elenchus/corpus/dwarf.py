@@ -36,6 +36,10 @@ class GroundTruthFunction:
 
     address is the key that ties this back to the stripped binary: strip
     removes symbols, not code, so the entry point stays put.
+
+    decl_file is the source file the compiler recorded. It is what separates
+    the code we chose to compile from the runtime the toolchain linked in
+    behind us, and that separation decides what may be trained on.
     """
 
     address: int
@@ -125,12 +129,69 @@ def _dwarf_from_pe(path):
     )
 
 
+def _decode(value):
+    """Return a str for a DWARF string attribute, whatever form it took."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def _file_table(dwarf, cu):
+    """Return {index: path} for the source files this unit was built from.
+
+    DW_AT_decl_file is an index, not a name: the compiler writes the file
+    list once per unit and refers to it by number. Resolving it is what makes
+    provenance possible - telling a function we compiled from one the
+    toolchain brought along, without keeping a list of runtime function names
+    that would rot with the next MinGW release.
+
+    The indexing base moved in DWARF 5: file 0 became the unit's own primary
+    source, where DWARF 4 started counting at 1. Both are handled because the
+    corpus may be rebuilt with a different GCC.
+
+    A unit with no line program yields an empty table; the caller then leaves
+    decl_file unset rather than guessing.
+    """
+    try:
+        program = dwarf.line_program_for_CU(cu)
+    except (AssertionError, KeyError, ValueError, AttributeError):
+        return {}
+
+    if program is None:
+        return {}
+
+    header = program.header
+    version = header.get("version", 4)
+    directories = [_decode(d) for d in header.get("include_directory", [])]
+    entries = header.get("file_entry", [])
+
+    table = {}
+    for position, entry in enumerate(entries):
+        name = _decode(entry.name)
+        index = position if version >= 5 else position + 1
+
+        directory = None
+        dir_index = getattr(entry, "dir_index", None)
+        if dir_index is not None:
+            if version >= 5:
+                if 0 <= dir_index < len(directories):
+                    directory = directories[dir_index]
+            elif 1 <= dir_index <= len(directories):
+                directory = directories[dir_index - 1]
+
+        if directory and not name.startswith(("/", "\\")) and ":" not in name[:3]:
+            table[index] = f"{directory}/{name}"
+        else:
+            table[index] = name
+
+    return table
+
+
 def _die_name(die):
     attr = die.attributes.get("DW_AT_name")
     if attr is None:
         return None
-    value = attr.value
-    return value.decode("utf-8", "replace") if isinstance(value, bytes) else value
+    return _decode(attr.value)
 
 
 def _type_name(die, offsets, depth=0):
@@ -185,8 +246,6 @@ def ground_truth(path):
     if dwarf is None:
         return
 
-    file_table = None
-
     cu_iter = dwarf.iter_CUs()
     while True:
         try:
@@ -204,6 +263,7 @@ def ground_truth(path):
             continue
 
         offsets = {die.offset: die for die in dies}
+        file_table = _file_table(dwarf, cu)
 
         for die in dies:
             if die.tag != "DW_TAG_subprogram":
@@ -227,12 +287,13 @@ def ground_truth(path):
                 params.append(_type_name(p_die, offsets))
 
             line_attr = die.attributes.get("DW_AT_decl_line")
+            file_attr = die.attributes.get("DW_AT_decl_file")
 
             yield GroundTruthFunction(
                 address=low.value,
                 name=name,
                 return_type=return_type,
                 param_types=tuple(params),
-                decl_file=file_table,
+                decl_file=file_table.get(file_attr.value) if file_attr else None,
                 decl_line=line_attr.value if line_attr else None,
             )

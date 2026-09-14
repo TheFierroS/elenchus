@@ -71,8 +71,8 @@ def store_ground_truth(conn, stripped_binary_id, debug_path):
             conn.execute(
                 "INSERT OR REPLACE INTO ground_truth "
                 "(binary_id, function_id, address, name, return_type, "
-                " param_types, decl_line) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " param_types, decl_file, decl_line) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     stripped_binary_id,
                     function_id,
@@ -80,6 +80,7 @@ def store_ground_truth(conn, stripped_binary_id, debug_path):
                     gt.name,
                     gt.return_type,
                     json.dumps(list(gt.param_types)),
+                    gt.decl_file,
                     gt.decl_line,
                 ),
             )
