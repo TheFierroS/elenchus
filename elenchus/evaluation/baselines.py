@@ -154,11 +154,24 @@ class BM25Mnemonics:
     Operands are deliberately ignored. The opcode sequence alone survives
     optimisation better than anything else that can be read off the listing
     without a model.
+
+    b is 1.0, full length normalisation, rather than the usual 0.75. Measured
+    on val, where the difference is not subtle: mrr climbs from 0.037 at b=0
+    to 0.123 at b=1, monotonically. The reason is the shape of this task
+    rather than anything about BM25. Queries come from -O0 and are long and
+    repetitive; the pool comes from -O3 and is short and dense. Without the
+    penalty, long pool entries score well against every query simply by
+    containing everything.
+
+    The expectation going in was the opposite - that penalising length would
+    hurt, since a function is not a document and its own length is not
+    noise. That expectation was formed by reading a sanity check on a corpus
+    a twentieth of this size, and it was wrong.
     """
 
     name = "bm25-mnemonic"
 
-    def __init__(self, n=3, k1=1.5, b=0.75):
+    def __init__(self, n=3, k1=1.5, b=1.0):
         self.n = n
         self.k1 = k1
         self.b = b

@@ -258,3 +258,39 @@ def test_every_baseline_beats_chance_on_a_findable_task():
         if scorer.name == "random":
             continue
         assert metrics["recall@1"] > 0.5, f"{scorer.name} found nothing"
+
+
+def test_bm25_normalises_for_length_by_default():
+    """Chosen by measurement on val, not by convention.
+
+    The usual default is 0.75. On cross-optimisation retrieval, where the
+    query side is long and the pool side short, full normalisation is worth
+    a third again in mrr - and the opposite was expected before it was
+    measured, which is why the number is pinned here rather than left to a
+    library default that would drift.
+    """
+    assert BM25Mnemonics().b == 1.0
+
+
+def test_a_short_exact_match_beats_a_long_catch_all():
+    """What the penalty is for, in one case.
+
+    A long pool entry containing a bit of everything answers every query a
+    little. A short entry that is genuinely the same function answers one
+    query exactly. The first should not win, and at b=1 it does not.
+
+    A single synthetic case cannot settle the parameter - the evidence for
+    that is the sweep over val, where mrr rises monotonically from 0.037 at
+    b=0 to 0.123 at b=1. This only keeps the behaviour legible.
+    """
+    opcodes = ["xor", "shl", "rol"]
+    pool = [
+        sample("catch_all", (opcodes + ["mov", "add", "sub"]) * 30),
+        sample("target", opcodes * 3),
+    ]
+
+    scorer = BM25Mnemonics()
+    scorer.prepare(pool)
+    scores = scorer.scores(sample("q", opcodes * 3, opt="O0"))
+
+    assert scores[1] > scores[0]
