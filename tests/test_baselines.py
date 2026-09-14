@@ -17,7 +17,7 @@ from elenchus.evaluation.baselines import (
     all_baselines,
 )
 from elenchus.evaluation.metrics import evaluate, format_table, rank_of
-from elenchus.evaluation.task import Sample
+from elenchus.evaluation.task import Sample, equivalence_classes
 
 
 def sample(name, opcodes, imports=(), blocks=1, package="p", opt="O0"):
@@ -57,6 +57,26 @@ def test_ties_are_scored_by_their_average_position():
     assert rank_of([1.0, 1.0, 1.0, 1.0], 0) == 2.5
     # One candidate clearly ahead, then a three-way tie for second.
     assert rank_of([2.0, 1.0, 1.0, 1.0], 1) == 3
+
+
+def test_any_of_several_correct_answers_counts():
+    """Identical functions cannot be told apart, so either one answers."""
+    # Two acceptable answers tied at the top: picking one is certain to be
+    # right, so this is rank 1, not a coin flip scored as 1.5.
+    assert rank_of([1.0, 1.0, 0.0], {0, 1}) == 1
+
+    # Two acceptable answers inside a four-way tie: shuffling and taking the
+    # first acceptable one lands at 5/3 on average.
+    assert rank_of([1.0, 1.0, 1.0, 1.0], {0, 1}) == pytest.approx(5 / 3)
+
+    # An acceptable answer behind one clearly better wrong candidate.
+    assert rank_of([5.0, 1.0, 1.0], {1, 2}) == pytest.approx(1 + 3 / 3)
+
+
+def test_a_wrong_tie_still_costs():
+    """Equivalence must not launder a baseline that cannot discriminate."""
+    # One correct answer buried in a ten-way tie scores as badly as before.
+    assert rank_of([1.0] * 10, {0}) == 5.5
 
 
 class Fixed:
@@ -104,6 +124,26 @@ def test_table_puts_the_strongest_last():
         "strong": {"queries": 1, "pool": 1, "mrr": 0.9},
     })
     assert "strong" in lines[-1]
+
+
+def test_identical_functions_form_one_answer():
+    """The sanity check that caught this: -O0 against -O0 should be perfect.
+
+    It was not, because mpc contains dozens of functions compiling to the
+    same code, and the metric was calling every choice but one wrong. The
+    fix is to group them; without it the ceiling of every later measurement
+    sits wherever the corpus happens to have duplicates.
+    """
+    pool = [
+        sample("wrapper_a", ["push", "call", "pop", "ret"]),
+        sample("wrapper_b", ["push", "call", "pop", "ret"]),
+        sample("real_work", ["xor", "shl", "rol", "add", "mul"]),
+    ]
+
+    classes = equivalence_classes(pool)
+    assert classes[0] == {0, 1}
+    assert classes[1] == {0, 1}
+    assert classes[2] == {2}
 
 
 # -------------------------------------------------------------- baselines

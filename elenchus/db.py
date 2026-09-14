@@ -119,6 +119,21 @@ CREATE TABLE IF NOT EXISTS dataset_split (
     split   TEXT NOT NULL CHECK (split IN ('train', 'val', 'test'))
 );
 
+-- What a method scored, when, on which corpus. A projection: the numbers
+-- can be recomputed. The circumstance - which commit, which dataset - cannot.
+CREATE TABLE IF NOT EXISTS measurements (
+    id         INTEGER PRIMARY KEY,
+    run_id     INTEGER NOT NULL REFERENCES runs(id),
+    method     TEXT NOT NULL,
+    split      TEXT NOT NULL,
+    query_opt  TEXT NOT NULL,
+    pool_opt   TEXT NOT NULL,
+    n_queries  INTEGER NOT NULL,
+    n_pool     INTEGER NOT NULL,
+    metrics    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id         INTEGER PRIMARY KEY,
     binary_id  INTEGER NOT NULL REFERENCES binaries(id),

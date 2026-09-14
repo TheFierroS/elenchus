@@ -20,29 +20,49 @@ four hundred functions the same score has not found anything, and rounding
 that in its favour would let a bad baseline look like a good one - which
 would then set too high a bar for the encoder, or too low, depending on
 which way it broke.
+
+An answer can also be more than one function. Libraries contain functions
+that compile to identical code - a parser combinator library is half made of
+them - and no method can be asked to pick between things that are the same.
+So a query is scored against the whole set of functions indistinguishable
+from its answer, and any of them counts.
 """
 
 from collections import OrderedDict
 
 
-def rank_of(scores, target, tolerance=1e-12):
-    """Return the 1-based rank of target under scores, averaging ties.
+def rank_of(scores, targets, tolerance=1e-12):
+    """Return the 1-based rank of the best acceptable answer.
 
-    Higher scores rank first. When several candidates tie with the target,
-    all of them get the middle of the band they occupy, so a baseline
-    guessing between ten equals scores as tenth-ish, not first.
+    targets may be a single index or a set of them, all equally correct.
+
+    Ties are resolved as an expectation rather than a best case. Among a band
+    of n equally scored candidates of which g are acceptable, shuffling and
+    taking the first acceptable one lands at position (n + 1) / (g + 1) on
+    average - which is 1 when the band holds only correct answers, and the
+    familiar (n + 1) / 2 when it holds exactly one.
     """
-    value = scores[target]
+    if isinstance(targets, int):
+        targets = (targets,)
+    targets = set(targets)
+
+    best = max(scores[index] for index in targets)
 
     better = 0
-    tied = 0
-    for score in scores:
-        if score > value + tolerance:
-            better += 1
-        elif abs(score - value) <= tolerance:
-            tied += 1
+    tied_wrong = 0
+    tied_right = 0
+    for index, score in enumerate(scores):
+        if score > best + tolerance:
+            if index not in targets:
+                better += 1
+        elif abs(score - best) <= tolerance:
+            if index in targets:
+                tied_right += 1
+            else:
+                tied_wrong += 1
 
-    return better + (tied + 1) / 2
+    band = tied_right + tied_wrong
+    return better + (band + 1) / (tied_right + 1)
 
 
 def evaluate(scorer, queries, pool, gold, cutoffs=(1, 10)):
@@ -55,8 +75,8 @@ def evaluate(scorer, queries, pool, gold, cutoffs=(1, 10)):
     scorer.prepare(pool)
 
     ranks = [
-        rank_of(scorer.scores(query), answer)
-        for query, answer in zip(queries, gold)
+        rank_of(scorer.scores(query), answers)
+        for query, answers in zip(queries, gold)
     ]
 
     if not ranks:

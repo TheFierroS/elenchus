@@ -23,6 +23,12 @@ from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
 from elenchus.evaluation.baselines import all_baselines
 from elenchus.evaluation.metrics import evaluate, format_table
+from elenchus.evaluation.store import (
+    format_history,
+    history,
+    record,
+    task_params,
+)
 from elenchus.evaluation.task import retrieval_task
 from elenchus.extract.ghidra import (
     extract_blocks,
@@ -280,21 +286,48 @@ def cmd_baselines(args):
               f"{args.query_opt} -> {args.pool_opt}; run dataset --assign first")
         return 1
 
+    params = task_params(
+        conn, args.split, args.query_opt, args.pool_opt, args.seed
+    )
+
     print(f"task    : {args.split} split, -{args.query_opt} query "
           f"-> -{args.pool_opt} pool")
     print(f"queries : {len(queries)}   pool: {len(pool)}")
+    print(f"corpus  : {params['dataset']}")
     print()
 
-    results = {}
-    for scorer in all_baselines(args.seed):
-        started = time.time()
-        results[scorer.name] = evaluate(scorer, queries, pool, gold)
-        print(f"  {scorer.name:<24} {time.time() - started:6.1f}s", flush=True)
+    run_id = start_run(conn, "eval", tool="baselines", params=params,
+                       seed=args.seed)
+
+    try:
+        results = {}
+        for scorer in all_baselines(args.seed):
+            started = time.time()
+            results[scorer.name] = evaluate(scorer, queries, pool, gold)
+            print(f"  {scorer.name:<24} {time.time() - started:6.1f}s",
+                  flush=True)
+    except Exception:
+        finish_run(conn, run_id, "failed")
+        raise
+
+    if not args.no_record:
+        record(conn, run_id, params, results)
+    finish_run(conn, run_id, "ok")
 
     print()
     for line in format_table(results):
         print(line)
 
+    return 0
+
+
+def cmd_measurements(args):
+    """Show what has been measured before, newest first."""
+    conn = connect(args.db)
+    for line in format_history(
+        history(conn, split=args.split, method=args.method, limit=args.limit)
+    ):
+        print(line)
     return 0
 
 
@@ -445,7 +478,20 @@ def build_parser():
     bases.add_argument("--query-opt", default="O0", help="query side, e.g. O0")
     bases.add_argument("--pool-opt", default="O3", help="pool side, e.g. O3")
     bases.add_argument("--seed", type=int, default=1)
+    bases.add_argument(
+        "--no-record",
+        action="store_true",
+        help="print the numbers without storing them",
+    )
     bases.set_defaults(func=cmd_baselines)
+
+    hist = sub.add_parser(
+        "measurements", help="show past evaluation results"
+    )
+    hist.add_argument("--split", help="restrict to one split")
+    hist.add_argument("--method", help="restrict to one method")
+    hist.add_argument("--limit", type=int, default=40)
+    hist.set_defaults(func=cmd_measurements)
 
     return parser
 

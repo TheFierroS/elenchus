@@ -19,11 +19,20 @@ relies on it rather than re-establishing it.
 A source function identifies itself by (package, source file, name). Not by
 name alone: two libraries both have an init, and two files in one library
 both have a helper. Not by address, which changes with every recompilation.
+
+One query can have several correct answers. Libraries are full of functions
+that compile to exactly the same code - forwarding wrappers, one-line
+accessors, and in a parser combinator library, dozens of them. Asking any
+method to pick the intended one out of a set of identical candidates is
+asking it to guess, and scoring the guess would cap every measurement below
+what the task actually allows. So the answer is the equivalence class: every
+pool function whose normalised form matches the true one.
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
 
-from elenchus.corpus.dataset import eligible_rows, load_splits
+from elenchus.corpus.dataset import content_key, eligible_rows, load_splits
 
 
 @dataclass(frozen=True)
@@ -112,19 +121,34 @@ def load_samples(conn, split, rows=None):
     return by_level
 
 
+def equivalence_classes(pool):
+    """Return {pool index: set of indices with identical normalised code}."""
+    groups = defaultdict(set)
+    for index, sample in enumerate(pool):
+        groups[content_key(sample.listing)].add(index)
+
+    return {
+        index: groups[content_key(sample.listing)]
+        for index, sample in enumerate(pool)
+    }
+
+
 def retrieval_task(conn, split="test", query_opt="O0", pool_opt="O3", rows=None):
     """Return (queries, pool, gold) for one cross-optimisation retrieval task.
 
-    gold[i] is the index in pool of the answer to queries[i]. Queries whose
-    counterpart is missing are dropped rather than counted as failures: at
-    -O3 the compiler inlines roughly a quarter of all functions, and those
-    have no -O3 body to find. Scoring them as misses would measure inlining,
-    not retrieval.
+    gold[i] is the set of pool indices that count as answering queries[i]:
+    the true counterpart, plus anything compiled to identical code.
+
+    Queries whose counterpart is missing are dropped rather than counted as
+    failures. At -O3 the compiler inlines roughly a quarter of all functions,
+    and those have no -O3 body to find; scoring them as misses would measure
+    inlining, not retrieval.
     """
     by_level = load_samples(conn, split, rows)
 
     pool = by_level.get(pool_opt, [])
     where = {sample.key: index for index, sample in enumerate(pool)}
+    classes = equivalence_classes(pool)
 
     queries = []
     gold = []
@@ -132,6 +156,6 @@ def retrieval_task(conn, split="test", query_opt="O0", pool_opt="O3", rows=None)
         index = where.get(sample.key)
         if index is not None:
             queries.append(sample)
-            gold.append(index)
+            gold.append(classes[index])
 
     return queries, pool, gold

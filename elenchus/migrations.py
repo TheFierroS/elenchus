@@ -9,7 +9,7 @@ append-only: once released, a migration is never edited or removed, because
 someone may still hold a database that has not passed through it yet.
 """
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _migration_001_runs(conn):
@@ -181,6 +181,34 @@ def _migration_007_dataset_split(conn):
     """)
 
 
+def _migration_008_measurements(conn):
+    """Add measurements: what each method scored, against which run.
+
+    Evaluation results cannot be events - an event belongs to a binary, and a
+    measurement belongs to a dataset. They hang off runs instead, which
+    already carry the commit hash and the timestamp that make a number
+    comparable to another number.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS measurements (
+            id         INTEGER PRIMARY KEY,
+            run_id     INTEGER NOT NULL REFERENCES runs(id),
+            method     TEXT NOT NULL,
+            split      TEXT NOT NULL,
+            query_opt  TEXT NOT NULL,
+            pool_opt   TEXT NOT NULL,
+            n_queries  INTEGER NOT NULL,
+            n_pool     INTEGER NOT NULL,
+            metrics    TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_meas_split "
+        "ON measurements (split, method)"
+    )
+
+
 MIGRATIONS = [
     (1, "runs table, events.run_id", _migration_001_runs),
     (2, "functions.library for imports", _migration_002_function_library),
@@ -189,6 +217,7 @@ MIGRATIONS = [
     (5, "function_code instruction listings", _migration_005_function_code),
     (6, "ground_truth.decl_file for provenance", _migration_006_decl_file),
     (7, "dataset_split table", _migration_007_dataset_split),
+    (8, "measurements table", _migration_008_measurements),
 ]
 
 
