@@ -61,10 +61,11 @@ class Package:
     limitation was the reason three of four candidate packages failed. A glob
     list costs nothing and expresses all of them.
 
-    include_dirs and defines exist for the same reason: a library whose
-    headers sit in include/, or that expects one macro to be set, is not a
-    hard package to build, and without these fields it is simply impossible
-    to describe.
+    include_dirs, defines and libs exist for the same reason: a library whose
+    headers sit in include/, that expects one macro to be set, or that calls
+    a Windows API and must be linked against it, is not a hard package to
+    build - but without these fields it is impossible to describe. Three of
+    the first run's seven failures were a missing -l.
     """
 
     name: str
@@ -75,6 +76,7 @@ class Package:
     sources: list[str] = field(default_factory=list)
     include_dirs: list[str] = field(default_factory=list)
     defines: list[str] = field(default_factory=list)
+    libs: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
     copy: list[list[str]] = field(default_factory=list)
     create: list[list[str]] = field(default_factory=list)
@@ -170,9 +172,14 @@ def _compile_level(sources, out_debug, out_stripped, opt, package=None, root=Non
     """
     includes = []
     defines = []
+    libs = []
     if package is not None and root is not None:
         includes = [f"-I{root / d}" for d in package.include_dirs]
         defines = [f"-D{d}" for d in package.defines]
+        # Libraries go after the sources: the GNU linker resolves symbols in
+        # command-line order and will not look back at an archive it has
+        # already passed.
+        libs = [f"-l{name}" for name in package.libs]
 
     cmd = [
         _CC,
@@ -185,6 +192,7 @@ def _compile_level(sources, out_debug, out_stripped, opt, package=None, root=Non
         "-o",
         str(out_debug),
         *[str(s) for s in sources],
+        *libs,
     ]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 

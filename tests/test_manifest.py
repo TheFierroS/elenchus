@@ -93,6 +93,42 @@ def test_the_shipped_manifest_parses():
         assert entry.sources or entry.style
 
 
+def test_link_libraries_come_after_the_sources(tmp_path):
+    """The GNU linker resolves in command-line order and never looks back.
+
+    A -lws2_32 placed before the file that needs it silently resolves
+    nothing, and the error that follows names an undefined symbol rather
+    than the ordering that caused it.
+    """
+    from elenchus.corpus.build import _compile_level
+
+    (tmp_path / "a.c").write_text("int f(void) { return 0; }\n")
+    entry = package(sources=["*.c"], libs=["ws2_32"])
+
+    recorded = {}
+
+    def fake_run(cmd, **kwargs):
+        recorded.setdefault("cmd", cmd)
+        raise RuntimeError("stop before actually compiling")
+
+    import subprocess
+    original = subprocess.run
+    subprocess.run = fake_run
+    try:
+        _compile_level(
+            [tmp_path / "a.c"], tmp_path / "o.dll", tmp_path / "s.dll",
+            "O0", entry, tmp_path,
+        )
+    except RuntimeError:
+        pass
+    finally:
+        subprocess.run = original
+
+    cmd = recorded["cmd"]
+    assert cmd[-1] == "-lws2_32"
+    assert cmd.index("-lws2_32") > cmd.index(str(tmp_path / "a.c"))
+
+
 def test_the_shipped_manifest_stays_varied():
     """An encoder trained only on compressors learns compressors.
 

@@ -67,6 +67,29 @@ def _scan(conn, path, run_kind_params, with_code=True):
     return binary_id
 
 
+def _packages_in_corpus(conn):
+    """Return packages already fully recorded: both twins at every level.
+
+    A corpus run can take hours and can be interrupted by something that has
+    nothing to do with it - the first one died to a WSL crash partway
+    through scanning, with fourteen of twenty-two packages stored. Recompiling
+    those fourteen to get to the fifteenth is wasted work, so a rerun picks up
+    where the last one stopped. --rebuild forces the whole thing.
+
+    Fully recorded means the expected number of rows, not merely some: a
+    package interrupted mid-scan must be redone, not skipped.
+    """
+    expected = 2 * len(OPT_LEVELS)
+    return {
+        row["package"]
+        for row in conn.execute(
+            "SELECT package, COUNT(*) AS n FROM corpus_binaries "
+            "GROUP BY package HAVING n >= ?",
+            (expected,),
+        )
+    }
+
+
 def cmd_build_corpus(args):
     """Build, scan, and store ground truth for every package in the manifest."""
     started = time.time()
@@ -75,9 +98,16 @@ def cmd_build_corpus(args):
 
     pyghidra.start()
 
+    already = _packages_in_corpus(conn)
+
     built = []
     failed = []
+    skipped = []
     for pkg in packages:
+        if pkg.name in already and not args.rebuild:
+            skipped.append(pkg.name)
+            continue
+
         print(f"building {pkg.name} {pkg.version} ...", flush=True)
         result = build_package(pkg, args.work_dir)
         if not result.ok:
@@ -118,10 +148,16 @@ def cmd_build_corpus(args):
             total_gt += gt
             total_matched += matched
             pct = 100 * matched // gt if gt else 0
-            print(f"  {pkg.name:10} -{opt}  gt={gt:4}  matched={matched:4} ({pct}%)")
+            print(
+                f"  {pkg.name:10} -{opt}  gt={gt:4}  "
+                f"matched={matched:4} ({pct}%)",
+                flush=True,
+            )
 
     print()
-    print(f"packages built  : {len(built)}/{len(packages)}")
+    if skipped:
+        print(f"already present : {len(skipped)} ({', '.join(sorted(skipped))})")
+    print(f"packages built  : {len(built)}/{len(packages) - len(skipped)}")
     print(f"ground truth    : {total_matched}/{total_gt} matched "
           f"({100 * total_matched // total_gt if total_gt else 0}%)")
     if failed:
