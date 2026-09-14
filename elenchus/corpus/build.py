@@ -113,6 +113,19 @@ def _c_sources(root, package):
 def _compile_level(sources, out_debug, out_stripped, opt):
     """Compile sources into a debug shared lib at opt, then strip a copy.
 
+    --exclude-all-symbols is what makes the stripped twin actually stripped.
+    MinGW exports every non-static symbol from a shared library by default,
+    and an export table is not a symbol table: strip cannot remove it,
+    because the loader needs it. Without the flag roughly half the functions
+    in a "stripped" binary still carry their real names, which would hand the
+    Ghidra-alone baseline half the answer and make the ablation table lie.
+
+    Measured before adopting: zlib -O0 went from 136 named functions to 35,
+    all of them import thunks and PE header entry points that a real target
+    would have too, and Ghidra still found all 269 functions. The .pdata
+    unwind table required by the Win64 calling convention is what keeps
+    function discovery intact once the names are gone.
+
     Returns (debug_path, stripped_path). Raises on compiler failure so the
     caller can mark the whole package failed.
     """
@@ -121,6 +134,7 @@ def _compile_level(sources, out_debug, out_stripped, opt):
         f"-{opt}",
         *_COMMON_FLAGS,
         "-shared",
+        "-Wl,--exclude-all-symbols",
         "-o",
         str(out_debug),
         *[str(s) for s in sources],
