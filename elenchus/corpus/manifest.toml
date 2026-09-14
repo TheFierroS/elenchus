@@ -14,11 +14,21 @@
 #   copy         = [[from, to]]    put a prebuilt config header in place
 #   create       = [[name, text]]  write a header the build system generates
 #
-# Two things commonly make a package fail, and both are worth knowing when
-# adding one. A source file carrying its own main() is harmless in a shared
-# library but fills the ground truth with test-harness functions, so exclude
-# it. A source file that another one #includes must be excluded, or every
-# symbol in it is defined twice.
+# Three things commonly make a package fail, and all are worth knowing when
+# adding one.
+#
+#   A source file carrying its own main() is harmless in a shared library but
+#   fills the ground truth with test-harness functions, so exclude it.
+#
+#   A source file that another one #includes must not be compiled on its own.
+#   Sometimes it is a whole amalgamation and compiling it duplicates every
+#   symbol; sometimes, as in libbase64, it is a fragment of a function body
+#   that will not parse alone. When a directory mixes real sources with
+#   fragments, name the real ones rather than globbing.
+#
+#   A library that calls a Windows API needs the import library named in
+#   libs, and the linker resolves left to right, so it goes after the
+#   sources. Three of the first run's seven failures were a missing -l.
 #
 # Diversity matters more than count. An encoder trained only on compressors
 # learns compressors. The mix below is deliberate: compression, parsing,
@@ -110,10 +120,13 @@ name = "libbase64"
 version = "0.5.2"
 url = "https://github.com/aklomp/base64/archive/refs/tags/v0.5.2.tar.gz"
 license = "BSD-2-Clause"
-sources = ["lib/*.c", "lib/arch/generic/*.c", "lib/tables/*.c"]
+# Named one by one rather than globbed. Everything else under arch/generic
+# is a fragment codec.c includes into the middle of a function, and
+# table_generator.c is a build-time tool rather than part of the library.
+sources = ["lib/lib.c", "lib/codec_choose.c", "lib/arch/generic/codec.c",
+           "lib/tables/tables.c"]
 include_dirs = ["include", "lib"]
 defines = ["BASE64_STATIC_DEFINE"]   # its header declares the API dllimport
-exclude = ["lib_openmp.c"]
 # cmake normally generates this, switching SIMD codecs on per machine. All
 # off: the generic codec is the one worth learning, and per-machine SIMD
 # would make the corpus depend on which laptop built it.
