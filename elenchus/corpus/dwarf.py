@@ -21,8 +21,10 @@ which is where a future Linux corpus would begin.
 
 import io
 from dataclasses import dataclass
+from struct import error as struct_error
 
 import pefile
+from elftools.common.exceptions import ELFError
 from elftools.dwarf.dwarfinfo import (
     DebugSectionDescriptor,
     DwarfConfig,
@@ -129,6 +131,16 @@ def _dwarf_from_pe(path):
     )
 
 
+# Everything that can go wrong reading malformed debug information. ELFError
+# belongs here and was missing: pyelftools raises from its own exception tree,
+# not from Python's builtins, so a catch list of standard types looks
+# thorough and silently lets ELFParseError through. One such error, in one
+# compilation unit of one binary, ended a corpus run that had been going for
+# hours.
+DWARF_ERRORS = (ELFError, AssertionError, KeyError, ValueError, AttributeError,
+                IndexError, struct_error)
+
+
 def _decode(value):
     """Return a str for a DWARF string attribute, whatever form it took."""
     if isinstance(value, bytes):
@@ -154,7 +166,7 @@ def _file_table(dwarf, cu):
     """
     try:
         program = dwarf.line_program_for_CU(cu)
-    except (AssertionError, KeyError, ValueError, AttributeError):
+    except DWARF_ERRORS:
         return {}
 
     if program is None:
@@ -252,14 +264,14 @@ def ground_truth(path):
             cu = next(cu_iter)
         except StopIteration:
             break
-        except (AssertionError, KeyError, ValueError):
+        except DWARF_ERRORS:
             # One unit was malformed. The iterator cannot recover its
             # position, so we stop - the units we care about come first.
             break
 
         try:
             dies = list(cu.iter_DIEs())
-        except (AssertionError, KeyError, ValueError):
+        except DWARF_ERRORS:
             continue
 
         offsets = {die.offset: die for die in dies}
@@ -269,31 +281,44 @@ def ground_truth(path):
             if die.tag != "DW_TAG_subprogram":
                 continue
 
-            name = _die_name(die)
-            low = die.attributes.get("DW_AT_low_pc")
-            if name is None or low is None:
+            # pyelftools decodes attributes lazily, so a malformed form only
+            # raises here, on the one function that carries it. Losing that
+            # function is acceptable; losing the unit around it is not.
+            try:
+                function = _subprogram(die, offsets, file_table, cu.cu_offset)
+            except DWARF_ERRORS:
                 continue
 
-            ret_ref = die.attributes.get("DW_AT_type")
-            ret_die = offsets.get(ret_ref.value + cu.cu_offset) if ret_ref else None
-            return_type = _type_name(ret_die, offsets)
+            if function is not None:
+                yield function
 
-            params = []
-            for child in die.iter_children():
-                if child.tag != "DW_TAG_formal_parameter":
-                    continue
-                p_ref = child.attributes.get("DW_AT_type")
-                p_die = offsets.get(p_ref.value + cu.cu_offset) if p_ref else None
-                params.append(_type_name(p_die, offsets))
 
-            line_attr = die.attributes.get("DW_AT_decl_line")
-            file_attr = die.attributes.get("DW_AT_decl_file")
+def _subprogram(die, offsets, file_table, cu_offset):
+    """Build a GroundTruthFunction from one subprogram DIE, or None."""
+    name = _die_name(die)
+    low = die.attributes.get("DW_AT_low_pc")
+    if name is None or low is None:
+        return None
 
-            yield GroundTruthFunction(
-                address=low.value,
-                name=name,
-                return_type=return_type,
-                param_types=tuple(params),
-                decl_file=file_table.get(file_attr.value) if file_attr else None,
-                decl_line=line_attr.value if line_attr else None,
-            )
+    ret_ref = die.attributes.get("DW_AT_type")
+    ret_die = offsets.get(ret_ref.value + cu_offset) if ret_ref else None
+
+    params = []
+    for child in die.iter_children():
+        if child.tag != "DW_TAG_formal_parameter":
+            continue
+        p_ref = child.attributes.get("DW_AT_type")
+        p_die = offsets.get(p_ref.value + cu_offset) if p_ref else None
+        params.append(_type_name(p_die, offsets))
+
+    line_attr = die.attributes.get("DW_AT_decl_line")
+    file_attr = die.attributes.get("DW_AT_decl_file")
+
+    return GroundTruthFunction(
+        address=low.value,
+        name=name,
+        return_type=_type_name(ret_die, offsets),
+        param_types=tuple(params),
+        decl_file=file_table.get(file_attr.value) if file_attr else None,
+        decl_line=line_attr.value if line_attr else None,
+    )

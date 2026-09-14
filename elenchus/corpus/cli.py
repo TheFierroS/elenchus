@@ -90,6 +90,35 @@ def _packages_in_corpus(conn):
     }
 
 
+def store_level(conn, pkg, opt, debug_path, strip_path):
+    """Scan one optimisation level's twins and store their ground truth.
+
+    Kept as a function so the loop around it can survive its failure. Returns
+    (ground truth rows, rows matched to a scanned function).
+    """
+    params = {"package": pkg.name, "opt": opt}
+
+    strip_id = _scan(conn, strip_path, {**params, "stripped": True})
+    # The debug twin exists to be read for DWARF, not to be learnt from:
+    # strip removes symbols, not code, so its instructions would be the
+    # stripped twin's instructions stored a second time.
+    debug_id = _scan(
+        conn, debug_path, {**params, "stripped": False}, with_code=False
+    )
+
+    register_corpus_binary(
+        conn, strip_id, pkg.name, "gcc", opt,
+        stripped=True, version=pkg.version,
+    )
+    register_corpus_binary(
+        conn, debug_id, pkg.name, "gcc", opt,
+        stripped=False, version=pkg.version,
+    )
+    link_twins(conn, debug_id, strip_id)
+
+    return store_ground_truth(conn, strip_id, debug_path)
+
+
 def cmd_build_corpus(args):
     """Build, scan, and store ground truth for every package in the manifest."""
     started = time.time()
@@ -120,31 +149,25 @@ def cmd_build_corpus(args):
     total_matched = 0
     total_gt = 0
 
+    broken = []
+
     for pkg, result in built:
         # binaries are [debug_O0, strip_O0, debug_O1, strip_O1, ...]
         pairs = list(zip(result.binaries[0::2], result.binaries[1::2]))
         for opt, (debug_path, strip_path) in zip(OPT_LEVELS, pairs):
-            params = {"package": pkg.name, "opt": opt}
+            try:
+                gt, matched = store_level(
+                    conn, pkg, opt, debug_path, strip_path
+                )
+            except Exception as exc:
+                # One binary out of two hundred must not end a run that has
+                # been going for hours. A malformed compilation unit did
+                # exactly that once, after fourteen packages had been stored
+                # and the fifteenth was being read.
+                broken.append((pkg.name, opt, f"{type(exc).__name__}: {exc}"))
+                print(f"  {pkg.name:10} -{opt}  SCAN FAILED", flush=True)
+                continue
 
-            strip_id = _scan(conn, strip_path, {**params, "stripped": True})
-            # The debug twin exists to be read for DWARF, not to be learnt
-            # from: strip removes symbols, not code, so its instructions are
-            # the stripped twin's instructions stored a second time.
-            debug_id = _scan(
-                conn, debug_path, {**params, "stripped": False}, with_code=False
-            )
-
-            register_corpus_binary(
-                conn, strip_id, pkg.name, "gcc", opt,
-                stripped=True, version=pkg.version,
-            )
-            register_corpus_binary(
-                conn, debug_id, pkg.name, "gcc", opt,
-                stripped=False, version=pkg.version,
-            )
-            link_twins(conn, debug_id, strip_id)
-
-            gt, matched = store_ground_truth(conn, strip_id, debug_path)
             total_gt += gt
             total_matched += matched
             pct = 100 * matched // gt if gt else 0
@@ -162,5 +185,9 @@ def cmd_build_corpus(args):
           f"({100 * total_matched // total_gt if total_gt else 0}%)")
     if failed:
         print(f"failed packages : {', '.join(name for name, _ in failed)}")
+    if broken:
+        print(f"failed scans    : {len(broken)}")
+        for name, opt, error in broken:
+            print(f"  {name} -{opt}: {error[:110]}")
     print(f"elapsed         : {time.time() - started:.1f}s")
     return 0
