@@ -1,9 +1,19 @@
 __pycache__/
 *.pyc
 .venv/
+*.egg-info/
+
+# Local data: the database, Ghidra's project cache, and the corpus itself.
+# The manifest and the build recipe are committed; the gigabytes they produce
+# are not, because they can be rebuilt from them.
 data/
 ghidra_projeleri/
 *.db
 *.db-wal
-*.db-shm*.egg-info/
-data/corpus/
+*.db-shm
+
+# Model side, from week 6 on.
+models/
+*.npy
+*.parquet
+*.pt

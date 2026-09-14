@@ -9,7 +9,7 @@ append-only: once released, a migration is never edited or removed, because
 someone may still hold a database that has not passed through it yet.
 """
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 7
 
 
 def _migration_001_runs(conn):
@@ -126,11 +126,69 @@ def _migration_004_corpus(conn):
     )
 
 
+def _migration_005_function_code(conn):
+    """Add function_code, holding each function's instruction listing.
+
+    A new table, so CREATE is enough. Binaries already scanned gain their
+    listings the next time they are scanned - `elenchus extract-code` does
+    exactly that without recompiling or re-extracting anything else.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS function_code (
+            function_id    INTEGER PRIMARY KEY REFERENCES functions(id),
+            binary_id      INTEGER NOT NULL REFERENCES binaries(id),
+            n_instructions INTEGER NOT NULL,
+            code_size      INTEGER NOT NULL,
+            byte_hash      TEXT NOT NULL,
+            listing        TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_code_hash ON function_code (byte_hash)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_code_binary ON function_code (binary_id)"
+    )
+
+
+def _migration_006_decl_file(conn):
+    """Add ground_truth.decl_file: the source file a function came from.
+
+    Nullable, so a plain ALTER suffices. Existing rows stay null until
+    `elenchus refresh-truth` reads the debug twins again - the DWARF is still
+    on disk, so nothing has to be recompiled or rescanned to fill it.
+
+    This column is what separates code we compiled from runtime the toolchain
+    linked in. Without it the two are told apart by keeping a list of C
+    runtime function names, which is wrong the moment the toolchain changes.
+    """
+    conn.execute("ALTER TABLE ground_truth ADD COLUMN decl_file TEXT")
+
+
+def _migration_007_dataset_split(conn):
+    """Add dataset_split, recording which packages a model may learn from.
+
+    The assignment is deterministic, so it could be recomputed - but a
+    training run has to be able to say which packages it was shown, months
+    later, after the corpus has grown and the same function would recompute
+    differently. Writing it down is what makes that answerable.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dataset_split (
+            package TEXT PRIMARY KEY,
+            split   TEXT NOT NULL CHECK (split IN ('train', 'val', 'test'))
+        )
+    """)
+
+
 MIGRATIONS = [
     (1, "runs table, events.run_id", _migration_001_runs),
     (2, "functions.library for imports", _migration_002_function_library),
     (3, "basic_blocks table", _migration_003_basic_blocks),
     (4, "corpus_binaries and ground_truth", _migration_004_corpus),
+    (5, "function_code instruction listings", _migration_005_function_code),
+    (6, "ground_truth.decl_file for provenance", _migration_006_decl_file),
+    (7, "dataset_split table", _migration_007_dataset_split),
 ]
 
 

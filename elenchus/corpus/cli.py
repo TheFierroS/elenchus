@@ -37,15 +37,16 @@ from elenchus.extract.ghidra import (
     ghidra_version,
     register_binary,
 )
+from elenchus.extract.instructions import extract_code
 
 
-def _scan(conn, path, run_kind_params):
+def _scan(conn, path, run_kind_params, with_code=True):
     """Scan one binary into the database, returning its binary id.
 
     Only the extraction needed downstream is run here: functions (for ground
-    truth matching), plus imports, calls and blocks for the encoder. Strings
-    are skipped for corpus binaries - library strings are ASCII and not the
-    signal we train on.
+    truth matching), plus imports, calls, blocks and the instruction listing
+    the encoder trains on. Strings are skipped for corpus binaries - library
+    strings are ASCII and not the signal we train on.
     """
     run_id = start_run(conn, "extract", tool="ghidra", params=run_kind_params)
     try:
@@ -57,6 +58,8 @@ def _scan(conn, path, run_kind_params):
             extract_imports(conn, binary_id, run_id, program)
             extract_calls(conn, binary_id, run_id, program, functions)
             extract_blocks(conn, binary_id, run_id, program, functions)
+            if with_code:
+                extract_code(conn, binary_id, run_id, program, functions)
     except Exception:
         finish_run(conn, run_id, "failed")
         raise
@@ -94,7 +97,12 @@ def cmd_build_corpus(args):
             params = {"package": pkg.name, "opt": opt}
 
             strip_id = _scan(conn, strip_path, {**params, "stripped": True})
-            debug_id = _scan(conn, debug_path, {**params, "stripped": False})
+            # The debug twin exists to be read for DWARF, not to be learnt
+            # from: strip removes symbols, not code, so its instructions are
+            # the stripped twin's instructions stored a second time.
+            debug_id = _scan(
+                conn, debug_path, {**params, "stripped": False}, with_code=False
+            )
 
             register_corpus_binary(
                 conn, strip_id, pkg.name, "gcc", opt,

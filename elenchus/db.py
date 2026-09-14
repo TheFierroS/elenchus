@@ -91,8 +91,32 @@ CREATE TABLE IF NOT EXISTS ground_truth (
     name        TEXT NOT NULL,
     return_type TEXT,
     param_types TEXT,
+    decl_file   TEXT,
     decl_line   INTEGER,
     UNIQUE (binary_id, address)
+);
+
+-- The instruction stream of one function, stored raw: Ghidra's own operand
+-- text, addresses already made relative. Classification into the encoder's
+-- vocabulary happens in encoder/normalise.py, not here, so the scheme can
+-- change without paying for another Ghidra pass. One row per function,
+-- replaced by a later scan rather than appended to - the events record who
+-- saw what and when.
+CREATE TABLE IF NOT EXISTS function_code (
+    function_id    INTEGER PRIMARY KEY REFERENCES functions(id),
+    binary_id      INTEGER NOT NULL REFERENCES binaries(id),
+    n_instructions INTEGER NOT NULL,
+    code_size      INTEGER NOT NULL,
+    byte_hash      TEXT NOT NULL,
+    listing        TEXT NOT NULL
+);
+
+-- Which split each package belongs to. Recorded rather than recomputed so
+-- that a training run months later can be told exactly which packages the
+-- model was allowed to see, and so the assignment can be audited.
+CREATE TABLE IF NOT EXISTS dataset_split (
+    package TEXT PRIMARY KEY,
+    split   TEXT NOT NULL CHECK (split IN ('train', 'val', 'test'))
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -119,6 +143,8 @@ CREATE INDEX IF NOT EXISTS idx_events_run    ON events (run_id);
 CREATE INDEX IF NOT EXISTS idx_links_entity  ON event_links (entity_kind, entity_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_func   ON basic_blocks (function_id);
 CREATE INDEX IF NOT EXISTS idx_gt_function   ON ground_truth (function_id);
+CREATE INDEX IF NOT EXISTS idx_code_hash     ON function_code (byte_hash);
+CREATE INDEX IF NOT EXISTS idx_code_binary   ON function_code (binary_id);
 """
 
 
