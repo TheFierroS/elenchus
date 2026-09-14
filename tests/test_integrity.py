@@ -504,3 +504,32 @@ def test_an_unknown_entity_kind_cannot_be_written_at_all(db):
                 "(event_id, entity_kind, entity_id, role) "
                 "VALUES (1, 'claim', 1, 'subject')"
             )
+
+
+# ----------------------------------------------------- choosing a database
+
+
+def test_the_database_can_come_from_the_environment(monkeypatch):
+    """A project ends up with several databases, and --db gets forgotten.
+
+    An hour went into reading an empty database today while the real one sat
+    beside it, because every command needed --db spelled out and one did not
+    get it.
+    """
+    from elenchus.cli import DEFAULT_DB, build_parser, default_database
+
+    monkeypatch.delenv("ELENCHUS_DB", raising=False)
+    assert default_database() == DEFAULT_DB
+    assert build_parser().parse_args(["check"]).db == DEFAULT_DB
+
+    monkeypatch.setenv("ELENCHUS_DB", "/tmp/from-env.db")
+    assert default_database() == "/tmp/from-env.db"
+    assert build_parser().parse_args(["check"]).db == "/tmp/from-env.db"
+
+
+def test_an_explicit_db_beats_the_environment(monkeypatch):
+    from elenchus.cli import build_parser
+
+    monkeypatch.setenv("ELENCHUS_DB", "/tmp/from-env.db")
+    args = build_parser().parse_args(["--db", "/tmp/explicit.db", "check"])
+    assert args.db == "/tmp/explicit.db"

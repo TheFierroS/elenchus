@@ -27,3 +27,9 @@ jobs:
 
       - name: Run the tests
         run: pytest
+
+      # A fresh database must pass every invariant it ships with. This
+      # catches a schema change that quietly breaks a check - the tests use
+      # hand-built rows, this uses the schema as it actually ships.
+      - name: Check a fresh database
+        run: elenchus --db "$RUNNER_TEMP/ci.db" check

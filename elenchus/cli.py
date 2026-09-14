@@ -1,6 +1,7 @@
 """Command line interface for Elenchus."""
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -378,12 +379,27 @@ def cmd_check(args):
     return 1 if defects else 0
 
 
+DEFAULT_DB = "data/elenchus.db"
+
+
+def default_database():
+    """Where to work, unless --db says otherwise.
+
+    ELENCHUS_DB exists because a project ends up with more than one database
+    - one for a corpus, one for a scratch scan - and typing --db on every
+    command is the kind of repetition that eventually gets skipped. An hour
+    was lost to reading an empty database while the real one sat next to it.
+    """
+    return os.environ.get("ELENCHUS_DB", DEFAULT_DB)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="elenchus")
     parser.add_argument(
         "--db",
-        default="data/elenchus.db",
-        help="path to the database file (default: data/elenchus.db)",
+        default=default_database(),
+        help="path to the database file "
+             "(default: $ELENCHUS_DB, or data/elenchus.db)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -552,6 +568,12 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+
+    # Say which database is being used whenever it was not spelled out, so a
+    # surprising result is traceable to the file it came from.
+    if os.environ.get("ELENCHUS_DB") and "--db" not in (argv or sys.argv):
+        print(f"[database: {args.db}]", file=sys.stderr)
+
     return args.func(args)
 
 

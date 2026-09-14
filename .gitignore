@@ -12,6 +12,9 @@ ghidra_projeleri/
 *.db-wal
 *.db-shm
 
+# Build and evaluation logs: useful while a run is going, not worth keeping.
+*.log
+
 # Model side, from week 6 on.
 models/
 *.npy
