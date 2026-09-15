@@ -37,12 +37,14 @@ dev = [
     "ruff>=0.6",
 ]
 
-# The model side lands in later weeks (encoder training). Kept separate so a
-# user who only wants to scan binaries is not forced to install a deep-learning
-# stack. Versions are left open until week 6 pins them against Python 3.14.
+# The model side: encoder training. Kept separate so a user who only wants to
+# scan binaries is not forced to install a deep-learning stack. Floors are the
+# versions week 6 was developed on; torch 2.14 is the first with cp314 wheels
+# confirmed working here. Its default wheel targets CUDA 13, which needs an
+# NVIDIA driver new enough to report CUDA 13 in nvidia-smi.
 ml = [
-    "torch",
-    "numpy",
+    "torch>=2.14",
+    "numpy>=2.5",
 ]
 
 [project.scripts]

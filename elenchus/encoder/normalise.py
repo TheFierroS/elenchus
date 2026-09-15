@@ -10,7 +10,7 @@ the function means.
 So the text is reduced to classes:
 
     mov rax,[rbp-0x18]        ->  mov REG64 MEM_STACK
-    cmp eax,0x1000            ->  cmp REG32 IMM_LARGE
+    cmp eax,0x1000            ->  cmp REG32 IMM_MED
     jmp <forwards>            ->  jmp BB_FWD
     call <another function>   ->  call FUNC_INTERNAL
     call CreateFileW          ->  call IMPORT:CreateFileW
