@@ -13,6 +13,8 @@
 #   exclude      = ["test.c"]      .c files to skip, matched by name
 #   copy         = [[from, to]]    put a prebuilt config header in place
 #   create       = [[name, text]]  write a header the build system generates
+#   domain       = "compression"   what kind of code it is; the split is
+#                                  stratified by it (see corpus/dataset.py)
 #
 # Three things commonly make a package fail, and all are worth knowing when
 # adding one.
@@ -43,6 +45,7 @@
 
 [[package]]
 name = "zlib"
+domain = "compression"
 version = "1.3.1"
 url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz"
 license = "Zlib"
@@ -50,6 +53,7 @@ sources = ["*.c"]
 
 [[package]]
 name = "cjson"
+domain = "data-format"
 version = "1.7.18"
 url = "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.18.tar.gz"
 license = "MIT"
@@ -58,6 +62,7 @@ exclude = ["test.c"]
 
 [[package]]
 name = "miniz"
+domain = "compression"
 version = "3.0.2"
 url = "https://github.com/richgel999/miniz/archive/refs/tags/3.0.2.tar.gz"
 license = "MIT"
@@ -67,6 +72,7 @@ exclude = ["example1.c", "example2.c", "example3.c", "example4.c", "example5.c",
 
 [[package]]
 name = "lua"
+domain = "interpreter"
 version = "5.4.7"
 url = "https://github.com/lua/lua/archive/refs/tags/v5.4.7.tar.gz"
 license = "MIT"
@@ -75,6 +81,7 @@ exclude = ["lua.c", "luac.c", "onelua.c", "ltests.c"]
 
 [[package]]
 name = "mpc"
+domain = "text"
 version = "0.9.0"
 url = "https://github.com/orangeduck/mpc/archive/refs/tags/0.9.0.tar.gz"
 license = "BSD-2-Clause"
@@ -82,6 +89,7 @@ sources = ["*.c"]
 
 [[package]]
 name = "sds"
+domain = "text"
 version = "master"
 url = "https://github.com/antirez/sds/archive/refs/heads/master.tar.gz"
 license = "BSD-2-Clause"
@@ -90,6 +98,7 @@ exclude = ["sds-test.c"]
 
 [[package]]
 name = "tiny-regex-c"
+domain = "text"
 version = "master"
 url = "https://github.com/kokke/tiny-regex-c/archive/refs/heads/master.tar.gz"
 license = "Unlicense"
@@ -98,6 +107,7 @@ exclude = ["tests.c", "example.c"]
 
 [[package]]
 name = "inih"
+domain = "data-format"
 version = "58"
 url = "https://github.com/benhoyt/inih/archive/refs/tags/r58.tar.gz"
 license = "BSD-3-Clause"
@@ -110,6 +120,7 @@ sources = ["*.c"]
 
 [[package]]
 name = "lz4"
+domain = "compression"
 version = "1.10.0"
 url = "https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz"
 license = "BSD-2-Clause"
@@ -117,6 +128,7 @@ sources = ["lib/*.c"]
 
 [[package]]
 name = "libbase64"
+domain = "text"
 version = "0.5.2"
 url = "https://github.com/aklomp/base64/archive/refs/tags/v0.5.2.tar.gz"
 license = "BSD-2-Clause"
@@ -137,6 +149,7 @@ create = [["lib/config.h", "#ifndef BASE64_CONFIG_H\n#define BASE64_CONFIG_H\n#d
 
 [[package]]
 name = "heatshrink"
+domain = "compression"
 version = "0.4.1"
 url = "https://github.com/atomicobject/heatshrink/archive/refs/tags/v0.4.1.tar.gz"
 license = "ISC"
@@ -146,6 +159,7 @@ sources = ["heatshrink_*.c"]
 
 [[package]]
 name = "zstd"
+domain = "compression"
 version = "1.5.6"
 url = "https://github.com/facebook/zstd/archive/refs/tags/v1.5.6.tar.gz"
 license = "BSD-3-Clause"
@@ -155,6 +169,7 @@ defines = ["ZSTD_DISABLE_ASM=1"]
 
 [[package]]
 name = "libdeflate"
+domain = "compression"
 version = "1.20"
 url = "https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.20.tar.gz"
 license = "MIT"
@@ -163,6 +178,7 @@ include_dirs = ["."]
 
 [[package]]
 name = "xxhash"
+domain = "crypto"
 version = "0.8.2"
 url = "https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.2.tar.gz"
 license = "BSD-2-Clause"
@@ -175,6 +191,7 @@ sources = ["xxhash.c"]
 
 [[package]]
 name = "mbedtls"
+domain = "crypto"
 version = "3.6.0"
 url = "https://github.com/Mbed-TLS/mbedtls/archive/refs/tags/v3.6.0.tar.gz"
 license = "Apache-2.0"
@@ -188,6 +205,7 @@ libs = ["advapi32", "bcrypt", "ws2_32"]
 
 [[package]]
 name = "libexpat"
+domain = "data-format"
 version = "2.6.2"
 url = "https://github.com/libexpat/libexpat/archive/refs/tags/R_2_6_2.tar.gz"
 license = "MIT"
@@ -198,6 +216,7 @@ create = [["expat/lib/expat_config.h", "#define XML_CONTEXT_BYTES 1024\n#define 
 
 [[package]]
 name = "libyaml"
+domain = "data-format"
 version = "0.2.5"
 url = "https://github.com/yaml/libyaml/archive/refs/tags/0.2.5.tar.gz"
 license = "MIT"
@@ -208,6 +227,7 @@ create = [["src/config.h", "#define YAML_VERSION_MAJOR 0\n#define YAML_VERSION_M
 
 [[package]]
 name = "jansson"
+domain = "data-format"
 version = "2.14"
 url = "https://github.com/akheron/jansson/archive/refs/tags/v2.14.tar.gz"
 license = "MIT"
@@ -224,6 +244,7 @@ create = [
 
 [[package]]
 name = "yyjson"
+domain = "data-format"
 version = "0.10.0"
 url = "https://github.com/ibireme/yyjson/archive/refs/tags/0.10.0.tar.gz"
 license = "MIT"
@@ -231,6 +252,7 @@ sources = ["src/*.c"]
 
 [[package]]
 name = "tomlc99"
+domain = "data-format"
 version = "master"
 url = "https://github.com/cktan/tomlc99/archive/refs/heads/master.tar.gz"
 license = "MIT"
@@ -238,6 +260,7 @@ sources = ["toml.c"]
 
 [[package]]
 name = "parson"
+domain = "data-format"
 version = "master"
 url = "https://github.com/kgabis/parson/archive/refs/heads/master.tar.gz"
 license = "MIT"
@@ -245,6 +268,7 @@ sources = ["parson.c"]
 
 [[package]]
 name = "pdjson"
+domain = "data-format"
 version = "master"
 url = "https://github.com/skeeto/pdjson/archive/refs/heads/master.tar.gz"
 license = "Unlicense"
@@ -252,6 +276,7 @@ sources = ["pdjson.c"]
 
 [[package]]
 name = "libcsv"
+domain = "data-format"
 version = "master"
 url = "https://github.com/rgamble/libcsv/archive/refs/heads/master.tar.gz"
 license = "LGPL-2.1"
@@ -259,6 +284,7 @@ sources = ["libcsv.c"]
 
 [[package]]
 name = "utf8proc"
+domain = "text"
 version = "2.9.0"
 url = "https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v2.9.0.tar.gz"
 license = "MIT"
@@ -267,6 +293,7 @@ defines = ["UTF8PROC_STATIC"]   # otherwise its tables are declared dllimport
 
 [[package]]
 name = "tinyexpr"
+domain = "text"
 version = "master"
 url = "https://github.com/codeplea/tinyexpr/archive/refs/heads/master.tar.gz"
 license = "Zlib"
@@ -276,6 +303,7 @@ sources = ["tinyexpr.c"]
 
 [[package]]
 name = "mongoose"
+domain = "systems"
 version = "7.14"
 url = "https://github.com/cesanta/mongoose/archive/refs/tags/7.14.tar.gz"
 license = "GPL-2.0"
@@ -284,6 +312,7 @@ libs = ["ws2_32"]
 
 [[package]]
 name = "civetweb"
+domain = "systems"
 version = "1.16"
 url = "https://github.com/civetweb/civetweb/archive/refs/tags/v1.16.tar.gz"
 license = "MIT"
@@ -294,6 +323,7 @@ libs = ["ws2_32", "winmm", "winpthread"]   # clock_gettime lives in pthreads
 
 [[package]]
 name = "cwalk"
+domain = "systems"
 version = "1.2.9"
 url = "https://github.com/likle/cwalk/archive/refs/tags/v1.2.9.tar.gz"
 license = "MIT"
@@ -302,6 +332,7 @@ include_dirs = ["include"]
 
 [[package]]
 name = "logc"
+domain = "systems"
 version = "master"
 url = "https://github.com/rxi/log.c/archive/refs/heads/master.tar.gz"
 license = "MIT"
@@ -322,6 +353,7 @@ sources = ["src/*.c"]
 
 [[package]]
 name = "sqlite"
+domain = "systems"
 version = "amalgamation-master"
 # The official amalgamation ships as a zip from sqlite.org; this mirror has
 # the same single file in a tarball, which the downloader already handles.
@@ -331,6 +363,7 @@ sources = ["sqlite3.c"]            # shell.c carries main()   (~1760)
 
 [[package]]
 name = "libuv"
+domain = "systems"
 version = "1.52.1"
 url = "https://github.com/libuv/libuv/archive/refs/tags/v1.52.1.tar.gz"
 license = "MIT"
@@ -342,6 +375,7 @@ libs = ["ws2_32", "iphlpapi", "userenv", "psapi", "dbghelp", "ole32",
 
 [[package]]
 name = "flecs"
+domain = "systems"
 version = "4.1.6"
 url = "https://github.com/SanderMertens/flecs/archive/refs/tags/v4.1.6.tar.gz"
 license = "MIT"
@@ -354,6 +388,7 @@ libs = ["ws2_32", "dbghelp"]
 
 [[package]]
 name = "quickjs"
+domain = "interpreter"
 version = "0.16.2"
 url = "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.16.2.tar.gz"
 license = "MIT"
@@ -364,6 +399,7 @@ libs = ["winpthread"]
 
 [[package]]
 name = "duktape"
+domain = "interpreter"
 version = "2.7.0"
 # The release tarball, not the tag: the tag is the unbuilt tree, and making
 # the distributable needs its own tooling. tarfile reads .tar.xz as is.
@@ -374,6 +410,7 @@ include_dirs = ["src"]
 
 [[package]]
 name = "mujs"
+domain = "interpreter"
 version = "1.3.7"
 url = "https://github.com/ccxvii/mujs/archive/refs/tags/1.3.7.tar.gz"
 license = "ISC"
@@ -383,6 +420,7 @@ sources = ["one.c"]                                           # (~620)
 
 [[package]]
 name = "wren"
+domain = "interpreter"
 version = "0.4.0"
 url = "https://github.com/wren-lang/wren/archive/refs/tags/0.4.0.tar.gz"
 license = "MIT"
@@ -391,6 +429,7 @@ include_dirs = ["src/include", "src/vm", "src/optional"]
 
 [[package]]
 name = "tree-sitter"
+domain = "text"
 version = "0.26.13"
 url = "https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.26.13.tar.gz"
 license = "MIT"
@@ -400,6 +439,7 @@ defines = ["_POSIX_C_SOURCE=200112L", "_DEFAULT_SOURCE"]
 
 [[package]]
 name = "pcre2"
+domain = "text"
 version = "10.48"
 url = "https://github.com/PCRE2Project/pcre2/archive/refs/tags/pcre2-10.48.tar.gz"
 license = "BSD-3-Clause"
@@ -419,6 +459,7 @@ copy = [["src/config.h.generic", "src/config.h"],
 
 [[package]]
 name = "miniaudio"
+domain = "media"
 version = "0.11.25"
 url = "https://github.com/mackron/miniaudio/archive/refs/tags/0.11.25.tar.gz"
 license = "MIT-0"
@@ -427,6 +468,7 @@ libs = ["ole32", "winmm", "avrt"]
 
 [[package]]
 name = "stb"
+domain = "media"
 version = "master"
 url = "https://github.com/nothings/stb/archive/refs/heads/master.tar.gz"
 license = "MIT"
@@ -437,6 +479,7 @@ create = [["elenchus_stb.c", "#define STB_IMAGE_IMPLEMENTATION\n#include \"stb_i
 
 [[package]]
 name = "lodepng"
+domain = "media"
 version = "master"
 url = "https://github.com/lvandeve/lodepng/archive/refs/heads/master.tar.gz"
 license = "Zlib"
@@ -446,6 +489,7 @@ copy = [["lodepng.cpp", "lodepng_c.c"]]
 
 [[package]]
 name = "brotli"
+domain = "compression"
 version = "1.2.0"
 url = "https://github.com/google/brotli/archive/refs/tags/v1.2.0.tar.gz"
 license = "MIT"
@@ -454,6 +498,7 @@ include_dirs = ["c/include"]
 
 [[package]]
 name = "bzip2"
+domain = "compression"
 version = "1.0.8"
 url = "https://github.com/libarchive/bzip2/archive/refs/tags/bzip2-1.0.8.tar.gz"
 license = "bzip2-1.0.6"
@@ -465,6 +510,7 @@ exclude = ["bzip2.c", "bzip2recover.c", "dlltest.c", "spewG.c", "unzcrash.c",
 
 [[package]]
 name = "cmark"
+domain = "text"
 version = "0.31.2"
 url = "https://github.com/commonmark/cmark/archive/refs/tags/0.31.2.tar.gz"
 license = "BSD-2-Clause"
@@ -479,6 +525,7 @@ create = [["src/cmark_export.h", "#define CMARK_EXPORT\n"],
 
 [[package]]
 name = "md4c"
+domain = "text"
 version = "0.5.3"
 url = "https://github.com/mity/md4c/archive/refs/tags/release-0.5.3.tar.gz"
 license = "MIT"
@@ -495,6 +542,7 @@ include_dirs = ["src"]
 
 [[package]]
 name = "libsodium"
+domain = "crypto"
 version = "1.0.22"
 url = "https://github.com/jedisct1/libsodium/archive/refs/tags/1.0.22-RELEASE.tar.gz"
 license = "ISC"
@@ -507,6 +555,7 @@ libs = ["advapi32"]                                          # RtlGenRandom
 
 [[package]]
 name = "libtomcrypt"
+domain = "crypto"
 version = "1.18.2"
 url = "https://github.com/libtom/libtomcrypt/archive/refs/tags/v1.18.2.tar.gz"
 license = "Unlicense"
@@ -521,6 +570,7 @@ defines = ["LTC_NO_TEST"]
 
 [[package]]
 name = "monocypher"
+domain = "crypto"
 version = "4.0.2"
 url = "https://github.com/LoupVaillant/Monocypher/archive/refs/tags/4.0.2.tar.gz"
 license = "BSD-2-Clause"

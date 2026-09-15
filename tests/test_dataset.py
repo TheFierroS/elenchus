@@ -203,3 +203,58 @@ def test_content_key_ignores_what_normalisation_drops():
 
 def test_package_sizes_counts_rows(corpus):
     assert package_sizes(eligible_rows(corpus)) == {"zlib": 2, "lua": 2}
+
+
+# ---------------------------------------------------------------- stratified split
+
+
+def test_every_domain_of_three_or_more_reaches_every_split():
+    """The crypto case: four packages, one of them must be in test."""
+    sizes = {"mbedtls": 5500, "libsodium": 1810, "libtomcrypt": 1658, "monocypher": 377,
+             "flecs": 6952, "sqlite": 5408, "libuv": 2019, "logc": 20}
+    domains = {"mbedtls": "crypto", "libsodium": "crypto", "libtomcrypt": "crypto",
+               "monocypher": "crypto", "flecs": "systems", "sqlite": "systems",
+               "libuv": "systems", "logc": "systems"}
+    assignment = assign_splits(sizes, domains=domains)
+
+    for domain in ("crypto", "systems"):
+        splits = {assignment[p] for p in sizes if domains[p] == domain}
+        assert splits == {"train", "val", "test"}, domain
+
+
+def test_without_domains_the_split_is_the_old_one():
+    sizes = {f"p{i}": 100 * (i + 1) for i in range(12)}
+    assert assign_splits(sizes, domains=None) == assign_splits(sizes)
+
+
+def test_a_package_with_no_domain_is_not_mixed_into_another():
+    sizes = {"a": 50, "b": 40, "c": 30, "stray": 1000}
+    domains = {"a": "text", "b": "text", "c": "text"}
+    assignment = assign_splits(sizes, domains=domains)
+
+    # Alone in its group, the stray goes where a lone package goes: train.
+    assert assignment["stray"] == "train"
+    assert {assignment[p] for p in "abc"} == {"train", "val", "test"}
+
+
+def test_the_smallest_package_of_every_domain_does_not_always_land_in_test():
+    """Filling val before test in every small domain left test at 12% of rows;
+    the global shortfall decides instead."""
+    sizes, domains = {}, {}
+    for d in range(6):
+        for name, size in (("big", 1000), ("mid", 300), ("small", 10)):
+            sizes[f"{name}{d}"] = size
+            domains[f"{name}{d}"] = f"d{d}"
+    assignment = assign_splits(sizes, domains=domains)
+
+    total = sum(sizes.values())
+    for split in ("val", "test"):
+        rows = sum(size for p, size in sizes.items() if assignment[p] == split)
+        assert rows >= 0.10 * total, f"{split} starved: {rows} of {total}"
+
+
+def test_a_stratified_split_is_deterministic():
+    sizes = {f"p{i}": 37 * i + 11 for i in range(20)}
+    domains = {f"p{i}": f"d{i % 4}" for i in range(20)}
+    assert assign_splits(sizes, domains=domains) == assign_splits(dict(
+        reversed(list(sizes.items()))), domains=domains)

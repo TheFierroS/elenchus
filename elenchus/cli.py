@@ -9,6 +9,7 @@ from pathlib import Path
 import pyghidra
 
 from elenchus.check import CHECKS, WARNINGS, close_stale_runs
+from elenchus.corpus.build import load_manifest
 from elenchus.corpus.cli import cmd_build_corpus
 from elenchus.corpus.dataset import (
     assign_splits,
@@ -252,7 +253,12 @@ def cmd_dataset(args):
             print("no eligible functions - run refresh-truth and extract-code first")
             return 1
 
-        proposed = assign_splits(sizes)
+        domains = {pkg.name: pkg.domain for pkg in load_manifest(args.manifest)}
+        unlabelled = sorted(p for p in sizes if not domains.get(p))
+        if unlabelled:
+            print(f"warning: no domain in the manifest for {', '.join(unlabelled)}; "
+                  "they are split as their own group")
+        proposed = assign_splits(sizes, domains=domains)
         if args.assign and proposed != assignment and assignment:
             trained = training_runs(conn)
             if trained and not getattr(args, "force", False):
@@ -275,6 +281,16 @@ def cmd_dataset(args):
 
     for line in report(conn, assignment, rows):
         print(line)
+
+    domains = {pkg.name: pkg.domain for pkg in load_manifest(args.manifest)}
+    coverage = {}
+    for package, split in assignment.items():
+        coverage.setdefault(domains.get(package) or "unlabelled", set()).add(split)
+    thin = sorted(d for d, splits in coverage.items() if len(splits) < 3)
+    print()
+    print(f"domains          : {len(coverage)}, "
+          + ("every one in train, val and test" if not thin
+             else f"missing a split: {', '.join(thin)}"))
 
     print()
     violations = leakage(conn, assignment, rows)
@@ -602,6 +618,11 @@ def build_parser():
         "--assign",
         action="store_true",
         help="recompute and store the package split",
+    )
+    dataset.add_argument(
+        "--manifest",
+        default="elenchus/corpus/manifest.toml",
+        help="where package domains are read from",
     )
     dataset.add_argument(
         "--force",

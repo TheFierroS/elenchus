@@ -169,7 +169,55 @@ def package_sizes(rows):
     return dict(sizes)
 
 
-def assign_splits(sizes, shares=DEFAULT_SHARES):
+DOMAINS = ("compression", "crypto", "data-format", "text", "interpreter",
+           "systems", "media")
+
+
+def assign_splits(sizes, shares=DEFAULT_SHARES, domains=None):
+    """Assign whole packages to train/val/test.
+
+    With domains ({package: domain}), each domain is split on its own, so
+    every kind of code is represented in every split, and the split is
+    stable: a change in one package's size can only move packages of its own
+    domain.
+
+    Both properties were missing without it. Splitting all packages in one
+    pass by size, a 1.4% change in row counts after a rescan moved 32 of 48
+    packages, and took the only crypto package left in test back into train
+    - so what the exam covered was decided by coincidence.
+
+    Without domains the whole corpus is one group, which is the old
+    behaviour. A package with no domain goes into its own "unlabelled" group
+    rather than being silently mixed into another.
+
+    Measured on the 48-package corpus: 70.5 / 16.2 / 13.3% of rows, every
+    domain in every split. Under +-3% noise on every package's row count, at
+    most 12 packages moved, against 29 when splitting the corpus in one pass.
+    """
+    if domains is None:
+        return _assign_by_size(sizes, shares)
+
+    groups = defaultdict(dict)
+    for package, size in sizes.items():
+        groups[domains.get(package) or "unlabelled"][package] = size
+
+    # Shared across domains: which split is furthest behind overall. Inside a
+    # small domain the last packages are placed only to make sure every split
+    # gets one, and without this the same split would take the smallest
+    # package every time - test ended at 12% of rows instead of 15%.
+    total = sum(sizes.values())
+    ledger = {
+        "targets": {name: total * share for name, share in zip(SPLITS, shares)},
+        "assigned": {name: 0 for name in SPLITS},
+    }
+
+    result = {}
+    for domain in sorted(groups):
+        result.update(_assign_by_size(groups[domain], shares, ledger))
+    return result
+
+
+def _assign_by_size(sizes, shares=DEFAULT_SHARES, ledger=None):
     """Assign whole packages to train/val/test, balancing by row count.
 
     Packages differ in size by more than an order of magnitude here, so a
@@ -197,12 +245,18 @@ def assign_splits(sizes, shares=DEFAULT_SHARES):
         # Once only as many packages remain as there are empty splits, the
         # rest are spoken for: fill the empty ones rather than keep balancing.
         if empty and remaining <= len(empty):
-            choice = empty[0]
+            if ledger is None:
+                choice = empty[0]
+            else:
+                choice = max(empty, key=lambda name: (
+                    ledger["targets"][name] - ledger["assigned"][name]))
         else:
             choice = max(SPLITS, key=lambda name: targets[name] - assigned[name])
 
         result[package] = choice
         assigned[choice] += size
+        if ledger is not None:
+            ledger["assigned"][choice] += size
 
     return result
 

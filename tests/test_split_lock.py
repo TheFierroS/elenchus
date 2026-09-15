@@ -47,12 +47,13 @@ def corpus(db, monkeypatch):
         for i in range(n):
             add_function(db, package, f"{package}{i}", op)
     monkeypatch.setattr(cli, "connect", lambda _p: db)
+    monkeypatch.setattr(cli, "load_manifest", lambda _p: [])
     return db
 
 
 def run(assign=True, force=False):
     return cli.cmd_dataset(types.SimpleNamespace(db=":memory:", assign=assign,
-                                                 force=force))
+                                                 force=force, manifest=None))
 
 
 def test_assigning_before_any_training_is_allowed(corpus):
@@ -95,3 +96,27 @@ def test_other_runs_do_not_lock_the_split(corpus):
     store_splits(corpus, {"big": "test", "mid": "train", "small": "val"})
     finish_run(corpus, start_run(corpus, "evaluate", params={}), "ok")
     assert run() == 0
+
+
+def test_the_command_splits_by_the_domains_in_the_manifest(corpus, monkeypatch, capsys):
+    manifest = [types.SimpleNamespace(name=n, domain=d)
+                for n, d in (("big", "a"), ("mid", "b"), ("small", "c"))]
+    monkeypatch.setattr(cli, "load_manifest", lambda _p: manifest)
+    seen = {}
+    real = cli.assign_splits
+
+    def spy(sizes, shares=None, domains=None):
+        seen["domains"] = domains
+        return real(sizes, domains=domains)
+
+    monkeypatch.setattr(cli, "assign_splits", spy)
+
+    assert run() == 0
+    assert seen["domains"] == {"big": "a", "mid": "b", "small": "c"}
+    # One package per domain cannot cover three splits, and the report says so.
+    assert "missing a split: a, b, c" in capsys.readouterr().out
+
+
+def test_a_package_missing_from_the_manifest_is_named(corpus, capsys):
+    run()
+    assert "no domain in the manifest for big, mid, small" in capsys.readouterr().out

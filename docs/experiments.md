@@ -140,7 +140,11 @@ changed the listing of 0 of the 436 functions found before. Adds 5 seconds.
 Now `seed_functions_from_pdata` in extraction.
 
 **Consequence for the corpus.** Because existing listings do not change,
-only packages with unmatched ground truth need rescanning.
+only packages with unmatched ground truth need rescanning. Rescanned 11
+packages (`build-corpus --rescan`, 394 s): 37,295 of 37,341 ground-truth
+functions matched (99.88%); libtomcrypt -O2/-O3 67% → 100%, mujs -O3 72% →
+99.7%, duktape -O1 95% → 100%. The 46 left are mostly true merges at nop
+padding (flecs).
 
 **Why it matters beyond the corpus.** Virtual methods, window procedures,
 callbacks and crackme validation routines are all reached through pointers.

@@ -141,3 +141,17 @@ def test_the_shipped_manifest_stays_varied():
     for expected in ("mbedtls", "libexpat", "lua", "zstd",
                      "sqlite", "libuv", "miniaudio", "stb"):
         assert expected in names_, f"{expected} keeps the corpus varied"
+
+
+def test_every_package_has_a_known_domain_and_every_domain_can_fill_three_splits():
+    """The stratified split only guarantees coverage for domains of three or more."""
+    from collections import Counter
+
+    from elenchus.corpus.dataset import DOMAINS
+
+    packages = load_manifest(MANIFEST)
+    unknown = [p.name for p in packages if p.domain not in DOMAINS]
+    assert not unknown, f"missing or unknown domain: {unknown}"
+
+    counts = Counter(p.domain for p in packages)
+    assert all(counts[d] >= 3 for d in DOMAINS), counts

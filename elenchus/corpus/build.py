@@ -72,6 +72,7 @@ class Package:
     version: str
     url: str
     license: str
+    domain: str = ""
     style: str = "c_glob"
     sources: list[str] = field(default_factory=list)
     include_dirs: list[str] = field(default_factory=list)
