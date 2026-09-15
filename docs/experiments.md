@@ -160,7 +160,7 @@ allocator configuration, tree-sitter's `ts_current_malloc`. No import name
 was lost. Ghidra reported them as internal because it read the pointer's
 initial value; the normaliser now names them `FUNC_INDIRECT`.
 
-### Q2 — Ghidra heap exhaustion on quickjs -O1
+### Q2 — Ghidra heap exhaustion on quickjs -O1 — CLOSED, permanent gap
 
 quickjs `-O1` stripped fails to scan with `OutOfMemoryError: Java heap space`.
 `-O0`, `-O2` and `-O3` of the same package scan normally under the same limit.
@@ -193,20 +193,33 @@ the largest functions, from the debug twins:
 
 -O1's largest function is the smallest of the four.
 
-**Still open.** The stack trace points at `StackVariableAnalyzer`, running in
-Ghidra's concurrent analysis queue. Something about the shape of some -O1
-function - not its size - sends that analysis into runaway allocation.
+**Stack analyser off: listings unchanged, failure not fixed.** On quickjs -O2
+(which scans normally), re-extracting with `Stack` disabled gave 1,684
+functions whose listings were identical to the stored ones - 0 differences.
+But -O1 with `Stack` disabled still ran out of heap, now in a second
+analyzer: `X86Analyzer.flowConstants` → `SymbolicPropogator.pushMemState`,
+the x86 Constant Reference Analyzer saving one memory state per branch of
+`JS_CallInternal`, an interpreter loop with thousands of branches.
+Analysis then "finished", with that analyzer's work abandoned part way.
 
-**Decision for now:** quickjs is kept at three levels. -O1 is one training
-view; the evaluation task (-O0 → -O3) is unaffected.
+**Constant analyser off as well: listings change.** On -O2 with both
+disabled, 188 of 1,684 listings differed, and the differences are import
+names: `call R12` stored as `IMPORT:KERNEL32.DLL!Sleep` became
+`CALL:indirect`; `call [IAT slot]` stored as `IMPORT:MSVCRT.DLL!_assert`
+became `CALL:indirect`. Constant propagation is part of how Ghidra resolves
+imports reached through a register or an import-table slot. The analyzer
+has no size limit to skip a single function (its options: threads,
+speculative reference bounds, pointer analysis switches).
 
-**Not done, and why:** turning the stack analyser off for this one binary.
-Ghidra's stack analysis can change how operands are written, and the
-normaliser reads operand text. One binary extracted differently from the
-other 359 would give its functions different tokens, which the encoder would
-learn as a compiler difference - a silent inconsistency. Only acceptable if
-a small binary extracted with and without the analyser is shown to produce
-identical listings.
+**Decision: permanent gap.** Scanning -O1 with both analyzers off would make
+one binary's import calls look indirect where the other 383 name them, and
+the encoder would learn that as something -O1 does. Import names are the
+strongest signal measured (import-bearing test queries: import Jaccard MRR
+0.249; the rest 0.002). The 550 training identities -O1 would add are not
+worth teaching that. Recorded as a corpus gap.
+
+**Side finding.** The two import-table calls left unresolved in tree-sitter
+(Q1b) are probably places this analyzer did not reach.
 
 **Why it matters later.** The agent will meet binaries like this. A scan that
 dies on one pathological function must cost that function, not the binary -
