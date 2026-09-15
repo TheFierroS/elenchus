@@ -313,3 +313,38 @@ def test_build_package_writes_where_binary_paths_says(monkeypatch, tmp_path):
 
     assert result.ok
     assert written == binary_paths(pkg, tmp_path)
+
+
+# ---------------------------------------------------------------- known gaps
+
+
+def test_a_recorded_gap_is_not_retried(harness, capsys):
+    """quickjs -O1 fails however much heap it gets; a build must not keep trying."""
+    from elenchus.corpus.gaps import record_gap
+
+    pkg = package("quickjs")
+    harness.packages = [pkg]
+    compile_to_disk(pkg, harness.work_dir)
+    store(harness.db, pkg, harness.work_dir, {"O0", "O2", "O3"})
+    record_gap(harness.db, "quickjs", "O1", "Ghidra heap exhausted")
+
+    assert harness.run() == 0
+    assert harness.compiled == []
+    assert harness.scanned == []
+    out = capsys.readouterr().out
+    assert "already present : 1 (quickjs)" in out
+    assert "quickjs -O1 (not retried)" in out
+
+
+def test_rebuild_ignores_recorded_gaps(harness):
+    from elenchus.corpus.gaps import record_gap
+
+    pkg = package("quickjs")
+    harness.packages = [pkg]
+    compile_to_disk(pkg, harness.work_dir)
+    store(harness.db, pkg, harness.work_dir, {"O0", "O2", "O3"})
+    record_gap(harness.db, "quickjs", "O1", "Ghidra heap exhausted")
+
+    harness.run(rebuild=True)
+
+    assert harness.scanned_levels("quickjs") == list(OPT_LEVELS)

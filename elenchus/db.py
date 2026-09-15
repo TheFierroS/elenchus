@@ -119,6 +119,17 @@ CREATE TABLE IF NOT EXISTS dataset_split (
     split   TEXT NOT NULL CHECK (split IN ('train', 'val', 'test'))
 );
 
+-- Levels of a corpus package known to be missing, and why. A decision, not a
+-- defect: a scan that cannot succeed is recorded so checks stop warning about
+-- it and builds stop retrying it, while the gap stays visible in every report.
+CREATE TABLE IF NOT EXISTS corpus_gaps (
+    package     TEXT NOT NULL,
+    opt_level   TEXT NOT NULL CHECK (opt_level IN ('O0', 'O1', 'O2', 'O3')),
+    reason      TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (package, opt_level)
+);
+
 -- What a method scored, when, on which corpus. A projection: the numbers
 -- can be recomputed. The circumstance - which commit, which dataset - cannot.
 CREATE TABLE IF NOT EXISTS measurements (

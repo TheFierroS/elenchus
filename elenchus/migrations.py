@@ -9,7 +9,7 @@ append-only: once released, a migration is never edited or removed, because
 someone may still hold a database that has not passed through it yet.
 """
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def has_column(conn, table, column):
@@ -246,6 +246,27 @@ def _migration_008_measurements(conn):
     )
 
 
+def _migration_009_corpus_gaps(conn):
+    """Add corpus_gaps: levels known to be missing, with the reason.
+
+    A level that cannot be scanned - quickjs -O1 exhausts Ghidra's heap however
+    much it is given - otherwise leaves a permanent warning in every check. A
+    warning that is always there teaches everyone to stop reading warnings, so
+    the next real one goes unseen. Recording the gap turns it from a warning
+    into a stated, dated decision, and lets builds stop retrying it.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS corpus_gaps (
+            package     TEXT NOT NULL,
+            opt_level   TEXT NOT NULL
+                        CHECK (opt_level IN ('O0', 'O1', 'O2', 'O3')),
+            reason      TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            PRIMARY KEY (package, opt_level)
+        )
+    """)
+
+
 MIGRATIONS = [
     (1, "runs table, events.run_id", _migration_001_runs),
     (2, "functions.library for imports", _migration_002_function_library),
@@ -255,6 +276,7 @@ MIGRATIONS = [
     (6, "ground_truth.decl_file for provenance", _migration_006_decl_file),
     (7, "dataset_split table", _migration_007_dataset_split),
     (8, "measurements table", _migration_008_measurements),
+    (9, "corpus_gaps table", _migration_009_corpus_gaps),
 ]
 
 

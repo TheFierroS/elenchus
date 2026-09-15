@@ -267,7 +267,7 @@ def test_the_shipped_schema_creates_every_table_the_code_uses(tmp_path):
     for table in (
         "binaries", "functions", "basic_blocks", "strings", "events",
         "event_links", "runs", "corpus_binaries", "ground_truth",
-        "function_code", "dataset_split", "measurements",
+        "function_code", "dataset_split", "measurements", "corpus_gaps",
     ):
         assert table in present, table
 

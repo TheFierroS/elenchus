@@ -321,7 +321,7 @@ def test_a_half_stored_package_is_reported_as_incomplete(db):
     partial = new_binary(db, "/tmp/partial.dll", "p")
     corpus_row(db, partial, "cut-short", "O0", stripped=True)
 
-    assert check_corpus_completeness(db) == [("cut-short", 1)]
+    assert check_corpus_completeness(db) == [("cut-short", ("O0", "O1", "O2", "O3"))]
 
 
 def test_pruning_keeps_the_newest_and_leaves_the_data_alone(db):

@@ -20,6 +20,7 @@ from elenchus.corpus.dataset import (
     report,
     store_splits,
 )
+from elenchus.corpus.gaps import cmd_corpus_gap, known_gaps
 from elenchus.corpus.prune import cmd_prune_corpus
 from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
@@ -373,6 +374,14 @@ def cmd_check(args):
         if count > 10:
             print(f"    ... and {count - 10} more")
 
+    gaps = known_gaps(conn)
+    if gaps:
+        print()
+        print("known gaps (recorded, not warned about):")
+        for package, levels in gaps.items():
+            for level, reason in levels.items():
+                print(f"    {package} -{level}: {reason}")
+
     if warnings and not defects:
         print()
         print("warnings only: nothing is corrupt, but some run was cut short")
@@ -504,7 +513,7 @@ def build_parser():
     corpus.add_argument(
         "--rebuild",
         action="store_true",
-        help="compile and scan every level again, even ones already stored",
+        help="compile and scan every level again, even stored ones and known gaps",
     )
     corpus.add_argument(
         "--only",
@@ -540,6 +549,23 @@ def build_parser():
         help="actually unregister them (otherwise only report)",
     )
     prune.set_defaults(func=cmd_prune_corpus)
+
+    gap = sub.add_parser(
+        "corpus-gap",
+        help="record, remove or list corpus levels missing on purpose",
+    )
+    gap_actions = gap.add_subparsers(dest="action", required=True)
+    gap_add = gap_actions.add_parser("add", help="record a level as a known gap")
+    gap_add.add_argument("package")
+    gap_add.add_argument("level", choices=["O0", "O1", "O2", "O3"])
+    gap_add.add_argument("--reason", required=True,
+                         help="why the level is missing; kept with the record")
+    gap_remove = gap_actions.add_parser(
+        "remove", help="delete a gap record, so the level is retried and warned about")
+    gap_remove.add_argument("package")
+    gap_remove.add_argument("level", choices=["O0", "O1", "O2", "O3"])
+    gap_actions.add_parser("list", help="show every recorded gap")
+    gap.set_defaults(func=cmd_corpus_gap)
 
     dataset = sub.add_parser(
         "dataset",

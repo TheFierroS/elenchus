@@ -24,6 +24,7 @@ from elenchus.corpus.build import (
     build_package,
     load_manifest,
 )
+from elenchus.corpus.gaps import known_gaps
 from elenchus.corpus.store import (
     link_twins,
     register_corpus_binary,
@@ -238,12 +239,18 @@ def cmd_build_corpus(args):
     pyghidra.start()
 
     stored = _levels_in_corpus(conn)
+    # A recorded gap is a decision not to retry: treated as done, unless the
+    # whole package is being rebuilt. Remove the record to retry one level.
+    gaps = known_gaps(conn)
 
     built = []
     failed = []
     skipped = []
     for pkg in packages:
-        done = set() if args.rebuild else stored.get(pkg.name, set())
+        if args.rebuild:
+            done = set()
+        else:
+            done = stored.get(pkg.name, set()) | set(gaps.get(pkg.name, {}))
 
         if done >= set(OPT_LEVELS):
             skipped.append(pkg.name)
@@ -308,6 +315,14 @@ def cmd_build_corpus(args):
     print()
     if skipped:
         print(f"already present : {len(skipped)} ({', '.join(sorted(skipped))})")
+    skipped_gaps = [
+        f"{name} -{level}"
+        for name, levels in sorted(gaps.items())
+        for level in levels
+        if not args.rebuild and name in {pkg.name for pkg in packages}
+    ]
+    if skipped_gaps:
+        print(f"known gaps      : {', '.join(skipped_gaps)} (not retried)")
     print(f"packages built  : {len(built)}/{len(packages) - len(skipped)}")
     print(f"ground truth    : {total_matched}/{total_gt} matched "
           f"({100 * total_matched // total_gt if total_gt else 0}%)")

@@ -155,9 +155,55 @@ unmatched are mostly (no, no, yes) and the matched are not, the hypothesis
 stands, and the fix belongs in extraction (seeding functions from address
 tables), not in the dataset.
 
-### Q2 — Ghidra heap exhaustion
+### Q2 — Ghidra heap exhaustion on quickjs -O1
 
-quickjs `-O1` failed to scan with `OutOfMemoryError: Java heap space` under
-`-Xmx4G`; `-O0`, `-O2` and `-O3` of the same package did not. Whether the
-cause is heap size alone or parallel analysis across 20 threads holding many
-functions at once is not known.
+quickjs `-O1` stripped fails to scan with `OutOfMemoryError: Java heap space`.
+`-O0`, `-O2` and `-O3` of the same package scan normally under the same limit.
+
+**Measured.**
+
+| heap | outcome | time to failure |
+|---|---|---|
+| `-Xmx4G` | out of memory | about 2 minutes |
+| `-Xmx6G` | out of memory | 45 seconds |
+
+Under 6G, process memory sampled every 5 seconds went 0.3 GB → 1.0 → 4.2 →
+6.8 GB within 15 seconds, then stayed flat at the ceiling for 25 seconds until
+the error. Memory does not creep up across a large binary; it explodes at
+once and holds.
+
+**Ruled out: "the heap is a bit small."** More heap failed sooner, not later.
+(The second attempt may have skipped import - Ghidra had kept a project from
+the first - which would explain the shorter time but not the failure.)
+
+**Ruled out: "-O1 has an unusually large function."** Instruction counts of
+the largest functions, from the debug twins:
+
+| level | largest | second |
+|---|---|---|
+| -O0 | JS_CallInternal 16,307 | resolve_labels 2,980 |
+| -O1 | JS_CallInternal 9,030 | resolve_labels 3,472 |
+| -O2 | JS_CallInternal 10,116 | resolve_labels 3,611 |
+| -O3 | JS_CallInternal 11,844 | js_create_function 3,925 |
+
+-O1's largest function is the smallest of the four.
+
+**Still open.** The stack trace points at `StackVariableAnalyzer`, running in
+Ghidra's concurrent analysis queue. Something about the shape of some -O1
+function - not its size - sends that analysis into runaway allocation.
+
+**Decision for now:** quickjs is kept at three levels. -O1 is one training
+view; the evaluation task (-O0 → -O3) is unaffected.
+
+**Not done, and why:** turning the stack analyser off for this one binary.
+Ghidra's stack analysis can change how operands are written, and the
+normaliser reads operand text. One binary extracted differently from the
+other 359 would give its functions different tokens, which the encoder would
+learn as a compiler difference - a silent inconsistency. Only acceptable if
+a small binary extracted with and without the analyser is shown to produce
+identical listings.
+
+**Why it matters later.** The agent will meet binaries like this. A scan that
+dies on one pathological function must cost that function, not the binary -
+a requirement for graceful degradation (week 11), not something to fix in
+the corpus.

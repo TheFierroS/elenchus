@@ -16,6 +16,8 @@ Every one of them below was added because it could have caught something
 that actually happened.
 """
 
+from elenchus.corpus.build import OPT_LEVELS
+from elenchus.corpus.gaps import known_gaps
 from elenchus.entities import ENTITY_TABLES
 
 
@@ -262,23 +264,60 @@ def check_corpus_duplicates(conn):
     ]
 
 
-def check_corpus_completeness(conn, levels=4):
-    """Return packages missing some of their twins.
+def _stored_levels_by_package(conn):
+    levels = {}
+    for row in conn.execute(
+        "SELECT package, opt_level, COUNT(DISTINCT stripped) AS sides "
+        "FROM corpus_binaries GROUP BY package, opt_level"
+    ):
+        levels.setdefault(row["package"], set())
+        if row["sides"] == 2:
+            levels[row["package"]].add(row["opt_level"])
+    return levels
+
+
+def check_corpus_completeness(conn):
+    """Return (package, missing levels) for packages missing a level.
 
     A package should hold one stripped and one debug binary at every
-    optimisation level. Fewer means a run stopped part way through it, and
-    the package will contribute lopsided data: present at -O0, absent at -O3,
-    so its functions can never form a cross-optimisation pair.
+    optimisation level. A level short of either means a run stopped part way,
+    and the package contributes lopsided data: present at -O0, absent at -O3,
+    so its functions cannot form that cross-optimisation pair.
+
+    Measured by level, not by row count: a level registered twice would make
+    up the count for a level never stored.
+
+    Levels recorded in corpus_gaps are left out. They are known, reported by
+    name at the end of every check, and not warned about - see corpus/gaps.py.
 
     A warning rather than a defect - the corpus is usable, just uneven.
     """
-    return [
-        (row["package"], row["n"])
-        for row in conn.execute(
-            "SELECT package, COUNT(*) AS n FROM corpus_binaries "
-            "GROUP BY package HAVING n < ? ORDER BY package",
-            (2 * levels,),
+    gaps = known_gaps(conn)
+    missing = []
+    for package, stored in sorted(_stored_levels_by_package(conn).items()):
+        absent = tuple(
+            level for level in OPT_LEVELS
+            if level not in stored and level not in gaps.get(package, {})
         )
+        if absent:
+            missing.append((package, absent))
+    return missing
+
+
+def check_stale_gaps(conn):
+    """Return gaps recorded for levels that are in fact stored.
+
+    A gap record says a level is missing. If a later scan stored it, the
+    record is now false, and it would keep builds from retrying and checks
+    from warning about something that no longer applies. Remove it with
+    `elenchus corpus-gap remove`.
+    """
+    stored = _stored_levels_by_package(conn)
+    return [
+        (package, level)
+        for package, levels in known_gaps(conn).items()
+        for level in levels
+        if level in stored.get(package, set())
     ]
 
 
@@ -286,7 +325,7 @@ def check_corpus_completeness(conn, levels=4):
 # means a process died; that is worth seeing, but it is not a broken
 # database, and failing the command over it would teach everyone to ignore
 # a red result - which would cost more than the warning is worth.
-WARNINGS = {"unfinished runs", "corpus completeness"}
+WARNINGS = {"unfinished runs", "corpus completeness", "stale gaps"}
 
 
 def close_stale_runs(conn, older_than_minutes=60):
@@ -323,4 +362,5 @@ CHECKS = [
     ("measurement runs", check_measurement_runs),
     ("corpus duplicates", check_corpus_duplicates),
     ("corpus completeness", check_corpus_completeness),
+    ("stale gaps", check_stale_gaps),
 ]
