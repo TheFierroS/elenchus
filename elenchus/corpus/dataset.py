@@ -207,6 +207,19 @@ def assign_splits(sizes, shares=DEFAULT_SHARES):
     return result
 
 
+def training_runs(conn):
+    """Return runs that trained a model on the recorded split.
+
+    Once a model has learnt from the train packages, the split is part of
+    that model. Moving a package from train to test afterwards would put
+    functions the model has studied into its exam, and every number measured
+    from then on would be inflated without any error being raised.
+    """
+    return conn.execute(
+        "SELECT id, started_at, status FROM runs WHERE kind = 'train' ORDER BY id"
+    ).fetchall()
+
+
 def store_splits(conn, assignment):
     """Record the split each package belongs to, replacing any earlier one."""
     with conn:

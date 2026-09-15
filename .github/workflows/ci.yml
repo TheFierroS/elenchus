@@ -19,6 +19,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The encoder's tensor layer and model are tested too. The CPU build of
+      # torch is a fraction of the default CUDA one and needs no GPU; it is
+      # installed first so the package install does not pull the CUDA wheel.
+      - name: Install CPU-only torch
+        run: pip install torch numpy --index-url https://download.pytorch.org/whl/cpu
+
       - name: Install the package with dev dependencies
         run: pip install -e ".[dev]"
 

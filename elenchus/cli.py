@@ -19,11 +19,13 @@ from elenchus.corpus.dataset import (
     package_sizes,
     report,
     store_splits,
+    training_runs,
 )
 from elenchus.corpus.gaps import cmd_corpus_gap, known_gaps
 from elenchus.corpus.prune import cmd_prune_corpus
 from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
+from elenchus.encoder.cli import cmd_vocab
 from elenchus.evaluation.baselines import all_baselines
 from elenchus.evaluation.metrics import evaluate, format_table
 from elenchus.evaluation.store import (
@@ -250,7 +252,22 @@ def cmd_dataset(args):
             print("no eligible functions - run refresh-truth and extract-code first")
             return 1
 
-        assignment = assign_splits(sizes)
+        proposed = assign_splits(sizes)
+        if args.assign and proposed != assignment and assignment:
+            trained = training_runs(conn)
+            if trained and not getattr(args, "force", False):
+                moved = sorted(
+                    p for p in set(proposed) | set(assignment)
+                    if proposed.get(p) != assignment.get(p)
+                )
+                print(f"refused: {len(trained)} training run(s) already learnt from "
+                      "the recorded split, and this assignment would change "
+                      f"{len(moved)} package(s): {', '.join(moved[:8])}"
+                      f"{' ...' if len(moved) > 8 else ''}")
+                print("A model's test packages must stay unseen. Pass --force only "
+                      "if every trained model will be discarded.")
+                return 1
+        assignment = proposed
         if args.assign:
             store_splits(conn, assignment)
         else:
@@ -586,7 +603,20 @@ def build_parser():
         action="store_true",
         help="recompute and store the package split",
     )
+    dataset.add_argument(
+        "--force",
+        action="store_true",
+        help="with --assign, change the split even though a model was trained on it",
+    )
     dataset.set_defaults(func=cmd_dataset)
+
+    vocab = sub.add_parser(
+        "vocab", help="build the encoder vocabulary from the train split")
+    vocab.add_argument("--out", default="models/vocab.json",
+                       help="where to write it (default: models/vocab.json)")
+    vocab.add_argument("--min-functions", type=int, default=5,
+                       help="keep tokens seen in at least this many train functions")
+    vocab.set_defaults(func=cmd_vocab)
 
     bases = sub.add_parser(
         "baselines",
