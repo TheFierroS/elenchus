@@ -234,7 +234,17 @@ def content_key(listing):
     which makes it the right thing to ask about when the question is whether
     the model has met this function before.
     """
-    tokens = normalise(listing)
+    return tokens_key(normalise(listing))
+
+
+def tokens_key(tokens):
+    """Hash an already normalised token sequence.
+
+    Split out of content_key so a caller holding tokens does not normalise
+    twice - and, more to the point, so that the dataset's dedup and the
+    encoder's false-negative mask cannot drift into two notions of "the same
+    code".
+    """
     return hashlib.sha256(" ".join(tokens).encode()).hexdigest()
 
 
