@@ -98,6 +98,7 @@ def corpus(db):
 def test_toolchain_paths_are_recognised():
     assert is_toolchain_path(CRT)
     assert is_toolchain_path("/usr/x86_64-w64-mingw32/include/stdlib.h")
+    assert is_toolchain_path("/usr/share/mingw-w64/include/stdio.h")
     assert not is_toolchain_path("data/corpus-build/zlib/src/zlib-1.3.1/crc32.c")
 
 

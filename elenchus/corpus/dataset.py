@@ -43,6 +43,11 @@ TOOLCHAIN_MARKERS = (
     "/x86_64-w64-mingw32/",
     "/lib/gcc/",
     "/gcc-",
+    # Debian and Ubuntu install the MinGW headers here, and a static inline
+    # from one of them (a stdio wrapper, a time helper) gets a DWARF entry in
+    # whichever package happens to call it. Seen in only one package, the
+    # shared-file rule cannot catch it, so the path has to.
+    "/mingw-w64/include/",
 )
 
 
