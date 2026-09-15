@@ -205,6 +205,24 @@ def _compile_level(sources, out_debug, out_stripped, opt, package=None, root=Non
     return out_debug, out_stripped
 
 
+def binary_paths(package, work_dir):
+    """Return the paths build_package writes, as [(opt, debug, stripped), ...].
+
+    The single place these names are decided. Resuming a partly scanned
+    package reads the binaries a previous run compiled instead of compiling
+    again, and it can only find them if both sides agree on where they are.
+    """
+    out_dir = Path(work_dir) / package.name / "out"
+    return [
+        (
+            opt,
+            out_dir / f"{package.name}_{opt}.dll",
+            out_dir / f"{package.name}_{opt}_stripped.dll",
+        )
+        for opt in OPT_LEVELS
+    ]
+
+
 def build_package(package, work_dir):
     """Download, prepare, and compile one package at every optimisation level.
 
@@ -225,9 +243,7 @@ def build_package(package, work_dir):
 
         out_dir.mkdir(parents=True, exist_ok=True)
         produced = []
-        for opt in OPT_LEVELS:
-            debug = out_dir / f"{package.name}_{opt}.dll"
-            stripped = out_dir / f"{package.name}_{opt}_stripped.dll"
+        for opt, debug, stripped in binary_paths(package, work_dir):
             _compile_level(sources, debug, stripped, opt, package, src_root)
             produced.extend([debug, stripped])
 

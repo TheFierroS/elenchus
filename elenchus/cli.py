@@ -504,7 +504,13 @@ def build_parser():
     corpus.add_argument(
         "--rebuild",
         action="store_true",
-        help="rebuild packages already in the corpus instead of skipping them",
+        help="compile and scan every level again, even ones already stored",
+    )
+    corpus.add_argument(
+        "--only",
+        nargs="+",
+        metavar="PACKAGE",
+        help="work only on these manifest packages",
     )
     corpus.add_argument(
         "--manifest",

@@ -17,7 +17,13 @@ import time
 
 import pyghidra
 
-from elenchus.corpus.build import OPT_LEVELS, build_package, load_manifest
+from elenchus.corpus.build import (
+    OPT_LEVELS,
+    BuildResult,
+    binary_paths,
+    build_package,
+    load_manifest,
+)
 from elenchus.corpus.store import (
     link_twins,
     register_corpus_binary,
@@ -34,6 +40,7 @@ from elenchus.extract.ghidra import (
     extract_calls,
     extract_functions,
     extract_imports,
+    file_sha256,
     ghidra_version,
     register_binary,
 )
@@ -67,27 +74,91 @@ def _scan(conn, path, run_kind_params, with_code=True):
     return binary_id
 
 
+def _levels_in_corpus(conn):
+    """Return {package: {opt levels stored with both twins}}.
+
+    A level counts only when its debug and its stripped binary are both
+    registered. Counting rows instead - the rule this replaced - let a package
+    with one level registered twice and another missing add up to "complete",
+    and the missing level was then skipped for good.
+    """
+    levels = {}
+    for row in conn.execute(
+        "SELECT package, opt_level FROM corpus_binaries "
+        "GROUP BY package, opt_level HAVING COUNT(DISTINCT stripped) = 2"
+    ):
+        levels.setdefault(row["package"], set()).add(row["opt_level"])
+    return levels
+
+
 def _packages_in_corpus(conn):
-    """Return packages already fully recorded: both twins at every level.
+    """Return packages stored at every optimisation level.
 
     A corpus run can take hours and can be interrupted by something that has
     nothing to do with it - the first one died to a WSL crash partway
     through scanning, with fourteen of twenty-two packages stored. Recompiling
     those fourteen to get to the fifteenth is wasted work, so a rerun picks up
     where the last one stopped. --rebuild forces the whole thing.
-
-    Fully recorded means the expected number of rows, not merely some: a
-    package interrupted mid-scan must be redone, not skipped.
     """
-    expected = 2 * len(OPT_LEVELS)
     return {
-        row["package"]
-        for row in conn.execute(
-            "SELECT package, COUNT(*) AS n FROM corpus_binaries "
-            "GROUP BY package HAVING n >= ?",
-            (expected,),
-        )
+        package
+        for package, levels in _levels_in_corpus(conn).items()
+        if levels >= set(OPT_LEVELS)
     }
+
+
+class ResumeRefused(Exception):
+    """A partly stored package cannot be finished from what is on disk."""
+
+
+def _resume_build(conn, pkg, work_dir):
+    """Reuse a previous run's binaries to finish a partly stored package.
+
+    Recompiling is not an option once some levels are stored. A PE carries a
+    link timestamp, so the same source compiled twice gives a different
+    sha256, and the levels already stored would be registered a second time -
+    the duplicate registrations prune-corpus exists to clean up.
+
+    Reuse is only safe if the files on disk are the ones that were stored, so
+    that is proven rather than assumed: every registered binary of the package
+    must still exist at its expected path with the recorded hash. Anything
+    else is refused with the reason, and the package is left alone.
+    """
+    expected = {}
+    for opt, debug, stripped in binary_paths(pkg, work_dir):
+        expected[(opt, 0)] = debug
+        expected[(opt, 1)] = stripped
+
+    missing = sorted(str(p) for p in expected.values() if not p.exists())
+    if missing:
+        raise ResumeRefused(
+            f"{pkg.name} is partly stored but {len(missing)} compiled "
+            f"binaries are gone (first: {missing[0]}); recompiling would "
+            "register the stored levels twice. Use --rebuild, then "
+            "`elenchus prune-corpus --apply`."
+        )
+
+    registered = conn.execute(
+        "SELECT cb.opt_level, cb.stripped, b.sha256 FROM corpus_binaries cb "
+        "JOIN binaries b ON b.id = cb.binary_id WHERE cb.package = ?",
+        (pkg.name,),
+    ).fetchall()
+
+    for row in registered:
+        path = expected.get((row["opt_level"], row["stripped"]))
+        if path is None or file_sha256(path) != row["sha256"]:
+            side = "stripped" if row["stripped"] else "debug"
+            raise ResumeRefused(
+                f"{pkg.name} -{row['opt_level']} {side}: the binary on disk is "
+                "not the one stored, so the remaining levels would come from "
+                "a different compilation. Use --rebuild, then "
+                "`elenchus prune-corpus --apply`."
+            )
+
+    binaries = []
+    for _opt, debug, stripped in binary_paths(pkg, work_dir):
+        binaries.extend([debug, stripped])
+    return BuildResult(pkg.name, ok=True, binaries=binaries)
 
 
 def active_runs(conn, kind="extract", within_minutes=60):
@@ -156,25 +227,49 @@ def cmd_build_corpus(args):
         print("If it died, `elenchus check --close-stale` will tidy up.")
         return 1
 
+    only = getattr(args, "only", None)
+    if only:
+        unknown = sorted(set(only) - {pkg.name for pkg in packages})
+        if unknown:
+            print(f"not in the manifest: {', '.join(unknown)}")
+            return 2
+        packages = [pkg for pkg in packages if pkg.name in only]
+
     pyghidra.start()
 
-    already = _packages_in_corpus(conn)
+    stored = _levels_in_corpus(conn)
 
     built = []
     failed = []
     skipped = []
     for pkg in packages:
-        if pkg.name in already and not args.rebuild:
+        done = set() if args.rebuild else stored.get(pkg.name, set())
+
+        if done >= set(OPT_LEVELS):
             skipped.append(pkg.name)
             continue
 
-        print(f"building {pkg.name} {pkg.version} ...", flush=True)
-        result = build_package(pkg, args.work_dir)
-        if not result.ok:
-            failed.append((pkg.name, result.error))
-            print(f"  FAILED: {result.error.splitlines()[0] if result.error else '?'}")
-            continue
-        built.append((pkg, result))
+        if done:
+            remaining = [opt for opt in OPT_LEVELS if opt not in done]
+            print(f"resuming {pkg.name} {pkg.version}: "
+                  f"-{', -'.join(remaining)} (reusing compiled binaries)",
+                  flush=True)
+            try:
+                result = _resume_build(conn, pkg, args.work_dir)
+            except ResumeRefused as exc:
+                failed.append((pkg.name, str(exc)))
+                print(f"  REFUSED: {exc}")
+                continue
+        else:
+            print(f"building {pkg.name} {pkg.version} ...", flush=True)
+            result = build_package(pkg, args.work_dir)
+            if not result.ok:
+                failed.append((pkg.name, result.error))
+                print(f"  FAILED: "
+                      f"{result.error.splitlines()[0] if result.error else '?'}")
+                continue
+
+        built.append((pkg, result, done))
 
     print()
     total_matched = 0
@@ -182,10 +277,12 @@ def cmd_build_corpus(args):
 
     broken = []
 
-    for pkg, result in built:
+    for pkg, result, done in built:
         # binaries are [debug_O0, strip_O0, debug_O1, strip_O1, ...]
         pairs = list(zip(result.binaries[0::2], result.binaries[1::2]))
         for opt, (debug_path, strip_path) in zip(OPT_LEVELS, pairs):
+            if opt in done:
+                continue
             try:
                 gt, matched = store_level(
                     conn, pkg, opt, debug_path, strip_path
