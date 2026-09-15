@@ -59,3 +59,37 @@ def cmd_vocab(args):
         print(f"  IMPORT:<rare> : {report['rare_import_rate']:.3%} of tokens")
         print(f"  functions touching either : {report['functions_with_fallback']:.1%}")
     return 0
+
+
+def cmd_train(args):
+    """Train one stage: masked-LM pre-training or contrastive training."""
+    from elenchus.encoder.train import Settings, StaleVocabulary, train
+    from elenchus.encoder.vocab import Vocab
+
+    conn = connect(args.db)
+    vocab = Vocab.load(args.vocab)
+    settings = Settings(
+        stage=args.stage, out=args.out, epochs=args.epochs,
+        batch_size=args.batch_size, per_package=args.per_package, lr=args.lr,
+        temperature=args.temperature, queue_size=args.queue_size,
+        momentum=args.momentum, max_len=args.max_len, patience=args.patience,
+        seed=args.seed, init=args.init, device=args.device,
+        max_steps=args.max_steps,
+    )
+    try:
+        summary = train(conn, vocab, settings)
+    except StaleVocabulary as exc:
+        print(f"refused: {exc}")
+        return 1
+
+    print()
+    print(f"best epoch  : {summary['best_epoch']}")
+    for key, value in summary.items():
+        if key.startswith("best_val_") and not isinstance(value, dict):
+            print(f"{key:12}: {value:.4f}")
+    if "best_val_metrics" in summary:
+        m = summary["best_val_metrics"]
+        print(f"val         : recall@1 {m['recall@1']:.3f}  recall@10 "
+              f"{m['recall@10']:.3f}  mrr {m['mrr']:.3f}")
+    print(f"checkpoint  : {summary['checkpoint']}")
+    return 0

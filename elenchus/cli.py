@@ -26,7 +26,7 @@ from elenchus.corpus.gaps import cmd_corpus_gap, known_gaps
 from elenchus.corpus.prune import cmd_prune_corpus
 from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
-from elenchus.encoder.cli import cmd_vocab
+from elenchus.encoder.cli import cmd_train, cmd_vocab
 from elenchus.evaluation.baselines import all_baselines
 from elenchus.evaluation.metrics import evaluate, format_table
 from elenchus.evaluation.store import (
@@ -341,8 +341,17 @@ def cmd_baselines(args):
                        seed=args.seed)
 
     try:
+        scorers = list(all_baselines(args.seed))
+        for path in getattr(args, "encoder", None) or []:
+            from elenchus.encoder.scorer import EncoderScorer
+            from elenchus.encoder.train import load_checkpoint
+
+            model, vocab, meta = load_checkpoint(path)
+            scorers.append(EncoderScorer(model, vocab, max_len=model.config.max_len,
+                                         name=f"encoder (run {meta.get('run_id')})"))
+
         results = {}
-        for scorer in all_baselines(args.seed):
+        for scorer in scorers:
             started = time.time()
             results[scorer.name] = evaluate(scorer, queries, pool, gold)
             print(f"  {scorer.name:<24} {time.time() - started:6.1f}s",
@@ -639,11 +648,33 @@ def build_parser():
                        help="keep tokens seen in at least this many train functions")
     vocab.set_defaults(func=cmd_vocab)
 
+    training = sub.add_parser("train", help="train the encoder (mlm, then contrastive)")
+    training.add_argument("stage", choices=["mlm", "contrastive"])
+    training.add_argument("--out", required=True, help="directory for checkpoints")
+    training.add_argument("--vocab", default="models/vocab.json")
+    training.add_argument("--init", help="start from this checkpoint (e.g. the mlm one)")
+    training.add_argument("--epochs", type=int, default=20)
+    training.add_argument("--batch-size", type=int, default=64)
+    training.add_argument("--per-package", type=int, default=8)
+    training.add_argument("--lr", type=float, default=3e-4)
+    training.add_argument("--temperature", type=float, default=0.07)
+    training.add_argument("--queue-size", type=int, default=4096)
+    training.add_argument("--momentum", type=float, default=0.999)
+    training.add_argument("--max-len", type=int, default=1024)
+    training.add_argument("--patience", type=int, default=3)
+    training.add_argument("--seed", type=int, default=0)
+    training.add_argument("--device", default="auto")
+    training.add_argument("--max-steps", type=int, default=None,
+                          help="stop after this many steps (for a quick check)")
+    training.set_defaults(func=cmd_train)
+
     bases = sub.add_parser(
         "baselines",
         help="measure model-free retrieval baselines (the week 6 bar)",
     )
     bases.add_argument("--split", default="test", help="which split to score")
+    bases.add_argument("--encoder", action="append",
+                       help="also score this trained checkpoint (repeatable)")
     bases.add_argument("--query-opt", default="O0", help="query side, e.g. O0")
     bases.add_argument("--pool-opt", default="O3", help="pool side, e.g. O3")
     bases.add_argument("--seed", type=int, default=1)
