@@ -138,5 +138,6 @@ def test_the_shipped_manifest_stays_varied():
     """
     names_ = {p.name for p in load_manifest(MANIFEST)}
 
-    for expected in ("mbedtls", "libexpat", "lua", "zstd"):
+    for expected in ("mbedtls", "libexpat", "lua", "zstd",
+                     "sqlite", "libuv", "miniaudio", "stb"):
         assert expected in names_, f"{expected} keeps the corpus varied"

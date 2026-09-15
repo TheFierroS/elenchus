@@ -120,10 +120,13 @@ name = "libbase64"
 version = "0.5.2"
 url = "https://github.com/aklomp/base64/archive/refs/tags/v0.5.2.tar.gz"
 license = "BSD-2-Clause"
-# Named one by one rather than globbed. Everything else under arch/generic
-# is a fragment codec.c includes into the middle of a function, and
-# table_generator.c is a build-time tool rather than part of the library.
-sources = ["lib/lib.c", "lib/codec_choose.c", "lib/arch/generic/codec.c",
+# Named rather than globbed. Everything else under arch/generic is a fragment
+# codec.c includes into the middle of a function, and table_generator.c is a
+# build-time tool rather than part of the library. Every arch/*/codec.c is
+# compiled, not just the generic one: codec_choose.c references all of them,
+# and with the HAVE_* switches below off each one compiles to a stub. Leaving
+# them out was the last link failure.
+sources = ["lib/lib.c", "lib/codec_choose.c", "lib/arch/*/codec.c",
            "lib/tables/tables.c"]
 include_dirs = ["include", "lib"]
 defines = ["BASE64_STATIC_DEFINE"]   # its header declares the API dllimport
@@ -303,3 +306,181 @@ version = "master"
 url = "https://github.com/rxi/log.c/archive/refs/heads/master.tar.gz"
 license = "MIT"
 sources = ["src/*.c"]
+
+# ======================================================================
+# Wave 1 of corpus growth. Chosen for size and for domains the corpus did
+# not have: a database, script interpreters, image and audio codecs, an ECS,
+# an async I/O runtime heavy on the Windows API. Before this wave mbedtls
+# alone was 30% of all identities and the three largest packages 59%.
+#
+# Every block below was compiled at all four levels with MinGW GCC 13 before
+# being added, and its ground truth counted with corpus.dwarf. Counts are
+# functions present at two or more levels, before the dataset filters.
+# ======================================================================
+
+# ---------------- databases and runtimes ----------------
+
+[[package]]
+name = "sqlite"
+version = "amalgamation-master"
+# The official amalgamation ships as a zip from sqlite.org; this mirror has
+# the same single file in a tarball, which the downloader already handles.
+url = "https://github.com/azadkuh/sqlite-amalgamation/archive/refs/heads/master.tar.gz"
+license = "Public-Domain"
+sources = ["sqlite3.c"]            # shell.c carries main()   (~1760)
+
+[[package]]
+name = "libuv"
+version = "1.52.1"
+url = "https://github.com/libuv/libuv/archive/refs/tags/v1.52.1.tar.gz"
+license = "MIT"
+sources = ["src/*.c", "src/win/*.c"]                          # (~610)
+include_dirs = ["include", "src"]
+defines = ["WIN32_LEAN_AND_MEAN", "_WIN32_WINNT=0x0A00"]
+libs = ["ws2_32", "iphlpapi", "userenv", "psapi", "dbghelp", "ole32",
+        "shell32", "advapi32"]
+
+[[package]]
+name = "flecs"
+version = "4.1.6"
+url = "https://github.com/SanderMertens/flecs/archive/refs/tags/v4.1.6.tar.gz"
+license = "MIT"
+sources = ["distr/flecs.c"]        # the distributed single-file build (~2110)
+include_dirs = ["distr"]
+defines = ["flecs_STATIC"]
+libs = ["ws2_32", "dbghelp"]
+
+# ---------------- interpreters and virtual machines ----------------
+
+[[package]]
+name = "quickjs"
+version = "0.16.2"
+url = "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.16.2.tar.gz"
+license = "MIT"
+sources = ["quickjs.c", "libregexp.c", "libunicode.c", "cutils.c", "dtoa.c",
+           "xsum.c", "libbf.c"]                               # (~1500)
+defines = ["_GNU_SOURCE"]
+libs = ["winpthread"]
+
+[[package]]
+name = "duktape"
+version = "2.7.0"
+# The release tarball, not the tag: the tag is the unbuilt tree, and making
+# the distributable needs its own tooling. tarfile reads .tar.xz as is.
+url = "https://github.com/svaarala/duktape/releases/download/v2.7.0/duktape-2.7.0.tar.xz"
+license = "MIT"
+sources = ["src/duktape.c"]                                   # (~960)
+include_dirs = ["src"]
+
+[[package]]
+name = "mujs"
+version = "1.3.7"
+url = "https://github.com/ccxvii/mujs/archive/refs/tags/1.3.7.tar.gz"
+license = "ISC"
+# one.c #includes every other source file. Compiling any of those as well
+# would define each symbol twice - the amalgamation trap described above.
+sources = ["one.c"]                                           # (~620)
+
+[[package]]
+name = "wren"
+version = "0.4.0"
+url = "https://github.com/wren-lang/wren/archive/refs/tags/0.4.0.tar.gz"
+license = "MIT"
+sources = ["src/vm/*.c", "src/optional/*.c"]                  # (~420)
+include_dirs = ["src/include", "src/vm", "src/optional"]
+
+[[package]]
+name = "tree-sitter"
+version = "0.26.13"
+url = "https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.26.13.tar.gz"
+license = "MIT"
+sources = ["lib/src/lib.c"]        # lib.c includes the rest   (~330)
+include_dirs = ["lib/include", "lib/src", "lib/src/wasm"]
+defines = ["_POSIX_C_SOURCE=200112L", "_DEFAULT_SOURCE"]
+
+[[package]]
+name = "pcre2"
+version = "10.48"
+url = "https://github.com/PCRE2Project/pcre2/archive/refs/tags/pcre2-10.48.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/pcre2_*.c"]                                   # (~170)
+# The JIT is a second compiler bolted on and is included by pcre2_jit_compile.c;
+# the rest are tests, fuzzers and build-time table generators.
+exclude = ["pcre2_jit_match.c", "pcre2_jit_misc.c", "pcre2_jit_test.c",
+           "pcre2_fuzzsupport.c", "pcre2_dftables.c", "pcre2_printint.c",
+           "pcre2_ucptables.c"]
+include_dirs = ["src"]
+defines = ["HAVE_CONFIG_H", "PCRE2_CODE_UNIT_WIDTH=8", "PCRE2_STATIC"]
+copy = [["src/config.h.generic", "src/config.h"],
+        ["src/pcre2.h.generic", "src/pcre2.h"],
+        ["src/pcre2_chartables.c.dist", "src/pcre2_chartables.c"]]
+
+# ---------------- media: images, fonts, audio ----------------
+
+[[package]]
+name = "miniaudio"
+version = "0.11.25"
+url = "https://github.com/mackron/miniaudio/archive/refs/tags/0.11.25.tar.gz"
+license = "MIT-0"
+sources = ["miniaudio.c"]          # WASAPI/COM backends: new imports (~1650)
+libs = ["ole32", "winmm", "avrt"]
+
+[[package]]
+name = "stb"
+version = "master"
+url = "https://github.com/nothings/stb/archive/refs/heads/master.tar.gz"
+license = "MIT"
+# Header-only libraries: the implementation exists only where a .c file
+# defines the switch and includes the header, so that file is written here.
+sources = ["elenchus_stb.c"]                                  # (~610)
+create = [["elenchus_stb.c", "#define STB_IMAGE_IMPLEMENTATION\n#include \"stb_image.h\"\n#define STB_TRUETYPE_IMPLEMENTATION\n#include \"stb_truetype.h\"\n#define STB_IMAGE_WRITE_IMPLEMENTATION\n#include \"stb_image_write.h\"\n#define STB_IMAGE_RESIZE_IMPLEMENTATION\n#include \"stb_image_resize2.h\"\n#include \"stb_vorbis.c\"\n"]]
+
+[[package]]
+name = "lodepng"
+version = "master"
+url = "https://github.com/lvandeve/lodepng/archive/refs/heads/master.tar.gz"
+license = "Zlib"
+# Written as C that also compiles as C++; copied to .c so gcc treats it as C.
+sources = ["lodepng_c.c"]                                     # (~150)
+copy = [["lodepng.cpp", "lodepng_c.c"]]
+
+[[package]]
+name = "brotli"
+version = "1.2.0"
+url = "https://github.com/google/brotli/archive/refs/tags/v1.2.0.tar.gz"
+license = "MIT"
+sources = ["c/common/*.c", "c/enc/*.c", "c/dec/*.c"]          # (~250)
+include_dirs = ["c/include"]
+
+[[package]]
+name = "bzip2"
+version = "1.0.8"
+url = "https://github.com/libarchive/bzip2/archive/refs/tags/bzip2-1.0.8.tar.gz"
+license = "bzip2-1.0.6"
+sources = ["*.c"]                                             # (~45)
+exclude = ["bzip2.c", "bzip2recover.c", "dlltest.c", "spewG.c", "unzcrash.c",
+           "mk251.c"]
+
+# ---------------- markup ----------------
+
+[[package]]
+name = "cmark"
+version = "0.31.2"
+url = "https://github.com/commonmark/cmark/archive/refs/tags/0.31.2.tar.gz"
+license = "BSD-2-Clause"
+sources = ["src/*.c"]                                         # (~185)
+exclude = ["main.c"]
+include_dirs = ["src"]
+defines = ["CMARK_STATIC_DEFINE"]
+# cmake generates these three.
+create = [["src/cmark_export.h", "#define CMARK_EXPORT\n"],
+          ["src/cmark_version.h", "#define CMARK_VERSION ((0 << 16) | (31 << 8) | 2)\n#define CMARK_VERSION_STRING \"0.31.2\"\n"],
+          ["src/config.h", "#include <stdbool.h>\n#define HAVE_STDBOOL_H\n#define CMARK_INLINE inline\n"]]
+
+[[package]]
+name = "md4c"
+version = "0.5.3"
+url = "https://github.com/mity/md4c/archive/refs/tags/release-0.5.3.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]                                         # (~75)
+include_dirs = ["src"]
