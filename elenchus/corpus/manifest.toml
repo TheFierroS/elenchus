@@ -484,3 +484,45 @@ url = "https://github.com/mity/md4c/archive/refs/tags/release-0.5.3.tar.gz"
 license = "MIT"
 sources = ["src/*.c"]                                         # (~75)
 include_dirs = ["src"]
+
+# ---------------- cryptography, wave 1b ----------------
+#
+# Added after the 45-package split left val and test without any
+# cryptography: mbedtls was the only crypto package, and one package can sit
+# in only one split. Three more, independent implementations - so the same
+# algorithm (ChaCha20, Poly1305, BLAKE2b, SHA-2) appears as different code in
+# different packages, which is the generalisation the encoder must learn.
+
+[[package]]
+name = "libsodium"
+version = "1.0.22"
+url = "https://github.com/jedisct1/libsodium/archive/refs/tags/1.0.22-RELEASE.tar.gz"
+license = "ISC"
+sources = ["src/libsodium/**/*.c"]                           # (~990)
+include_dirs = ["src/libsodium/include", "src/libsodium/include/sodium"]
+defines = ["SODIUM_STATIC", "SODIUM_DLL_EXPORT=", "NATIVE_LITTLE_ENDIAN"]
+# autotools generates version.h; the MSVC build ships a ready copy.
+copy = [["builds/msvc/version.h", "src/libsodium/include/sodium/version.h"]]
+libs = ["advapi32"]                                          # RtlGenRandom
+
+[[package]]
+name = "libtomcrypt"
+version = "1.18.2"
+url = "https://github.com/libtom/libtomcrypt/archive/refs/tags/v1.18.2.tar.gz"
+license = "Unlicense"
+# Public-key code needs a bignum library (libtommath) and does not compile
+# without one. Symmetric ciphers, hashes, MACs, modes and PRNGs do.
+sources = ["src/ciphers/**/*.c", "src/hashes/**/*.c", "src/mac/**/*.c",
+           "src/encauth/**/*.c", "src/modes/**/*.c", "src/prngs/*.c",
+           "src/stream/**/*.c", "src/misc/**/*.c"]           # (~580)
+exclude = ["pk_get_oid.c"]                                   # public-key helper
+include_dirs = ["src/headers"]
+defines = ["LTC_NO_TEST"]
+
+[[package]]
+name = "monocypher"
+version = "4.0.2"
+url = "https://github.com/LoupVaillant/Monocypher/archive/refs/tags/4.0.2.tar.gz"
+license = "BSD-2-Clause"
+sources = ["src/monocypher.c", "src/optional/monocypher-ed25519.c"]  # (~120)
+include_dirs = ["src", "src/optional"]
