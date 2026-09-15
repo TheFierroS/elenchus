@@ -43,7 +43,9 @@ from elenchus.extract.ghidra import (
     extract_imports,
     file_sha256,
     ghidra_version,
+    pdata_entry_points,
     register_binary,
+    seed_functions_from_pdata,
 )
 from elenchus.extract.instructions import extract_code
 
@@ -61,6 +63,7 @@ def _scan(conn, path, run_kind_params, with_code=True):
         with pyghidra.open_program(str(path)) as api:
             program = api.getCurrentProgram()
             set_run_tool_version(conn, run_id, ghidra_version(program))
+            seed_functions_from_pdata(program, pdata_entry_points(path))
             binary_id = register_binary(conn, str(path), str(program.getLanguageID()))
             functions = extract_functions(conn, binary_id, run_id, program)
             extract_imports(conn, binary_id, run_id, program)
@@ -228,6 +231,12 @@ def cmd_build_corpus(args):
         print("If it died, `elenchus check --close-stale` will tidy up.")
         return 1
 
+    rescan = getattr(args, "rescan", False)
+    if rescan and args.rebuild:
+        print("--rescan reuses the compiled binaries and --rebuild recompiles "
+              "them; choose one")
+        return 2
+
     only = getattr(args, "only", None)
     if only:
         unknown = sorted(set(only) - {pkg.name for pkg in packages})
@@ -247,18 +256,23 @@ def cmd_build_corpus(args):
     failed = []
     skipped = []
     for pkg in packages:
+        package_gaps = set(gaps.get(pkg.name, {}))
         if args.rebuild:
             done = set()
+        elif rescan and stored.get(pkg.name):
+            # Scan every level again from the binaries already on disk - for
+            # when extraction itself has improved. Known gaps stay skipped.
+            done = package_gaps
         else:
-            done = stored.get(pkg.name, set()) | set(gaps.get(pkg.name, {}))
+            done = stored.get(pkg.name, set()) | package_gaps
 
         if done >= set(OPT_LEVELS):
             skipped.append(pkg.name)
             continue
 
-        if done:
+        if stored.get(pkg.name) and not args.rebuild:
             remaining = [opt for opt in OPT_LEVELS if opt not in done]
-            print(f"resuming {pkg.name} {pkg.version}: "
+            print(f"{'rescanning' if rescan else 'resuming'} {pkg.name} {pkg.version}: "
                   f"-{', -'.join(remaining)} (reusing compiled binaries)",
                   flush=True)
             try:

@@ -212,6 +212,16 @@ def normalise_line(line):
     resolved = target_token(target)
     tokens = [mnemonic]
 
+    # `call [global]` goes through a function pointer held in data - an
+    # allocator hook, an OS-abstraction table. Ghidra reads the pointer's
+    # initial value and reports a call to that function, but the destination
+    # is whatever the pointer holds at run time. Measured on the corpus:
+    # of 15,400 such calls, 2 pointed into the import table and the rest into
+    # .data or .bss. They are indirect calls, and are named as such.
+    if (mnemonic == "call" and resolved == "FUNC_INTERNAL"
+            and operand_token(operands.split(" ")[0]).startswith("MEM_")):
+        resolved = "FUNC_INDIRECT"
+
     # When the destination is known, the operand only spells out the address
     # the target token already describes, so it is dropped. When it is not
     # known, the operand is the only thing that says *how* the destination is

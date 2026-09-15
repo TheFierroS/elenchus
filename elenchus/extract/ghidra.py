@@ -19,7 +19,110 @@ observation.
 import hashlib
 from pathlib import Path
 
+import pefile
+
 from elenchus.db import add_events
+
+# UNWIND_INFO flag marking an entry that continues another function's unwind
+# data rather than starting a function of its own.
+_UNW_FLAG_CHAININFO = 0x4
+
+
+def pdata_entry_points(path):
+    """Return the absolute start address of every function .pdata records.
+
+    Win64 requires an unwind entry for every function that touches the stack,
+    and the compilers used here emit one for every function. That makes .pdata
+    an inventory of function starts that needs no symbols and no call graph.
+
+    Entries flagged as chained are skipped: they describe a further piece of a
+    function already entered elsewhere (MSVC splits large functions this way),
+    and creating a function at one would cut a real function in two.
+
+    A file pefile cannot parse yields nothing rather than an error; the scan
+    itself will report what is wrong with it.
+    """
+    try:
+        pe = pefile.PE(str(path), fast_load=True)
+        pe.parse_data_directories(
+            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXCEPTION"]]
+        )
+    except (pefile.PEFormatError, OSError):
+        return []
+
+    base = pe.OPTIONAL_HEADER.ImageBase
+    starts = set()
+    for entry in getattr(pe, "DIRECTORY_ENTRY_EXCEPTION", []):
+        unwind = getattr(entry, "unwindinfo", None)
+        if unwind is not None and unwind.Flags & _UNW_FLAG_CHAININFO:
+            continue
+        starts.add(base + entry.struct.BeginAddress)
+    return sorted(starts)
+
+
+def _ghidra_create(program, address, monitor):
+    from ghidra.app.cmd.disassemble import DisassembleCommand
+    from ghidra.app.cmd.function import CreateFunctionCmd
+
+    DisassembleCommand(address, None, True).applyTo(program, monitor)
+    return bool(CreateFunctionCmd(address).applyTo(program, monitor))
+
+
+def _ghidra_reanalyse(program, monitor):
+    from ghidra.app.plugin.core.analysis import AutoAnalysisManager
+
+    AutoAnalysisManager.getAnalysisManager(program).startAnalysis(monitor)
+
+
+def seed_functions_from_pdata(program, entry_points, create=None, reanalyse=None):
+    """Create the functions Ghidra's analysis did not find at .pdata starts.
+
+    Ghidra finds functions in a stripped PE by following calls. A function
+    reached only through a pointer - a cipher registered in a descriptor
+    table, an interpreter built-in, a callback, a virtual method - has no call
+    to follow, and it was never disassembled at all: libtomcrypt -O3 lost a
+    third of its functions this way, and no Ghidra analyzer reads .pdata to
+    recover them. Measured before adopting on that binary: all 152 missing
+    ground-truth functions recovered, and not one of the 436 functions found
+    before changed its listing.
+
+    Addresses that already start or fall inside a function are left alone.
+    Analysis is re-run once afterwards, so seeded functions are analysed like
+    every other. Returns the number of functions created.
+
+    create and reanalyse exist so the decision logic can be tested without a
+    JVM; by default they are Ghidra's own commands.
+    """
+    create = create or _ghidra_create
+    reanalyse = reanalyse or _ghidra_reanalyse
+
+    from_ghidra = create is _ghidra_create
+    monitor = None
+    if from_ghidra:
+        from ghidra.util.task import ConsoleTaskMonitor
+        monitor = ConsoleTaskMonitor()
+
+    manager = program.getFunctionManager()
+    space = program.getAddressFactory().getDefaultAddressSpace()
+
+    created = 0
+    transaction = program.startTransaction("seed functions from .pdata")
+    try:
+        for value in entry_points:
+            address = space.getAddress(value)
+            if manager.getFunctionContaining(address) is not None:
+                continue
+            try:
+                if create(program, address, monitor):
+                    created += 1
+            except Exception:  # noqa: BLE001 - one bad entry costs one function
+                continue
+    finally:
+        program.endTransaction(transaction, True)
+
+    if created:
+        reanalyse(program, monitor)
+    return created
 
 
 def file_sha256(path):

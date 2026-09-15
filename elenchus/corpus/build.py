@@ -163,9 +163,12 @@ def _compile_level(sources, out_debug, out_stripped, opt, package=None, root=Non
 
     Measured before adopting: zlib -O0 went from 136 named functions to 35,
     all of them import thunks and PE header entry points that a real target
-    would have too, and Ghidra still found all 269 functions. The .pdata
-    unwind table required by the Win64 calling convention is what keeps
-    function discovery intact once the names are gone.
+    would have too, and Ghidra still found all 269 functions. That was once
+    credited to the .pdata unwind table; it was wrong. zlib's functions are
+    reached by direct calls, which is how Ghidra finds functions - it has no
+    analyzer that reads .pdata. Functions reached only through pointers were
+    being missed (a third of libtomcrypt -O3) until extraction began seeding
+    functions from .pdata itself; see seed_functions_from_pdata.
 
     Returns (debug_path, stripped_path). Raises on compiler failure so the
     caller can mark the whole package failed.

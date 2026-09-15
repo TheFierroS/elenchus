@@ -133,3 +133,28 @@ def test_mnemonics_only():
 def test_malformed_line_is_ignored():
     assert normalise_line("nonsense") == []
     assert normalise("\n\n") == []
+
+
+def test_a_call_through_a_global_pointer_is_indirect():
+    """Measured: of 15,400 such calls, 2 reached the import table; the rest
+    read a function pointer out of .data. Ghidra names the pointer's initial
+    value, but the destination is decided at run time."""
+    tokens = normalise_line(line("4", "call", "qwordptr[0x21cce2060]", "CALL:internal"))
+    assert tokens == ["call", "MEM_GLOBAL", "FUNC_INDIRECT"]
+
+
+def test_a_direct_call_stays_internal():
+    tokens = normalise_line(line("4", "call", "0x21cce1234", "CALL:internal"))
+    assert tokens == ["call", "FUNC_INTERNAL"]
+
+
+def test_a_memory_call_resolved_as_an_import_keeps_its_name():
+    tokens = normalise_line(
+        line("4", "call", "qwordptr[0x21cce8000]", "IMPORT:KERNEL32.DLL!Sleep"))
+    assert tokens == ["call", "IMPORT:Sleep"]
+
+
+def test_a_jump_through_memory_is_not_reclassified():
+    """Only calls: tail jumps have their own tokens and were not measured."""
+    tokens = normalise_line(line("4", "jmp", "qwordptr[0x21cce2060]", "TAIL:internal"))
+    assert tokens == ["jmp", "TAIL_INTERNAL"]

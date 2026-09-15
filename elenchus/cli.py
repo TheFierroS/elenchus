@@ -40,7 +40,9 @@ from elenchus.extract.ghidra import (
     extract_imports,
     extract_strings,
     ghidra_version,
+    pdata_entry_points,
     register_binary,
+    seed_functions_from_pdata,
 )
 from elenchus.extract.instructions import extract_code, function_index
 from elenchus.inspect import find_functions, render, sample_functions, summarise
@@ -68,6 +70,8 @@ def cmd_scan(args):
             program = api.getCurrentProgram()
             arch = str(program.getLanguageID())
             set_run_tool_version(conn, run_id, ghidra_version(program))
+            seeded = seed_functions_from_pdata(
+                program, pdata_entry_points(args.binary))
 
             binary_id = register_binary(conn, args.binary, arch)
             functions = extract_functions(conn, binary_id, run_id, program)
@@ -94,7 +98,7 @@ def cmd_scan(args):
     print(f"arch     : {arch}")
     print(f"run      : {run_id}")
     print(f"id       : {binary_id}")
-    print(f"functions: {len(functions)}")
+    print(f"functions: {len(functions)} ({seeded} recovered from .pdata)")
     print(f"imports  : {len(imports)}")
     print(f"calls    : {calls}")
     print(f"blocks   : {blocks}")
@@ -514,6 +518,12 @@ def build_parser():
         "--rebuild",
         action="store_true",
         help="compile and scan every level again, even stored ones and known gaps",
+    )
+    corpus.add_argument(
+        "--rescan",
+        action="store_true",
+        help="scan stored packages again from their compiled binaries, "
+             "after extraction has changed",
     )
     corpus.add_argument(
         "--only",

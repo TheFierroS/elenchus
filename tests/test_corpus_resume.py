@@ -100,10 +100,10 @@ class Harness:
         monkeypatch.setattr(module, "connect", lambda _p: db)
         monkeypatch.setattr(module.pyghidra, "start", fake_start, raising=False)
 
-    def run(self, rebuild=False, only=None):
+    def run(self, rebuild=False, only=None, rescan=False):
         args = types.SimpleNamespace(
             db=":memory:", manifest=None, work_dir=str(self.work_dir),
-            rebuild=rebuild, only=only,
+            rebuild=rebuild, only=only, rescan=rescan,
         )
         return module.cmd_build_corpus(args)
 
@@ -348,3 +348,57 @@ def test_rebuild_ignores_recorded_gaps(harness):
     harness.run(rebuild=True)
 
     assert harness.scanned_levels("quickjs") == list(OPT_LEVELS)
+
+
+# ---------------------------------------------------------------- --rescan
+
+
+def test_rescan_scans_every_level_from_disk_without_compiling(harness):
+    """Extraction improved: the stored packages are scanned again, as they are."""
+    pkg = package("libtomcrypt")
+    harness.packages = [pkg]
+    compile_to_disk(pkg, harness.work_dir)
+    store(harness.db, pkg, harness.work_dir, set(OPT_LEVELS))
+
+    assert harness.run(rescan=True) == 0
+    assert harness.compiled == []
+    assert harness.scanned_levels("libtomcrypt") == list(OPT_LEVELS)
+
+
+def test_rescan_still_skips_recorded_gaps(harness):
+    from elenchus.corpus.gaps import record_gap
+
+    pkg = package("quickjs")
+    harness.packages = [pkg]
+    compile_to_disk(pkg, harness.work_dir)
+    store(harness.db, pkg, harness.work_dir, {"O0", "O2", "O3"})
+    record_gap(harness.db, "quickjs", "O1", "heap")
+
+    harness.run(rescan=True)
+
+    assert harness.scanned_levels("quickjs") == ["O0", "O2", "O3"]
+
+
+def test_rescan_refuses_binaries_that_changed_on_disk(harness, capsys):
+    pkg = package("libtomcrypt")
+    harness.packages = [pkg]
+    compile_to_disk(pkg, harness.work_dir)
+    store(harness.db, pkg, harness.work_dir, set(OPT_LEVELS))
+    compile_to_disk(pkg, harness.work_dir, stamp="recompiled since")
+
+    harness.run(rescan=True)
+
+    assert harness.scanned == []
+    assert "not the one stored" in capsys.readouterr().out
+
+
+def test_rescan_of_a_package_never_stored_builds_it(harness):
+    harness.packages = [package("fresh")]
+    harness.run(rescan=True)
+    assert harness.compiled == ["fresh"]
+
+
+def test_rescan_and_rebuild_together_are_refused(harness, capsys):
+    harness.packages = [package("any")]
+    assert harness.run(rescan=True, rebuild=True) == 2
+    assert harness.compiled == [] and not harness.ghidra_started

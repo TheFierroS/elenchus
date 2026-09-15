@@ -111,49 +111,50 @@ tokens falling to `[UNK]` and `IMPORT:<rare>` - then val MRR at 2, 5, 10.
 
 ## Open questions (not experiments, but unexplained)
 
-### Q1 — Lower match rates on some packages
+### Q1 — Lower match rates on some packages — RESOLVED
 
-The 45-package build matched 41,859 of 42,365 ground-truth functions (98.8%).
-The 28-package corpus had averaged 99.96%. Most new packages matched at 100%
-on every level (sqlite, stb, lodepng, brotli, bzip2, pcre2, wren, md4c); the
-loss is concentrated:
+The 45-package build matched 98.8% of ground truth; some packages far less
+(mujs -O3 72%, libtomcrypt -O2/-O3 67%, flecs -O3 93%).
 
-| package | -O0 | -O1 | -O2 | -O3 |
-|---|---|---|---|---|
-| mujs | 99% | 96% | 81% | 72% |
-| flecs | 99% | 99% | 96% | 93% |
-| duktape | 100% | 95% | 98% | 98% |
-| libuv | 99% | 97% | 98% | 98% |
-| quickjs | 100% | (scan failed) | 99% | 99% |
+**First hypothesis, refuted.** "Pointer-registered leaf functions have no
+.pdata entry, so discovery has nothing to start from." In the sandbox builds
+of libsodium, libtomcrypt and monocypher, every DWARF function at every level
+has a .pdata entry - 100%, no exceptions.
 
-mujs and flecs alone account for over 300 of the 506 unmatched functions. The
-drop grows with optimisation in both.
+**Measured on the corpus** (`pe_evidence.py`): the unmatched addresses of
+libtomcrypt -O2/-O3, mujs -O3, duktape -O1 are all in .pdata, none is covered
+by any Ghidra function, and none has a basic block. Ghidra never disassembled
+them. flecs and libuv added a handful of true merges (7) at nop padding.
 
-**Why it matters beyond lost rows.** If a particular kind of function goes
-unmatched, the dataset does not just shrink - it is missing that kind
-systematically, and the encoder never sees it. And whatever stops Ghidra
-finding these functions here will stop it on a real stripped binary too, so
-it bounds how far the agent can trust its function list.
+**Cause.** Ghidra finds functions in a stripped PE by following calls, and
+none of its analyzers reads .pdata (checked: no analyzer name mentions
+exception, pdata or unwind). A function reached only through a pointer -
+libtomcrypt's descriptor tables, mujs built-ins - is never found. The old
+claim that .pdata kept discovery intact (zlib, 269 → 269) credited the wrong
+mechanism: zlib's functions are called directly.
 
-**Hypothesis, not verified.** The packages that lose most register functions
-by address rather than calling them: mujs its built-ins in tables, flecs its
-systems, hooks and observers as callbacks. Nothing in the code calls such a
-function; its address sits in data. Win64 leaf functions that use no stack
-need no `.pdata` unwind entry, and more functions become such leaves at -O2
-and -O3. With no call site and no unwind entry, stripped-binary function
-discovery has nothing to start from.
+**Fix, measured before adopting** on libtomcrypt -O3 (`pdata_seed_probe.py`):
+creating functions at the 251 .pdata starts with no function, then
+re-running analysis, recovered 152/152 missing ground-truth functions and
+changed the listing of 0 of the 436 functions found before. Adds 5 seconds.
+Now `seed_functions_from_pdata` in extraction.
 
-**Against it:** quickjs is also an interpreter with built-in tables and
-matches at 99%. So "interpreter" is not the cause, and "registered by address"
-may not be either - it has to be checked, not argued.
+**Consequence for the corpus.** Because existing listings do not change,
+only packages with unmatched ground truth need rescanning.
 
-**Settles it:** for the unmatched addresses of mujs -O3 and flecs -O3, check
-(a) whether `.pdata` holds an entry for them, (b) whether any instruction
-calls them, (c) whether a data section holds their address. Do the same for a
-sample of quickjs -O3 functions that did match, as the contrast. If the
-unmatched are mostly (no, no, yes) and the matched are not, the hypothesis
-stands, and the fix belongs in extraction (seeding functions from address
-tables), not in the dataset.
+**Why it matters beyond the corpus.** Virtual methods, window procedures,
+callbacks and crackme validation routines are all reached through pointers.
+The agent would have been blind to them.
+
+### Q1b — "IAT calls classified as internal" — NOT AN IMPORT PROBLEM
+
+An old note said some `call [0x...]` were `FUNC_INTERNAL` instead of
+`IMPORT:`. Measured (`pe_evidence.py`): of 15,400 absolute memory calls not
+resolved as imports, 2 point into the import table; the rest point into
+.data or .bss - global function pointers such as flecs' `ecs_os_api`, sqlite's
+allocator configuration, tree-sitter's `ts_current_malloc`. No import name
+was lost. Ghidra reported them as internal because it read the pointer's
+initial value; the normaliser now names them `FUNC_INDIRECT`.
 
 ### Q2 — Ghidra heap exhaustion on quickjs -O1
 
