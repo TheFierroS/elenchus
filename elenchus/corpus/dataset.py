@@ -26,6 +26,7 @@ result directly: it looks for any function whose normalised form appears in
 more than one split, and reports what it finds.
 """
 
+import functools
 import hashlib
 from collections import defaultdict
 
@@ -151,9 +152,11 @@ def duplicate_keys(rows):
 def eligible_rows(conn, rows=None):
     """Return the rows that may be trained on, deduplicated across packages.
 
-    Normalising every function costs a second or two, so callers that need
-    both the dataset and the leakage check should compute the candidates
-    once and pass them in.
+    rows are candidate rows; they are deduplicated here whether passed in or
+    read. Passing them saves the database read, and content_key remembers
+    each listing's key, so the dedup costs a normalising pass only the first
+    time a process meets those listings. Measured on the 48-package corpus,
+    before that memory: 31.6 s per call, and a training run made four.
     """
     rows = candidate_rows(conn) if rows is None else rows
     duplicates = duplicate_keys(rows)
@@ -292,6 +295,11 @@ def load_splits(conn):
     }
 
 
+# Enough for every candidate function several times over (76,819 today).
+CONTENT_KEY_CACHE = 1 << 18
+
+
+@functools.lru_cache(maxsize=CONTENT_KEY_CACHE)
 def content_key(listing):
     """Hash a function's normalised form.
 
@@ -300,6 +308,11 @@ def content_key(listing):
     through. The normalised token sequence is what the encoder actually sees,
     which makes it the right thing to ask about when the question is whether
     the model has met this function before.
+
+    Remembered per listing: the key depends on the listing text alone, and
+    the same listings are keyed again and again - twice in every dedup, again
+    for the retrieval task's equivalence classes. The cache holds the listing
+    strings it has seen, which a process working on the dataset holds anyway.
     """
     return tokens_key(normalise(listing))
 

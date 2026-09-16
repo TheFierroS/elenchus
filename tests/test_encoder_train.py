@@ -6,16 +6,28 @@ never read, that a stale vocabulary is refused, that checkpoints come back
 identical, and that the model actually learns on data where learning is easy.
 """
 
+import hashlib
 import json
+import sys
 import types
+from collections import defaultdict
 
 import pytest
 import torch
 
-from elenchus.corpus.dataset import store_splits
+import elenchus.corpus.dataset as dataset
+import elenchus.evaluation.store as store
+from elenchus.corpus.dataset import (
+    CONTENT_KEY_CACHE,
+    candidate_rows,
+    content_key,
+    eligible_rows,
+    store_splits,
+)
 from elenchus.encoder import train as module
 from elenchus.encoder.batching import pad
 from elenchus.encoder.model import EncoderConfig
+from elenchus.encoder.normalise import normalise
 from elenchus.encoder.train import (
     ConfigConflict,
     Settings,
@@ -719,3 +731,111 @@ def test_the_train_command_parses_its_stages():
     assert (args.stage, args.init, args.max_steps) == (
         "contrastive", "models/m/best.pt", 5)
     assert args.func.__name__ == "cmd_train"
+
+# ---------------------------------------------------------------- one read, one key
+# A training run read and deduplicated every eligible row four times - two
+# fingerprints, train, val - and each dedup normalised every listing twice:
+# 31.6 s a call on the 48-package corpus, ~150 s before the first step of a
+# 25 s smoke epoch. content_key now remembers each listing's key and train()
+# reads the candidates once. These pin that the rows chosen are the same and
+# that the work is not repeated.
+
+
+@pytest.fixture
+def cold_cache():
+    content_key.cache_clear()
+    yield
+    content_key.cache_clear()
+
+
+def listing(*mnemonics):
+    return "\n".join(f"{0x1000 + i:x}\t{m}\tRAX RBX\t" for i, m in enumerate(mnemonics))
+
+
+def test_a_listing_is_normalised_once_however_often_it_is_keyed(cold_cache, monkeypatch):
+    calls = []
+    monkeypatch.setattr(dataset, "normalise",
+                        lambda text: calls.append(text) or normalise(text))
+    text = listing("push", "xor", "ret")
+    first = content_key(text)
+    again = content_key("".join(list(text)))  # an equal string, another object
+    assert first == again
+    assert len(calls) == 1
+
+
+def test_the_key_is_still_the_hash_of_the_normalised_tokens(cold_cache):
+    text = listing("push", "imul", "ret")
+    expected = hashlib.sha256(" ".join(normalise(text)).encode()).hexdigest()
+    assert content_key(text) == expected
+
+
+def test_the_cache_is_bounded():
+    assert content_key.cache_info().maxsize == CONTENT_KEY_CACHE >= 200_000
+
+
+def reference_eligible(rows):
+    """The dedup rule written out from scratch, without the cache."""
+    def key(text):
+        return hashlib.sha256(" ".join(normalise(text)).encode()).hexdigest()
+
+    packages = defaultdict(set)
+    for row in rows:
+        packages[key(row["listing"])].add(row["package"])
+    return [row["function_id"] for row in rows if len(packages[key(row["listing"])]) == 1]
+
+
+def test_eligible_rows_choose_what_the_rule_chooses_cold_and_warm(cold_cache, db):
+    body = [MNEMONICS[i] for i in range(10)]
+    add_function(db, "one", "wrapper", "O0", body)          # shared: both dropped
+    add_function(db, "two", "wrapper", "O0", body)
+    add_function(db, "one", "own", "O0", [MNEMONICS[i] for i in range(3, 14)])
+    add_function(db, "two", "own", "O3", [MNEMONICS[i] for i in range(5, 16)])
+    rows = candidate_rows(db)
+    expected = reference_eligible(rows)
+    assert len(expected) == 2, "the fixture must contain a cross-package duplicate"
+
+    cold = [row["function_id"] for row in eligible_rows(db, rows)]
+    warm = [row["function_id"] for row in eligible_rows(db)]
+    assert cold == warm == expected
+
+
+def patch_everywhere(monkeypatch, original, replacement):
+    for loaded in list(sys.modules.values()):
+        if getattr(loaded, "__name__", "").startswith("elenchus"):
+            for name, value in list(vars(loaded).items()):
+                if value is original:
+                    monkeypatch.setattr(loaded, name, replacement)
+
+
+@pytest.mark.parametrize("stage", ["mlm", "contrastive"])
+def test_a_training_run_reads_the_candidates_once(corpus, vocab, tmp_path,
+                                                   monkeypatch, stage):
+    reads = []
+    real = dataset.candidate_rows
+    patch_everywhere(monkeypatch, real, lambda conn: reads.append(1) or real(conn))
+    train(corpus, vocab, settings(tmp_path, stage, max_steps=0),
+                       config(vocab), log=quiet)
+    assert len(reads) == 1
+
+
+@pytest.mark.parametrize("stage", ["mlm", "contrastive"])
+def test_every_stage_of_a_run_works_from_that_one_list(corpus, vocab, tmp_path,
+                                                       monkeypatch, stage):
+    received = []
+    real = dataset.eligible_rows
+
+    def spy(conn, rows=None):
+        received.append(rows)
+        return real(conn, rows)
+
+    patch_everywhere(monkeypatch, real, spy)
+    real_fingerprint = store.dataset_fingerprint
+    patch_everywhere(monkeypatch, real_fingerprint,
+                     lambda conn, rows=None: received.append(rows) or
+                     real_fingerprint(conn, rows))
+    train(corpus, vocab, settings(tmp_path, stage, max_steps=0),
+                       config(vocab), log=quiet)
+
+    assert received, "nothing was traced"
+    assert all(rows is received[0] for rows in received)
+    assert received[0] is not None

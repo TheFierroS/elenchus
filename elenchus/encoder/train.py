@@ -50,6 +50,7 @@ from pathlib import Path
 
 import torch
 
+from elenchus.corpus.dataset import candidate_rows
 from elenchus.db import code_version, finish_run, start_run
 from elenchus.encoder.batching import collate_masked, collate_pairs
 from elenchus.encoder.data import MaskedSampler, PairSampler, load_examples
@@ -116,9 +117,9 @@ def vocab_hash(vocab):
     return hashlib.sha256("\n".join(vocab.tokens).encode()).hexdigest()[:16]
 
 
-def check_vocabulary(conn, vocab):
+def check_vocabulary(conn, vocab, rows=None):
     built = vocab.source.get("dataset_fingerprint")
-    current = dataset_fingerprint(conn)
+    current = dataset_fingerprint(conn, rows)
     if built != current:
         raise StaleVocabulary(
             f"vocabulary was built for dataset {built}, the database is {current}; "
@@ -308,15 +309,20 @@ def train(conn, vocab, settings, config=None, log=print, overrides=None):
     """Train one stage and return a summary; the best checkpoint is on disk.
 
     overrides: configuration fields asked for by name (see build_model).
+
+    The candidate rows are read from the database once, and every stage - the
+    vocabulary check, the fingerprint recorded, train, val, the val task -
+    works from that one list, so all of them see the same data.
     """
-    check_vocabulary(conn, vocab)
+    rows = candidate_rows(conn)
+    check_vocabulary(conn, vocab, rows)
     torch.manual_seed(settings.seed)
     device = _device(settings)
     model, settings, changes, init_meta = build_model(vocab, settings, config,
                                                       overrides, device)
     memory = MemoryProbe(device)
 
-    fingerprint = dataset_fingerprint(conn)
+    fingerprint = dataset_fingerprint(conn, rows)
     params = {
         "stage": settings.stage,
         "settings": asdict(settings),
@@ -336,13 +342,13 @@ def train(conn, vocab, settings, config=None, log=print, overrides=None):
         log(f"  {name}: {old} in {settings.init}, {new} here")
 
     try:
-        examples = load_examples(conn, "train")
+        examples = load_examples(conn, "train", rows)
         if settings.stage == "mlm":
             summary = _train_mlm(conn, model, vocab, settings, examples, device,
-                                 run_id, log, memory)
+                                 run_id, log, memory, rows)
         else:
             summary = _train_contrastive(conn, model, vocab, settings, examples,
-                                         device, run_id, log, memory)
+                                         device, run_id, log, memory, rows)
     except BaseException:
         finish_run(conn, run_id, "failed")
         raise
@@ -431,11 +437,12 @@ def _selection_loop(settings, epoch_fn, evaluate_fn, better, metric_name,
             "peak_reserved_gib": _peak(history, "reserved_gib")}
 
 
-def _train_mlm(conn, model, vocab, settings, examples, device, run_id, log, memory):
+def _train_mlm(conn, model, vocab, settings, examples, device, run_id, log, memory,
+               rows):
     sampler = MaskedSampler(examples, vocab, batch_size=settings.batch_size,
                             max_len=settings.max_len, rate=settings.mask_rate,
                             seed=settings.seed)
-    val = MaskedSampler(load_examples(conn, "val"), vocab,
+    val = MaskedSampler(load_examples(conn, "val", rows), vocab,
                         batch_size=settings.batch_size, max_len=settings.max_len,
                         rate=settings.mask_rate, seed=settings.seed + 1)
     optimiser = _optimiser(model, settings)
@@ -477,7 +484,7 @@ def _train_mlm(conn, model, vocab, settings, examples, device, run_id, log, memo
 
 
 def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, log,
-                       memory):
+                       memory, rows):
     sampler = PairSampler(examples, vocab, batch_size=settings.batch_size,
                           per_package=settings.per_package, max_len=settings.max_len,
                           seed=settings.seed)
@@ -489,8 +496,8 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
     total_steps = settings.max_steps or len(sampler) * settings.epochs
     state = {"step": 0}
 
-    queries, pool, gold = retrieval_task(conn, split="val")
-    task = task_params(conn, "val", "O0", "O3", settings.seed)
+    queries, pool, gold = retrieval_task(conn, split="val", rows=rows)
+    task = task_params(conn, "val", "O0", "O3", settings.seed, rows)
     measured = []
 
     def epoch_fn(epoch):
