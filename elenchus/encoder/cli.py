@@ -103,5 +103,8 @@ def cmd_train(args):
         m = summary["best_val_metrics"]
         print(f"val         : recall@1 {m['recall@1']:.3f}  recall@10 "
               f"{m['recall@10']:.3f}  mrr {m['mrr']:.3f}")
+    if summary.get("peak_allocated_gib") is not None:
+        print(f"peak memory : {summary['peak_allocated_gib']:.2f} GiB allocated, "
+              f"{summary['peak_reserved_gib']:.2f} GiB reserved")
     print(f"checkpoint  : {summary['checkpoint']}")
     return 0

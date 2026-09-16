@@ -461,6 +461,119 @@ def test_the_train_command_refuses_a_conflict_and_says_why(corpus, vocab, tmp_pa
     assert "d_model 32 in the checkpoint, 64 asked" in capsys.readouterr().out
 
 
+# ---------------------------------------------------------------- gpu memory
+
+
+def test_off_a_gpu_memory_is_recorded_as_none_never_zero(corpus, vocab, tmp_path):
+    lines = []
+    summary = train(corpus, vocab, settings(tmp_path, "mlm"), config(vocab),
+                    log=lines.append)
+    for entry in summary["history"]:
+        assert entry["train_memory"] == {"allocated_gib": None, "reserved_gib": None}
+        assert entry["val_memory"] == {"allocated_gib": None, "reserved_gib": None}
+    assert summary["peak_allocated_gib"] is None
+    assert summary["peak_reserved_gib"] is None
+    assert recorded_params(corpus, summary["run_id"])["gpu"] is None
+    assert not any("mem" in line for line in lines)
+
+
+def test_the_probe_reads_cuda_peaks_in_gib_for_its_own_device(monkeypatch):
+    calls = []
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats",
+                        lambda d: calls.append(("reset", d)))
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated",
+                        lambda d: calls.append(("allocated", d)) or 3 * 1024 ** 3)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved",
+                        lambda d: calls.append(("reserved", d)) or 4 * 1024 ** 3)
+    card = types.SimpleNamespace(name="Card", total_memory=8 * 1024 ** 3)
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda d: card)
+
+    probe = module.MemoryProbe("cuda:1")
+    probe.reset()
+    assert probe.read() == {"allocated_gib": 3.0, "reserved_gib": 4.0}
+    assert probe.describe() == {"name": "Card", "total_gib": 8.0}
+    assert {device for _name, device in calls} == {torch.device("cuda:1")}
+    assert [name for name, _device in calls] == ["reset", "allocated", "reserved"]
+
+
+class FakeProbe:
+    """Stands in for a GPU: every read is a new, larger peak."""
+
+    events = []
+
+    def __init__(self, device):
+        self.readings = 0
+
+    def reset(self):
+        FakeProbe.events.append("reset")
+
+    def read(self):
+        self.readings += 1
+        FakeProbe.events.append("read")
+        return {"allocated_gib": float(self.readings),
+                "reserved_gib": self.readings + 0.5}
+
+    def describe(self):
+        return {"name": "Fake", "total_gib": 8.0}
+
+
+def test_each_epoch_measures_training_and_validation_apart(corpus, vocab, tmp_path,
+                                                          monkeypatch):
+    FakeProbe.events = []
+    monkeypatch.setattr(module, "MemoryProbe", FakeProbe)
+    real_step, real_evaluate = module._step, module.evaluate
+    monkeypatch.setattr(module, "_step", lambda *a, **k: (
+        FakeProbe.events.append("step"), real_step(*a, **k))[1])
+    monkeypatch.setattr(module, "evaluate", lambda *a, **k: (
+        FakeProbe.events.append("eval"), real_evaluate(*a, **k))[1])
+
+    lines = []
+    summary = train(corpus, vocab, settings(tmp_path, "contrastive", epochs=2),
+                    config(vocab), log=lines.append)
+
+    # Per epoch: reset, the steps, read | reset, validation, read.
+    compact = []
+    for event in FakeProbe.events:
+        if not (event == "step" and compact and compact[-1] == "step"):
+            compact.append(event)
+    epoch = ["reset", "step", "read", "reset", "eval", "read"]
+    assert compact[:12] == epoch * 2
+
+    first, second = summary["history"]
+    assert first["train_memory"] == {"allocated_gib": 1.0, "reserved_gib": 1.5}
+    assert first["val_memory"] == {"allocated_gib": 2.0, "reserved_gib": 2.5}
+    assert second["val_memory"] == {"allocated_gib": 4.0, "reserved_gib": 4.5}
+    assert summary["peak_allocated_gib"] == 4.0
+    assert summary["peak_reserved_gib"] == 4.5
+    assert recorded_params(corpus, summary["run_id"])["gpu"] == {"name": "Fake",
+                                                                 "total_gib": 8.0}
+    assert "mem train 1.00/1.50 val 2.00/2.50 GiB" in lines[1]
+    written = json.loads((tmp_path / "contrastive" / "summary.json").read_text())
+    assert written["peak_allocated_gib"] == 4.0
+    assert written["history"][0]["val_memory"]["reserved_gib"] == 2.5
+
+
+def test_the_train_command_prints_the_peak_only_when_there_is_one(monkeypatch, capsys,
+                                                                 tmp_path):
+    from elenchus import cli
+    from elenchus.encoder import vocab as vocab_module
+
+    monkeypatch.setattr("elenchus.encoder.cli.connect", lambda _p: None)
+    monkeypatch.setattr(vocab_module.Vocab, "load", staticmethod(lambda _p: None))
+    args = cli.build_parser().parse_args(["train", "mlm", "--out", str(tmp_path)])
+    args.db = ":memory:"
+    base = {"best_epoch": 0, "best_val_loss": 2.0, "checkpoint": "x/best.pt"}
+
+    for peak, shown in ((None, False), (2.25, True)):
+        summary = base | {"peak_allocated_gib": peak,
+                          "peak_reserved_gib": None if peak is None else 3.5}
+        monkeypatch.setattr(module, "train", lambda *a, _s=summary, **k: _s)
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert ("peak memory : 2.25 GiB allocated, 3.50 GiB reserved" in out) == shown
+        assert ("peak memory" in out) == shown
+
+
 def test_the_train_command_parses_its_stages():
     from elenchus import cli
 

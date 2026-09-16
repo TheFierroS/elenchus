@@ -19,6 +19,13 @@ cut functions to it and the model cannot read past its own. Starting from a
 checkpoint (init), a requested shape that differs from the checkpoint's is
 refused before any run is recorded; dropout and pooling may differ, own no
 weights, and the change is written into the run's params.
+
+Peak GPU memory is recorded for every epoch, training and validation apart,
+because the larger of the two is not known in advance: contrastive
+validation embeds the whole val pool at once. "allocated" is what tensors
+needed, "reserved" what PyTorch's caching allocator held - the part of
+nvidia-smi's number that belongs to this process's tensors. Both are GiB. On
+a CPU they are None, never a made-up zero.
 """
 
 import contextlib
@@ -207,6 +214,59 @@ def build_model(vocab, settings, config=None, overrides=None, device="cpu"):
     return model, settings, changes, init_meta
 
 
+GIB = 1024 ** 3
+
+
+class MemoryProbe:
+    """Peak GPU memory of one phase: reset before it, read after it.
+
+    Everything goes through torch.cuda, so a test can stand in for a GPU by
+    replacing those functions. On a device that is not CUDA every reading is
+    None: no GPU memory was used, and a zero would read as a measurement.
+    """
+
+    def __init__(self, device):
+        self.device = torch.device(device)
+        self.cuda = self.device.type == "cuda"
+
+    def reset(self):
+        if self.cuda:
+            torch.cuda.reset_peak_memory_stats(self.device)
+
+    def read(self):
+        """{"allocated_gib": ..., "reserved_gib": ...} since the last reset."""
+        if not self.cuda:
+            return {"allocated_gib": None, "reserved_gib": None}
+        return {
+            "allocated_gib": torch.cuda.max_memory_allocated(self.device) / GIB,
+            "reserved_gib": torch.cuda.max_memory_reserved(self.device) / GIB,
+        }
+
+    def describe(self):
+        """The card itself, for the run's params; None off a GPU."""
+        if not self.cuda:
+            return None
+        properties = torch.cuda.get_device_properties(self.device)
+        return {"name": properties.name,
+                "total_gib": properties.total_memory / GIB}
+
+
+def _memory_text(train_peak, eval_peak):
+    if train_peak["allocated_gib"] is None:
+        return ""
+    return (f"  mem train {train_peak['allocated_gib']:.2f}"
+            f"/{train_peak['reserved_gib']:.2f}"
+            f" val {eval_peak['allocated_gib']:.2f}"
+            f"/{eval_peak['reserved_gib']:.2f} GiB")
+
+
+def _peak(history, key):
+    values = [entry[phase][key] for entry in history
+              for phase in ("train_memory", "val_memory")
+              if entry[phase][key] is not None]
+    return max(values) if values else None
+
+
 def _device(settings):
     if settings.device != "auto":
         return settings.device
@@ -233,6 +293,7 @@ def train(conn, vocab, settings, config=None, log=print, overrides=None):
     device = _device(settings)
     model, settings, changes, init_meta = build_model(vocab, settings, config,
                                                       overrides, device)
+    memory = MemoryProbe(device)
 
     fingerprint = dataset_fingerprint(conn)
     params = {
@@ -244,6 +305,7 @@ def train(conn, vocab, settings, config=None, log=print, overrides=None):
         "init": settings.init,
         "init_changes": changes,
         "parameters": count_parameters(model),
+        "gpu": memory.describe(),
     }
     run_id = start_run(conn, "train", tool="elenchus-encoder", params=params,
                        seed=settings.seed)
@@ -256,10 +318,10 @@ def train(conn, vocab, settings, config=None, log=print, overrides=None):
         examples = load_examples(conn, "train")
         if settings.stage == "mlm":
             summary = _train_mlm(conn, model, vocab, settings, examples, device,
-                                 run_id, log)
+                                 run_id, log, memory)
         else:
             summary = _train_contrastive(conn, model, vocab, settings, examples,
-                                         device, run_id, log)
+                                         device, run_id, log, memory)
     except BaseException:
         finish_run(conn, run_id, "failed")
         raise
@@ -292,19 +354,25 @@ def _step(model, optimiser, loss, settings, step, total_steps):
 
 
 def _selection_loop(settings, epoch_fn, evaluate_fn, better, metric_name,
-                    model, vocab, run_id, log):
+                    model, vocab, run_id, log, memory):
     best, best_epoch, waited = None, -1, 0
     history = []
     out = Path(settings.out)
     for epoch in range(settings.epochs):
         started = time.time()
+        memory.reset()
         train_loss, steps, stop = epoch_fn(epoch)
+        train_peak = memory.read()
+        memory.reset()
         metric = evaluate_fn()
+        eval_peak = memory.read()
         history.append({"epoch": epoch, "train_loss": train_loss,
-                        metric_name: metric, "seconds": time.time() - started})
+                        metric_name: metric, "seconds": time.time() - started,
+                        "train_memory": train_peak, "val_memory": eval_peak})
         improved = best is None or better(metric, best)
         log(f"epoch {epoch:3}  loss {train_loss:.4f}  val {metric_name} {metric:.4f}"
-            f"{'  *' if improved else ''}  ({steps} steps, {time.time() - started:.0f}s)")
+            f"{'  *' if improved else ''}  ({steps} steps, {time.time() - started:.0f}s)"
+            f"{_memory_text(train_peak, eval_peak)}")
         meta = _meta(settings, run_id, epoch, metric_name, metric)
         save_checkpoint(out / "last.pt", model, vocab, meta)
         if improved:
@@ -318,10 +386,12 @@ def _selection_loop(settings, epoch_fn, evaluate_fn, better, metric_name,
         if stop:
             break
     return {"best_epoch": best_epoch, f"best_val_{metric_name}": best,
-            "history": history, "checkpoint": str(out / "best.pt")}
+            "history": history, "checkpoint": str(out / "best.pt"),
+            "peak_allocated_gib": _peak(history, "allocated_gib"),
+            "peak_reserved_gib": _peak(history, "reserved_gib")}
 
 
-def _train_mlm(conn, model, vocab, settings, examples, device, run_id, log):
+def _train_mlm(conn, model, vocab, settings, examples, device, run_id, log, memory):
     sampler = MaskedSampler(examples, vocab, batch_size=settings.batch_size,
                             max_len=settings.max_len, rate=settings.mask_rate,
                             seed=settings.seed)
@@ -363,10 +433,11 @@ def _train_mlm(conn, model, vocab, settings, examples, device, run_id, log):
         return total / max(count, 1)
 
     return _selection_loop(settings, epoch_fn, evaluate_fn, lambda a, b: a < b,
-                           "loss", model, vocab, run_id, log)
+                           "loss", model, vocab, run_id, log, memory)
 
 
-def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, log):
+def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, log,
+                       memory):
     sampler = PairSampler(examples, vocab, batch_size=settings.batch_size,
                           per_package=settings.per_package, max_len=settings.max_len,
                           seed=settings.seed)
@@ -416,7 +487,7 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
         return metrics.get("mrr", 0.0)
 
     summary = _selection_loop(settings, epoch_fn, evaluate_fn, lambda a, b: a > b,
-                              "mrr", model, vocab, run_id, log)
+                              "mrr", model, vocab, run_id, log, memory)
 
     best_metrics = measure_checkpoint(summary["checkpoint"], vocab, queries, pool,
                                       gold, device=device)
