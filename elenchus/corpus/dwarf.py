@@ -163,6 +163,19 @@ def _file_table(dwarf, cu):
 
     A unit with no line program yields an empty table; the caller then leaves
     decl_file unset rather than guessing.
+
+    A relative name filed under directory 0 is anchored at the unit's own
+    source directory, not at the compilation directory. The corpus compiles
+    every source by its path (data/corpus/<package>/...), so its files carry
+    their directory and headers come through -I; the only relative names left
+    under directory 0 are ones a #line directive spelled without a directory.
+    duktape's amalgamation has 145 of them ("duk_api_stack.c"), and resolving
+    them against the compilation directory put every duktape function in the
+    root of whichever checkout built it - an identity that changed from
+    machine to machine. Left bare they would be worse: two packages each with
+    a #line "utf8.c" would look like one file shared between packages, and
+    the dataset drops those. Anchored, such a name lives in its package. The
+    path names where the directive points, not a file that exists on disk.
     """
     try:
         program = dwarf.line_program_for_CU(cu)
@@ -172,6 +185,7 @@ def _file_table(dwarf, cu):
     if program is None:
         return {}
 
+    anchor = _unit_directory(cu)
     header = program.header
     version = header.get("version", 4)
     directories = [_decode(d) for d in header.get("include_directory", [])]
@@ -191,12 +205,34 @@ def _file_table(dwarf, cu):
             elif 1 <= dir_index <= len(directories):
                 directory = directories[dir_index - 1]
 
-        if directory and not name.startswith(("/", "\\")) and ":" not in name[:3]:
+        if (dir_index == 0 and anchor and not _is_absolute(name)
+                and "/" not in name and "\\" not in name):
+            table[index] = f"{anchor}/{name}"
+        elif directory and not _is_absolute(name):
             table[index] = f"{directory}/{name}"
         else:
             table[index] = name
 
     return table
+
+
+def _is_absolute(name):
+    return name.startswith(("/", "\\")) or ":" in name[:3]
+
+
+def _unit_directory(cu):
+    """The directory of the unit's own source file, or None if it has none."""
+    if cu is None:
+        return None
+    try:
+        attribute = cu.get_top_DIE().attributes.get("DW_AT_name")
+    except DWARF_ERRORS:
+        return None
+    if attribute is None:
+        return None
+    source = _decode(attribute.value).replace("\\", "/")
+    directory, _slash, _file = source.rpartition("/")
+    return directory or None
 
 
 def _die_name(die):

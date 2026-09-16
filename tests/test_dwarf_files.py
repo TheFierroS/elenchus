@@ -7,6 +7,10 @@ is the kind of error that produces plausible paths and wrong answers, so the
 two DWARF conventions are pinned here.
 """
 
+import types
+
+import pytest
+
 from elenchus.corpus.dwarf import _file_table
 
 
@@ -71,3 +75,104 @@ def test_missing_line_program_yields_nothing():
             return None
 
     assert _file_table(NoProgram(), None) == {}
+
+
+# ---------------------------------------------------------------- #line names
+
+
+class FakeUnit:
+    """A compilation unit whose top DIE names its own source file."""
+
+    def __init__(self, source):
+        self.source = source
+
+    def get_top_DIE(self):
+        attributes = {}
+        if self.source is not None:
+            attributes["DW_AT_name"] = types.SimpleNamespace(value=self.source.encode())
+        return types.SimpleNamespace(attributes=attributes)
+
+
+DUKTAPE = "data/corpus/duktape/src/duktape-2.7.0/src"
+
+
+def duktape_like(version=5):
+    """The shape measured in duktape's real DWARF: the build directory is
+    directory 0, #line names sit under it without a directory, the unit's own
+    source and headers under theirs."""
+    if version >= 5:
+        directories = ["/home/someone/elenchus", DUKTAPE, "/usr/share/mingw-w64/include"]
+        return FakeProgram(5, directories, [
+            FakeEntry("duktape.c", 1), FakeEntry("duk_api_stack.c", 0),
+            FakeEntry("duk_config.h", 1), FakeEntry("math.h", 2)])
+    return FakeProgram(4, [DUKTAPE, "/usr/share/mingw-w64/include"], [
+        FakeEntry("duktape.c", 1), FakeEntry("duk_api_stack.c", 0),
+        FakeEntry("math.h", 2)])
+
+
+def test_a_line_directive_name_lives_in_its_package_not_in_the_build_directory():
+    table = _file_table(FakeDwarf(duktape_like()), FakeUnit(f"{DUKTAPE}/duktape.c"))
+
+    assert table[1] == f"{DUKTAPE}/duk_api_stack.c"
+    assert not any(path.startswith("/home/") for path in table.values())
+    # Everything that was not a bare name under directory 0 is untouched.
+    assert table[0] == f"{DUKTAPE}/duktape.c"
+    assert table[2] == f"{DUKTAPE}/duk_config.h"
+    assert table[3] == "/usr/share/mingw-w64/include/math.h"
+
+
+def test_dwarf4_line_directive_names_are_anchored_too():
+    table = _file_table(FakeDwarf(duktape_like(4)), FakeUnit(f"{DUKTAPE}/duktape.c"))
+    assert table[2] == f"{DUKTAPE}/duk_api_stack.c"
+    assert table[1] == f"{DUKTAPE}/duktape.c"
+
+
+def test_the_same_line_name_in_two_packages_stays_two_files():
+    """Bare, both would read "utf8.c" - one file shared by two packages, which
+    the dataset drops from both."""
+    def path(package):
+        program = FakeProgram(5, ["/build"], [FakeEntry("utf8.c", 0)])
+        return _file_table(FakeDwarf(program),
+                           FakeUnit(f"data/corpus/{package}/src/all.c"))[0]
+
+    assert path("one") == "data/corpus/one/src/utf8.c"
+    assert path("two") == "data/corpus/two/src/utf8.c"
+
+
+@pytest.mark.parametrize("name", ["data/corpus/zlib/src/inflate.c", "sub/inner.c",
+                                  "sub\\inner.c"])
+def test_a_name_that_carries_a_directory_keeps_the_build_directory(name):
+    """Only bare names are #line's; a path given with a directory was given
+    relative to where the compiler ran."""
+    program = FakeProgram(5, ["/build"], [FakeEntry(name, 0)])
+    table = _file_table(FakeDwarf(program), FakeUnit("data/corpus/zlib/src/inflate.c"))
+    assert table[0] == f"/build/{name}"
+
+
+@pytest.mark.parametrize("name", ["/opt/crt/dtoa.c", "C:/crt/dtoa.c", "\\crt\\dtoa.c",
+                                  "C:dtoa.c"])
+def test_an_absolute_name_is_never_anchored(name):
+    program = FakeProgram(5, ["/build"], [FakeEntry(name, 0)])
+    assert _file_table(FakeDwarf(program), FakeUnit(f"{DUKTAPE}/duktape.c"))[0] == name
+
+
+@pytest.mark.parametrize("unit", [None, FakeUnit(None), FakeUnit("duktape.c")])
+def test_without_a_source_directory_to_anchor_at_nothing_changes(unit):
+    program = FakeProgram(5, ["/build"], [FakeEntry("duk_api_stack.c", 0)])
+    assert _file_table(FakeDwarf(program), unit)[0] == "/build/duk_api_stack.c"
+
+
+def test_a_unit_that_cannot_be_read_falls_back_instead_of_failing():
+    class Broken:
+        def get_top_DIE(self):
+            raise KeyError("malformed")
+
+    program = FakeProgram(5, ["/build"], [FakeEntry("duk_api_stack.c", 0)])
+    assert _file_table(FakeDwarf(program), Broken())[0] == "/build/duk_api_stack.c"
+
+
+def test_a_windows_style_unit_path_anchors_with_forward_slashes():
+    program = FakeProgram(5, ["C:/build"], [FakeEntry("duk_api_stack.c", 0)])
+    unit = FakeUnit("data\\corpus\\duktape\\src\\duktape.c")
+    assert _file_table(FakeDwarf(program), unit)[0] == (
+        "data/corpus/duktape/src/duk_api_stack.c")
