@@ -8,6 +8,10 @@ The rule for every entry: tune on `val`, never on `test`. An entry closes with
 the number that decided it, the commit it was measured at, and the corpus
 fingerprint.
 
+The scripts that run the protocols and produced the findings below live in
+`experiments/`, run from the repo root; their logs and outputs go to
+`data/`, which is not committed.
+
 ---
 
 ## Encoder pre-training (MLM)
@@ -92,11 +96,11 @@ Even P = 1 cannot exceed ~50%.
 
 - Eight contrastive runs from random weights (not the MLM probe, which saw
   all of train and would also colour the learning curve): P unset, 0.25,
-  0.5, 1.0, each with seeds 0 and 1. `data/run_e3.sh`.
+  0.5, 1.0, each with seeds 0 and 1. `experiments/run_e3.sh`.
 - Fixed budget: 1,500 steps, `--epochs 100 --patience 100`, no early stop.
   Each run is read at its last checkpoint (`last.pt`), not `best.pt`, so
   every run is measured at the same point and none gets more chances.
-- Measured on val by `data/e3_results.py`: O0→O3 MRR over queries and over
+- Measured on val by `experiments/e3_results.py`: O0→O3 MRR over queries and over
   packages; O0→O2 and O1→O3 MRR over queries. A run that did not draw
   1,500 × 64 pairs is flagged.
 - M = max(0.005, 2 × |seed 0 − seed 1| of the uniform runs' O0→O3 query MRR).
@@ -498,14 +502,65 @@ Test: mujs 25%. Train's largest: flecs 16%, sqlite 13%, mbedtls 13%.
   between epochs: run 509 (42 steps, P = 0.5, 25% of train) scored 0.097
   over queries and 0.127 over packages; run 501 had 0.131 over queries.
 
+## Full training (B2-B6) - protocol
+
+Written 16 September, before any full run. Run by `experiments/run_full.sh`
+(which refuses to start with uncommitted changes, with another training run
+on the GPU, if `elenchus check` fails, or without the level-pair setting
+given explicitly), read by `experiments/full_results.py`.
+
+- **B2:** MLM, seed 0, `--epochs 20 --patience 3`, kept at `best.pt`.
+- **B3:** contrastive from B2's `best.pt`, seeds 0, 1, 2, same limits, with
+  the level-pair sampling E3 chose.
+- **B4:** the same from random weights, seeds 0, 1, 2.
+- **Seed noise at full scale:** S = the larger of B3's and B4's max-min val
+  MRR over seeds. This replaces F5's 50-step floor as the noise later
+  experiments are read against.
+- **Rule (B4):** margin = max(0.005, S).
+  - Mean B3 − mean B4 > margin, and B3's mean package MRR not below B4's by
+    more than margin: **MLM helps, keep it.**
+  - Mean B4 − mean B3 > margin: **MLM hurts:** drop it, and E1/E2 with it.
+  - Otherwise, **no measured difference:** drop it too - an hour of
+    pre-training per iteration is kept only for a measured gain.
+- **Also reported, not decided on:** runs whose best epoch was the last
+  (still improving when stopped: if most are, 20 epochs is too few, and the
+  runs are extended before B5); runs where the package mean would have kept
+  another epoch; runs above the val bar (MRR 0.124, recall@10 0.189).
+- **B6:** `elenchus baselines --split val --encoder <best of B3/B4>`, both
+  means, recorded.
+
+### B5 - model size, memory first
+
+The ~11M configuration (d_model 384, 6 layers, 6 heads, d_ff 1536) reserved
+7.30 GiB for MLM with the default allocator (F3), on an 8 GiB card that also
+drives the desktop. `experiments/b5_memory.sh` runs 50 steps each of 3.6M
+contrastive (reference), 11M MLM and 11M contrastive, sampling the whole card
+with nvidia-smi, since PyTorch reports only its own memory.
+
+- **Fits** if at least 0.5 GiB of the card is free at nvidia-smi's peak, for
+  both 11M runs. Then B5 repeats B2-B4 at 11M unchanged.
+- **Does not fit:** batch 32 and length 512 are not options - each changes
+  the experiment (half the in-batch negatives; many more functions cut), so
+  3.6M against 11M would stop comparing size alone. Instead, activation
+  checkpointing (recompute activations in the backward pass; ~30% slower,
+  same gradients), added with a test that it changes no loss beyond
+  run-to-run noise, then measured again.
+- **Assumption, stated:** a 50-step peak stands for a full run. With 6% of
+  rows past the 1024-token cut, most batches hold a full-length function; a
+  full run's per-epoch peaks are recorded anyway, and a run that overflows
+  is stopped and re-planned.
+
 ## Before full training - checklist
 
 - [x] F1-F9 above, each committed and measured
 - [x] E3 and learning-curve options (dcf29a1), checked on real data (run 509)
 - [x] E3 protocol and decision rule written before the runs
 - [x] Learning-curve protocol and decision rule written before the runs
-- [ ] E3 runs (`data/run_e3.sh`, ~100 min) and verdict (`data/e3_results.py`)
+- [ ] E3 runs (`experiments/run_e3.sh`, ~100 min) and verdict
+      (`experiments/e3_results.py`)
 - [ ] Learning-curve runs and verdict
+- [x] Full training protocol, B4 rule and B5 memory plan written before runs
+- [ ] B5 memory measurement (`experiments/b5_memory.sh`), when the GPU is free
 - [ ] Corpus decision (wave 2 or not); if wave 2: build, `check`,
       `dataset --assign --force`, `vocab`, baselines again
 - [ ] B1 vocabulary fingerprint check, then B2 onwards
