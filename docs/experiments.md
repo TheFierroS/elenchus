@@ -83,6 +83,30 @@ function has both levels, and otherwise draws uniformly; unset, the sampler
 is exactly the uniform one. Each trained epoch records the level pairs it
 drew (`history[].pairs`), so the share actually trained on is visible.
 
+**Check on real data (run 509, P = 0.5, 25% of train).** 29.9% of draws were
+O0-O3, against 30.3% computed (50.5% of pairable functions have both levels;
+among them uniform draws O0-O3 20% of the time; 0.505 × (0.5 + 0.5 × 0.20)).
+Even P = 1 cannot exceed ~50%.
+
+**Protocol (written 16 September, before any E3 run).**
+
+- Eight contrastive runs from random weights (not the MLM probe, which saw
+  all of train and would also colour the learning curve): P unset, 0.25,
+  0.5, 1.0, each with seeds 0 and 1. `data/run_e3.sh`.
+- Fixed budget: 1,500 steps, `--epochs 100 --patience 100`, no early stop.
+  Each run is read at its last checkpoint (`last.pt`), not `best.pt`, so
+  every run is measured at the same point and none gets more chances.
+- Measured on val by `data/e3_results.py`: O0→O3 MRR over queries and over
+  packages; O0→O2 and O1→O3 MRR over queries. A run that did not draw
+  1,500 × 64 pairs is flagged.
+- M = max(0.005, 2 × |seed 0 − seed 1| of the uniform runs' O0→O3 query MRR).
+- A value of P becomes the default only if, for both seeds: (1) its O0→O3
+  query MRR beats uniform by more than M; (2) its O0→O3 package MRR is not
+  below uniform by more than M; (3) its O0→O2 and O1→O3 query MRR are not
+  below uniform by more than M. If several qualify, the highest O0→O3 query
+  MRR averaged over both seeds. If none qualify, uniform stays, and that is
+  the result.
+
 **Identical pairs (same measurement).** 4.6% of draws (4.5% expected) pair
 two identical listings, almost all O2-O3; 49 functions (0.4%) are one code at
 every level. Under the 5% threshold set before measuring, so the sampler is
@@ -169,6 +193,29 @@ the one built from all of train.
 **Settles it:** val MRR (query and package means) at 25/50/100% for both
 units, read against the run-to-run noise (F5). Val is the same at every
 step, so the steps differ only by the training data.
+
+**Protocol (written 16 September, before any run; after E3, with the level
+pair sampling E3 chooses).**
+
+- Contrastive from random weights, as in E3. Unlike E3, each fraction is
+  trained until val stops improving (`--epochs 40 --patience 3`) and read
+  at `best.pt`: a fixed budget would under-train the larger fractions and
+  flatten the curve for a reason that has nothing to do with data. Epochs
+  are not comparable across fractions (a 25% epoch is a quarter as long),
+  which early stopping makes irrelevant.
+- Runs: identity 25%, 50%; package 25%, 50%; 100% (shared by both units).
+  The package unit also with seed 1 at 25% and 50%, since which packages
+  are kept moves the result.
+- Gain = MRR(100%) − MRR(50%), query mean; threshold T = max(0.01, M) with
+  M from E3.
+  - Both units' gain ≤ T: the curve has flattened; no wave 2; go to full
+    training.
+  - Package gain > T: more packages help; wave 2, data-format and text
+    first.
+  - Only identity gain > T: more functions help but new packages are not
+    shown to; wave 2 still, favouring large packages in existing domains.
+  - The 25→50% gains are recorded as the curve's shape, not used to decide.
+  - For the package unit, the gain is the mean over its two seeds.
 
 **Wave 2, if it is needed:** train's thinnest domains are data-format (5.1%
 of identities) and text (6.1%); val and test lean on a few large packages, so
@@ -444,12 +491,21 @@ Test: mujs 25%. Train's largest: flecs 16%, sqlite 13%, mbedtls 13%.
   its allocated figure is validation's own.
 - **Learning-curve runs use the full-train vocabulary.** Tokens only seen in
   the dropped part stay in it; noted, not expected to matter.
+- **Short runs start from random weights**, not from MLM, so their absolute
+  scores sit below the full pipeline's; E3 and the learning curve compare
+  runs with each other, never with the week's success criterion.
+- **Identity and package means can disagree between models**, not only
+  between epochs: run 509 (42 steps, P = 0.5, 25% of train) scored 0.097
+  over queries and 0.127 over packages; run 501 had 0.131 over queries.
 
 ## Before full training - checklist
 
 - [x] F1-F9 above, each committed and measured
-- [ ] E3 short runs (`--eval-pair-share`), decision rule written before the runs
-- [ ] Learning curve, both units, decision rule written before the runs
+- [x] E3 and learning-curve options (dcf29a1), checked on real data (run 509)
+- [x] E3 protocol and decision rule written before the runs
+- [x] Learning-curve protocol and decision rule written before the runs
+- [ ] E3 runs (`data/run_e3.sh`, ~100 min) and verdict (`data/e3_results.py`)
+- [ ] Learning-curve runs and verdict
 - [ ] Corpus decision (wave 2 or not); if wave 2: build, `check`,
       `dataset --assign --force`, `vocab`, baselines again
 - [ ] B1 vocabulary fingerprint check, then B2 onwards
