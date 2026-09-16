@@ -45,6 +45,7 @@ import json
 import math
 import os
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -53,7 +54,12 @@ import torch
 from elenchus.corpus.dataset import candidate_rows
 from elenchus.db import code_version, finish_run, start_run
 from elenchus.encoder.batching import collate_masked, collate_pairs
-from elenchus.encoder.data import MaskedSampler, PairSampler, load_examples
+from elenchus.encoder.data import (
+    MaskedSampler,
+    PairSampler,
+    load_examples,
+    subset_examples,
+)
 from elenchus.encoder.losses import (
     MemoryQueue,
     info_nce,
@@ -105,10 +111,21 @@ class Settings:
     device: str = "auto"
     amp: bool = True
     max_steps: int | None = None    # None trains fully; 0 measures the start only
+    train_fraction: float | None = None   # learning curve; None is all of train
+    train_unit: str = "identity"          # "identity" or "package"
+    eval_pair_share: float | None = None  # E3; None is uniform level pairs
 
     def __post_init__(self):
         if self.stage not in ("mlm", "contrastive"):
             raise ValueError(f"unknown stage {self.stage!r}")
+        if self.train_fraction is not None and not 0 < self.train_fraction <= 1:
+            raise ValueError(
+                f"train_fraction must be in (0, 1], got {self.train_fraction}")
+        if self.train_unit not in ("identity", "package"):
+            raise ValueError(f"unknown train_unit {self.train_unit!r}")
+        if self.eval_pair_share is not None and not 0 <= self.eval_pair_share <= 1:
+            raise ValueError(
+                f"eval_pair_share must be in [0, 1], got {self.eval_pair_share}")
         if self.max_steps is not None and self.max_steps < 0:
             raise ValueError(f"max_steps must be None or >= 0, got {self.max_steps}")
 
@@ -342,13 +359,26 @@ def train(conn, vocab, settings, config=None, log=print, overrides=None):
         log(f"  {name}: {old} in {settings.init}, {new} here")
 
     try:
-        examples = load_examples(conn, "train", rows)
+        everything = load_examples(conn, "train", rows)
+        examples = subset_examples(everything, settings.train_fraction,
+                                   settings.train_unit, settings.seed)
+        subset = {"rows": len(examples),
+                  "identities": len({e.identity for e in examples}),
+                  "packages": len({e.identity[0] for e in examples}),
+                  "of_rows": len(everything),
+                  "of_identities": len({e.identity for e in everything}),
+                  "of_packages": len({e.identity[0] for e in everything})}
+        if settings.train_fraction is not None:
+            log(f"train subset ({settings.train_fraction:g} by {settings.train_unit}): "
+                f"{subset['identities']:,} of {subset['of_identities']:,} functions, "
+                f"{subset['packages']} of {subset['of_packages']} packages")
         if settings.stage == "mlm":
             summary = _train_mlm(conn, model, vocab, settings, examples, device,
                                  run_id, log, memory, rows)
         else:
             summary = _train_contrastive(conn, model, vocab, settings, examples,
                                          device, run_id, log, memory, rows)
+        summary["train_subset"] = subset
     except BaseException:
         finish_run(conn, run_id, "failed")
         raise
@@ -487,7 +517,7 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
                        memory, rows):
     sampler = PairSampler(examples, vocab, batch_size=settings.batch_size,
                           per_package=settings.per_package, max_len=settings.max_len,
-                          seed=settings.seed)
+                          seed=settings.seed, eval_pair_share=settings.eval_pair_share)
     if len(sampler) == 0:
         raise ValueError("not enough pairable functions for one batch")
     target = momentum_copy(model)
@@ -499,11 +529,16 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
     queries, pool, gold = retrieval_task(conn, split="val", rows=rows)
     task = task_params(conn, "val", "O0", "O3", settings.seed, rows)
     measured = []
+    pair_counts = []   # per trained epoch: how often each level pair was drawn
 
     def epoch_fn(epoch):
         model.train()
         losses = []
+        drawn = defaultdict(int)
+        pair_counts.append(drawn)
         for batch in sampler.batches(epoch):
+            for first, second in zip(batch.anchor_levels, batch.positive_levels):
+                drawn["-".join(sorted((first, second)))] += 1
             tensors = _to(collate_pairs(batch, vocab.pad_id), device)
             with _autocast(device, settings):
                 q = model.embed(tensors["anchor_ids"], tensors["anchor_mask"])
@@ -543,6 +578,9 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
                if entry["epoch"] >= 0 and entry["package_mrr"] is not None]
     best_by_package = max(trained, key=lambda entry: entry["package_mrr"], default=None)
     summary["best_epoch_by_package_mrr"] = best_by_package and best_by_package["epoch"]
+
+    for entry, drawn in zip(summary["history"][1:], pair_counts):
+        entry["pairs"] = dict(sorted(drawn.items()))
 
     results = {f"encoder-{run_id}-start": measured[0]}
     summary["start_val_metrics"] = measured[0]

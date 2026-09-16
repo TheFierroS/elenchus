@@ -150,13 +150,54 @@ def false_negatives(query_content, own_content, key_content):
     ]
 
 
+# The level pair the retrieval task asks about: an -O0 query, an -O3 pool.
+EVAL_PAIR = ("O0", "O3")
+
+
+def subset_examples(examples, fraction=None, unit="identity", seed=0):
+    """Keep a fraction of train, for a learning curve.
+
+    unit "identity" keeps that share of functions, every level of each; it
+    asks whether more functions from the same packages help. unit "package"
+    keeps that share of packages whole; it asks whether more different
+    packages help, which is what growing the corpus adds - and, with 23
+    train packages, which few are kept moves the result.
+
+    The units are shuffled once per (unit, seed) and a prefix is kept, so for
+    one seed 25% is inside 50% is inside 100%: a curve's steps differ by the
+    data added, not by a different draw. At least one unit is kept.
+    """
+    if fraction is None:
+        return examples
+    if not 0 < fraction <= 1:
+        raise ValueError(f"train fraction must be in (0, 1], got {fraction}")
+    if unit == "identity":
+        key = lambda example: example.identity  # noqa: E731
+    elif unit == "package":
+        key = lambda example: example.identity[0]  # noqa: E731
+    else:
+        raise ValueError(f"unknown train unit {unit!r}")
+    order = sorted({key(example) for example in examples})
+    random.Random(f"train-fraction:{unit}:{seed}").shuffle(order)
+    kept = set(order[:max(1, round(fraction * len(order)))])
+    return [example for example in examples if key(example) in kept]
+
+
 class PairSampler:
     """Draws batches of positive pairs with hard negatives from one package.
 
     Only functions present at two or more levels can form a pair. Each epoch,
     every such function appears in exactly one batch, with two distinct levels
-    chosen at random - so over many epochs all six level pairs are seen, not
-    only the -O0/-O3 pair the evaluation measures (docs/experiments.md, E3).
+    chosen at random. Within one function every pair is equally likely, but
+    not across the dataset: many small functions are inlined away from -O2 up
+    and have only -O0 and -O1. Measured on train, 46.0% of draws are O0-O1 and
+    10.1% the O0-O3 pair the evaluation asks about (docs/experiments.md, E3).
+
+    eval_pair_share P, when given, draws the evaluation pair with probability
+    P for every function that has both of its levels, and otherwise draws as
+    above; functions without them are untouched. Left None, nothing extra is
+    drawn and the sampler is exactly the uniform one. P=0 is not the same
+    stream as None: it still draws the coin.
 
     A batch is filled from a few packages at a time, taking up to per_package
     functions from each in turn (E4). Late in an epoch, when only a few
@@ -172,7 +213,9 @@ class PairSampler:
     """
 
     def __init__(self, examples, vocab, batch_size=64, per_package=8,
-                 max_len=DEFAULT_MAX_LEN, seed=0):
+                 max_len=DEFAULT_MAX_LEN, seed=0, eval_pair_share=None):
+        if eval_pair_share is not None and not 0 <= eval_pair_share <= 1:
+            raise ValueError(f"eval_pair_share must be in [0, 1], got {eval_pair_share}")
         if batch_size < 2:
             raise ValueError("a contrastive batch needs at least two functions")
         if per_package < 1:
@@ -183,6 +226,7 @@ class PairSampler:
         self.per_package = per_package
         self.max_len = max_len
         self.seed = seed
+        self.eval_pair_share = eval_pair_share
 
         # The same source function can have more than one row at one level:
         # a static inline from a header is emitted out of line in each file
@@ -253,7 +297,12 @@ class PairSampler:
             batch = PairBatch([], [], [], [], [], [], [])
             for identity in identities:
                 levels = self.views[identity]
-                first, second = rng.sample(sorted(levels), 2)
+                if (self.eval_pair_share is not None
+                        and all(level in levels for level in EVAL_PAIR)
+                        and rng.random() < self.eval_pair_share):
+                    first, second = rng.sample(EVAL_PAIR, 2)
+                else:
+                    first, second = rng.sample(sorted(levels), 2)
                 anchor = rng.choice(levels[first])
                 positive = rng.choice(levels[second])
 

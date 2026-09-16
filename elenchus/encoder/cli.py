@@ -86,7 +86,8 @@ def cmd_train(args):
         temperature=args.temperature, queue_size=args.queue_size,
         momentum=args.momentum, max_len=args.max_len, patience=args.patience,
         seed=args.seed, init=args.init, device=args.device,
-        max_steps=args.max_steps,
+        max_steps=args.max_steps, train_fraction=args.train_fraction,
+        train_unit=args.train_unit, eval_pair_share=args.eval_pair_share,
     )
     try:
         summary = train(conn, vocab, settings, overrides=size_overrides(args))

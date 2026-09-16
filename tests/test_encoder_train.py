@@ -725,6 +725,103 @@ def test_measuring_only_the_start_names_no_epoch_for_either_criterion(corpus, vo
     assert summary["history"][0]["package_mrr"] is not None
 
 
+def test_a_run_counts_the_level_pairs_it_drew(corpus, vocab, tmp_path):
+    summary = train(corpus, vocab, settings(tmp_path, "contrastive", epochs=2),
+                    config(vocab), log=quiet)
+    start, *trained = summary["history"]
+    assert "pairs" not in start
+    for entry in trained:
+        # The test corpus has -O0 and -O3 only; 24 train functions, batches of 4.
+        assert entry["pairs"] == {"O0-O3": 24}
+
+
+def test_the_eval_pair_share_reaches_the_sampler_and_the_record(corpus, vocab, tmp_path,
+                                                               monkeypatch):
+    seen = {}
+    real = module.PairSampler
+
+    def spy(*a, **k):
+        seen["share"] = k.get("eval_pair_share")
+        return real(*a, **k)
+
+    monkeypatch.setattr(module, "PairSampler", spy)
+    summary = train(corpus, vocab,
+                    settings(tmp_path, "contrastive", max_steps=1, eval_pair_share=0.7),
+                    config(vocab), log=quiet)
+    assert seen["share"] == 0.7
+    recorded = recorded_params(corpus, summary["run_id"])
+    assert recorded["settings"]["eval_pair_share"] == 0.7
+
+
+@pytest.mark.parametrize("stage", ["mlm", "contrastive"])
+@pytest.mark.parametrize("fraction, unit, identities, packages",
+                         [(0.5, "identity", 12, 3), (0.34, "package", 8, 1)])
+def test_a_train_fraction_trains_on_that_subset_and_says_so(corpus, vocab, tmp_path,
+                                                            monkeypatch, stage, fraction,
+                                                            unit, identities, packages):
+    """The test corpus: 3 train packages of 8 functions, each at two levels."""
+    given = {}
+    for name in ("MaskedSampler", "PairSampler"):
+        real = getattr(module, name)
+        monkeypatch.setattr(module, name, lambda examples, *a, _real=real, **k: (
+            given.setdefault("examples", examples), _real(examples, *a, **k))[1])
+    lines = []
+    summary = train(corpus, vocab,
+                    settings(tmp_path, stage, max_steps=1, train_fraction=fraction,
+                             train_unit=unit), config(vocab), log=lines.append)
+
+    kept = given["examples"]
+    assert len({e.identity for e in kept}) == identities
+    assert len({e.identity[0] for e in kept}) == packages
+    assert summary["train_subset"] == {"rows": 2 * identities, "identities": identities,
+                                       "packages": packages, "of_rows": 48,
+                                       "of_identities": 24, "of_packages": 3}
+    heading = f"train subset ({fraction:g} by {unit})"
+    assert any(line.startswith(heading) for line in lines)
+    written = json.loads((tmp_path / stage / "summary.json").read_text())
+    assert written["train_subset"]["identities"] == identities
+
+
+def test_without_a_fraction_all_of_train_is_used_and_nothing_is_logged(corpus, vocab,
+                                                                      tmp_path):
+    lines = []
+    summary = train(corpus, vocab, settings(tmp_path, "mlm", max_steps=1),
+                    config(vocab), log=lines.append)
+    assert summary["train_subset"]["identities"] == summary["train_subset"][
+        "of_identities"] == 24
+    assert not any("train subset" in line for line in lines)
+
+
+@pytest.mark.parametrize("field, value", [("train_fraction", 0.0),
+                                          ("train_fraction", 1.5),
+                                          ("train_unit", "file"),
+                                          ("eval_pair_share", 2.0)])
+def test_impossible_data_settings_are_refused(field, value):
+    with pytest.raises(ValueError, match=field):
+        Settings(stage="contrastive", out="x", **{field: value})
+
+
+def test_the_data_flags_reach_the_settings(monkeypatch, tmp_path):
+    from elenchus import cli
+    from elenchus.encoder import vocab as vocab_module
+
+    monkeypatch.setattr("elenchus.encoder.cli.connect", lambda _p: None)
+    monkeypatch.setattr(vocab_module.Vocab, "load", staticmethod(lambda _p: None))
+    captured = {}
+    monkeypatch.setattr(module, "train", lambda conn, vocab, s, **k: (
+        captured.setdefault("settings", s), {"checkpoint": None, "best_epoch": None})[1])
+    args = cli.build_parser().parse_args(
+        ["train", "contrastive", "--out", str(tmp_path), "--train-fraction", "0.25",
+         "--train-unit", "package", "--eval-pair-share", "0.5"])
+    args.db = ":memory:"
+    args.func(args)
+    s = captured["settings"]
+    assert (s.train_fraction, s.train_unit, s.eval_pair_share) == (0.25, "package", 0.5)
+    bare = cli.build_parser().parse_args(["train", "mlm", "--out", "m"])
+    assert (bare.train_fraction, bare.train_unit, bare.eval_pair_share) == (
+        None, "identity", None)
+
+
 def test_a_negative_step_cap_is_refused():
     with pytest.raises(ValueError, match="max_steps"):
         Settings(stage="mlm", out="x", max_steps=-1)

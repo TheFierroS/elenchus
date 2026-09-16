@@ -675,6 +675,16 @@ def build_parser():
     training.add_argument("--max-steps", type=int, default=None,
                           help="stop after this many steps (for a quick check); "
                                "0 measures the untrained start and trains nothing")
+    # Experiments on the data a run sees (docs/experiments.md: learning curve, E3).
+    data = training.add_argument_group("data")
+    data.add_argument("--train-fraction", type=float, default=None,
+                      help="train on this share of train, for a learning curve")
+    data.add_argument("--train-unit", choices=["identity", "package"],
+                      default="identity",
+                      help="what --train-fraction counts: functions or whole packages")
+    data.add_argument("--eval-pair-share", type=float, default=None,
+                      help="contrastive: draw the O0-O3 pair this often, where a "
+                           "function has both (unset: uniform level pairs)")
     # Model size. Left unset, a new model takes EncoderConfig's defaults and a
     # model started with --init keeps its checkpoint's. Shape flags that
     # disagree with --init are refused; --dropout and --pooling may differ.

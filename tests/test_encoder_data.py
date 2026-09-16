@@ -22,6 +22,7 @@ from elenchus.encoder.data import (
     false_negatives,
     load_examples,
     mask_tokens,
+    subset_examples,
     with_cls,
 )
 from elenchus.encoder.vocab import SPECIALS, UNK, build_vocab
@@ -523,3 +524,124 @@ def test_unknown_tokens_in_a_sequence_do_not_break_encoding():
     restored = [label if label != IGNORE_INDEX else token
                 for token, label in zip(batch.inputs[0], batch.labels[0])]
     assert vocab.decode(restored) == ["[CLS]", "push", UNK]
+
+
+# ---------------------------------------------------------------- E3: level pairs
+
+
+def mixed_corpus():
+    """40 functions at all four levels, 40 inlined away after -O1."""
+    return (corpus(packages=2, per_package=20)
+            + [e for e in corpus(packages=4, per_package=10, levels=("O0", "O1"))
+               if e.identity[0] in ("pkg2", "pkg3")])
+
+
+def draws(sampler, epochs):
+    return [(identity, frozenset((a, b)), a_content, p_content)
+            for epoch in range(epochs)
+            for batch in sampler.batches(epoch)
+            for identity, a, b, a_content, p_content in zip(
+                batch.identities, batch.anchor_levels, batch.positive_levels,
+                batch.anchor_content, batch.positive_content)]
+
+
+def test_without_a_share_the_sampler_draws_exactly_as_it_always_did():
+    """The uniform rule written out again: same functions, levels and rows."""
+    sampler = pair_sampler(mixed_corpus(), batch_size=16)
+    expected = []
+    for epoch in range(3):
+        rng = epoch_rng(sampler.seed, epoch)
+        for identities in sampler._schedule(rng):
+            for identity in identities:
+                levels = sampler.views[identity]
+                first, second = rng.sample(sorted(levels), 2)
+                anchor, positive = rng.choice(levels[first]), rng.choice(levels[second])
+                expected.append((identity, frozenset((first, second)),
+                                 anchor.content, positive.content))
+    assert draws(sampler, 3) == expected
+
+
+def eval_share(found):
+    eligible = [pair for identity, pair, _, _ in found if identity[0] in ("pkg0", "pkg1")]
+    return sum(pair == frozenset(("O0", "O3")) for pair in eligible) / len(eligible)
+
+
+def test_a_share_of_one_always_draws_the_evaluation_pair_where_it_exists():
+    found = draws(pair_sampler(mixed_corpus(), batch_size=16, eval_pair_share=1.0), 6)
+    assert eval_share(found) == 1.0
+    others = {pair for identity, pair, _, _ in found if identity[0] in ("pkg2", "pkg3")}
+    assert others == {frozenset(("O0", "O1"))}, "functions without -O3 are untouched"
+
+
+def test_both_directions_of_the_evaluation_pair_are_drawn():
+    sampler = pair_sampler(mixed_corpus(), batch_size=16, eval_pair_share=1.0)
+    directions = {(a, b) for epoch in range(4) for batch in sampler.batches(epoch)
+                  for a, b in zip(batch.anchor_levels, batch.positive_levels)
+                  if {a, b} == {"O0", "O3"}}
+    assert directions == {("O0", "O3"), ("O3", "O0")}
+
+
+def test_a_share_of_a_half_draws_it_half_the_time_plus_its_uniform_sixth():
+    """P = 0.5 + 0.5 * 1/6 for a function with all four levels."""
+    found = draws(pair_sampler(mixed_corpus(), batch_size=16, eval_pair_share=0.5), 40)
+    assert eval_share(found) == pytest.approx(0.5 + 0.5 / 6, abs=0.04)
+
+
+def test_a_share_of_zero_is_uniform_but_not_the_same_stream_as_none():
+    none = draws(pair_sampler(mixed_corpus(), batch_size=16), 40)
+    zero = draws(pair_sampler(mixed_corpus(), batch_size=16, eval_pair_share=0.0), 40)
+    assert eval_share(zero) == pytest.approx(1 / 6, abs=0.04)
+    assert eval_share(none) == pytest.approx(1 / 6, abs=0.04)
+    assert zero != none
+
+
+@pytest.mark.parametrize("share", [-0.1, 1.5])
+def test_an_impossible_share_is_refused(share):
+    with pytest.raises(ValueError, match="eval_pair_share"):
+        pair_sampler(eval_pair_share=share)
+
+
+# ---------------------------------------------------------------- learning curve
+
+
+def test_identity_subsets_are_nested_and_keep_every_level_of_a_kept_function():
+    examples = corpus(packages=4, per_package=25)          # 100 functions
+    quarter = subset_examples(examples, 0.25, "identity", seed=3)
+    half = subset_examples(examples, 0.5, "identity", seed=3)
+    everything = subset_examples(examples, 1.0, "identity", seed=3)
+
+    ids = [{e.identity for e in part} for part in (quarter, half, everything)]
+    assert [len(i) for i in ids] == [25, 50, 100]
+    assert ids[0] <= ids[1] <= ids[2]
+    assert len(quarter) == 25 * len(LEVELS)
+    assert everything == examples
+    assert subset_examples(examples, 0.25, "identity", seed=3) == quarter
+
+
+def test_package_subsets_keep_whole_packages_and_nest():
+    examples = corpus(packages=8, per_package=5)
+    quarter = subset_examples(examples, 0.25, "package", seed=1)
+    half = subset_examples(examples, 0.5, "package", seed=1)
+    kept = [{e.identity[0] for e in part} for part in (quarter, half)]
+    assert [len(k) for k in kept] == [2, 4] and kept[0] <= kept[1]
+    assert len(quarter) == 2 * 5 * len(LEVELS)
+
+
+def test_a_different_seed_keeps_a_different_subset():
+    examples = corpus(packages=4, per_package=25)
+    one = {e.identity for e in subset_examples(examples, 0.5, "identity", seed=1)}
+    two = {e.identity for e in subset_examples(examples, 0.5, "identity", seed=2)}
+    assert one != two
+
+
+def test_no_fraction_keeps_everything_and_a_tiny_one_keeps_one_unit():
+    examples = corpus(packages=3, per_package=4)
+    assert subset_examples(examples, None) is examples
+    assert len({e.identity[0] for e in subset_examples(examples, 0.01, "package")}) == 1
+
+
+@pytest.mark.parametrize("fraction, unit", [(0, "identity"), (1.2, "identity"),
+                                            (0.5, "file")])
+def test_an_impossible_subset_is_refused(fraction, unit):
+    with pytest.raises(ValueError):
+        subset_examples(corpus(), fraction, unit)
