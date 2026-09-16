@@ -16,6 +16,20 @@ Padding must never change a function's vector. Attention is masked with the
 padding mask, and mean pooling averages only real positions, so a function
 embedded alone and the same function padded inside a batch of longer ones
 give the same vector - a property tested directly.
+
+Starting scale matters. The masked-LM head reads its logits through the
+token embedding matrix, so the size of those vectors sets how confident an
+untrained model is. At PyTorch's default (std 1.0) the logits spread with a
+standard deviation of about 18: the untrained model is sure of wrong answers.
+Smoke run 492 averaged a loss of 78 over its first 50 steps, where an honest
+guess costs ln(vocab) ~ 5.8. On random batches its gradients measured 16-28
+against a clipping norm of 1.0, so every early step was cut twenty-fold.
+Token and position embeddings therefore start at std 0.02 (the BERT
+convention): logits spread by ~0.3, the loss starts at ln(vocab), gradients
+~1. The other layers keep PyTorch's defaults. Setting every Linear to std
+0.02 as well left the starting loss unchanged and, on random batches, made
+an untrained model's vectors for different functions more alike (mean cosine
+0.84 -> 0.90), a worse start for contrastive training.
 """
 
 from dataclasses import asdict, dataclass
@@ -23,6 +37,8 @@ from dataclasses import asdict, dataclass
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+EMBEDDING_STD = 0.02
 
 
 @dataclass
@@ -68,6 +84,21 @@ class FunctionEncoder(nn.Module):
         # the same notion of what the token is, and it saves a vocab-sized
         # matrix.
         self.mlm_bias = nn.Parameter(torch.zeros(config.vocab_size))
+        self._init_embeddings()
+
+    def _init_embeddings(self):
+        """Small embeddings, so an untrained model starts by guessing evenly.
+
+        Re-initialising overwrites the padding row nn.Embedding had zeroed, so
+        it is zeroed again. It only starts at zero: the tied MLM head trains
+        it from the output side. That is harmless - padded positions are
+        masked out of attention and pooling, which is what keeps padding from
+        changing a vector - and tested with a padding row that has moved.
+        """
+        nn.init.normal_(self.tokens.weight, mean=0.0, std=EMBEDDING_STD)
+        nn.init.normal_(self.positions.weight, mean=0.0, std=EMBEDDING_STD)
+        with torch.no_grad():
+            self.tokens.weight[self.config.pad_id].zero_()
 
     def hidden(self, ids, mask):
         """Contextual vectors, [batch, length, d_model]."""

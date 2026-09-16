@@ -89,6 +89,68 @@ def test_mlm_logits_cover_the_vocabulary_at_every_position():
     assert model.mlm_logits(ids, mask).shape == (2, 3, 40)
 
 
+@pytest.mark.parametrize("seed", range(3))
+def test_an_untrained_model_starts_masked_lm_at_an_even_guess(seed):
+    """The loss of guessing uniformly over V tokens is ln(V).
+
+    Too large a starting scale makes an untrained model confidently wrong:
+    run 492 began at 78 instead of ~5.8. A wide model shows it most, because
+    the logits grow with d_model; width 64 is wide enough to fail loudly at
+    std 1.0 (loss ~57) and still quick.
+    """
+    vocab_size = 321
+    torch.manual_seed(seed)
+    model = FunctionEncoder(EncoderConfig(
+        vocab_size=vocab_size, max_len=128, d_model=64, n_layers=2, n_heads=2,
+        d_ff=128, dropout=0.0, embed_dim=16)).eval()
+    generator = torch.Generator().manual_seed(seed)
+    ids = torch.randint(5, vocab_size, (16, 96), generator=generator)
+    hidden = torch.rand(ids.shape, generator=generator) < 0.15
+    labels = torch.where(hidden, ids, torch.full_like(ids, IGNORE_INDEX))
+    inputs = torch.where(hidden, torch.full_like(ids, 2), ids)  # [MASK]
+    mask = torch.ones_like(ids, dtype=torch.bool)
+
+    with torch.no_grad():
+        loss = mlm_loss(model.mlm_logits(inputs, mask), labels).item()
+    assert abs(loss - math.log(vocab_size)) < 1.0, loss
+
+
+def test_embeddings_start_small_and_the_padding_row_at_zero():
+    """The value itself, not only its effect: the positions never reach the
+    MLM logits, so the loss test alone would not notice them starting large."""
+    config = EncoderConfig(vocab_size=500, pad_id=3, max_len=512, d_model=128)
+    model = FunctionEncoder(config)
+    tokens = model.tokens.weight.detach()
+    others = torch.cat([tokens[:3], tokens[4:]])
+
+    assert torch.count_nonzero(tokens[3]) == 0
+    assert abs(others.std().item() - 0.02) < 0.002
+    assert abs(model.positions.weight.detach().std().item() - 0.02) < 0.002
+
+
+def test_padding_stays_harmless_after_training_moves_the_padding_row():
+    """The padding row starts at zero but does not stay there: padding_idx
+    stops the gradient of the input lookup only, and the tied MLM head reaches
+    the same row from the output side (it learns never to predict [PAD]).
+    What protects a function's vector is the attention mask, so check it with
+    a padding row that has grown as large as any other."""
+    model = tiny()
+    optimiser = torch.optim.AdamW(model.parameters(), lr=0.1)
+    ids, mask = pad([[1, 5, 6], [1, 7]], 0)
+    for _ in range(20):
+        optimiser.zero_grad()
+        model.mlm_logits(ids, mask).sum().backward()
+        optimiser.step()
+    assert model.tokens.weight[0].norm() > 1.0, "the padding row did not move"
+
+    model.eval()
+    short = [1, 7, 8, 9]
+    with torch.no_grad():
+        alone = model.embed(*pad([short], 0))[0]
+        in_batch = model.embed(*pad([short, [1] + list(range(10, 30))], 0))[0]
+    assert torch.allclose(alone, in_batch, atol=1e-5)
+
+
 def test_unknown_pooling_is_refused():
     with pytest.raises(ValueError):
         FunctionEncoder(EncoderConfig(vocab_size=10, pooling="max"))
