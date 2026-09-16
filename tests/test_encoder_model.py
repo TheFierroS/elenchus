@@ -352,6 +352,94 @@ def test_the_scorer_scores_every_pool_entry_and_ranks_identical_code_first():
     assert max(range(3), key=scores.__getitem__) == 1
 
 
+def varied(count, seed):
+    import random
+
+    rng = random.Random(seed)
+    names = ["push", "xor", "imul", "shl", "add", "sub", "lea", "cmp"]
+    return [sample(listing(*[rng.choice(names) for _ in range(rng.randint(1, 30))]))
+            for _ in range(count)]
+
+
+def scorer_with_counter(batch_size=4):
+    names = ["push", "xor", "imul", "shl", "add", "sub", "lea", "cmp"] * 2
+    functions = [(("p", "f", str(i)), [m, "REG64"]) for i, m in enumerate(names)]
+    vocab = build_vocab(functions, min_functions=1)
+    torch.manual_seed(0)
+    model = FunctionEncoder(EncoderConfig(vocab_size=len(vocab), max_len=32,
+                                          d_model=32, n_layers=2, n_heads=2,
+                                          d_ff=64, dropout=0.0, embed_dim=16))
+    calls = []
+    real = model.embed
+    model.embed = lambda ids, mask: calls.append(ids.shape) or real(ids, mask)
+    return EncoderScorer(model, vocab, max_len=32, batch_size=batch_size), calls
+
+
+def test_queries_are_embedded_in_batches_not_one_forward_pass_each():
+    """The fix for the allocator filling the card during validation: 1,643
+    single passes of 1,643 lengths became a handful of batches."""
+    from elenchus.evaluation.metrics import evaluate
+
+    scorer, calls = scorer_with_counter(batch_size=4)
+    pool, queries = varied(10, 1), varied(9, 2)
+    evaluate(scorer, queries, pool, [{0}] * len(queries))
+    assert len(calls) == 3 + 3  # ceil(10 / 4) pool batches, ceil(9 / 4) query batches
+
+
+def test_batched_queries_score_like_single_ones():
+    from elenchus.evaluation.metrics import evaluate
+
+    pool, queries = varied(12, 3), varied(11, 4)
+    gold = [{i % 12} for i in range(len(queries))]
+    batched, _ = scorer_with_counter()
+    single, _ = scorer_with_counter()
+    single.prepare(pool)
+    expected = [single.scores(query) for query in queries]  # nothing prepared
+
+    batched.prepare(pool)
+    batched.prepare_queries(queries)
+    for query, want in zip(queries, expected):
+        assert batched.scores(query) == pytest.approx(want, abs=1e-5)
+    assert evaluate(batched, queries, pool, gold)["recall@10"] == pytest.approx(
+        evaluate(single, queries, pool, gold)["recall@10"])
+
+
+def test_a_query_that_was_not_prepared_is_embedded_on_its_own():
+    scorer, calls = scorer_with_counter()
+    pool, prepared, stranger = varied(4, 5), varied(3, 6), varied(1, 7)[0]
+    scorer.prepare(pool)
+    scorer.prepare_queries(prepared)
+    before = len(calls)
+    scorer.scores(prepared[0])
+    assert len(calls) == before, "a prepared query must not be embedded again"
+    scorer.scores(stranger)
+    assert len(calls) == before + 1
+
+
+def test_a_new_pool_forgets_the_old_queries():
+    """A vector cached for one evaluation must not answer in the next."""
+    scorer, calls = scorer_with_counter()
+    queries = varied(2, 8)
+    scorer.prepare(varied(4, 9))
+    scorer.prepare_queries(queries)
+    scorer.prepare(varied(4, 10))
+    before = len(calls)
+    scorer.scores(queries[0])
+    assert len(calls) == before + 1
+
+
+def test_a_cached_vector_is_only_returned_for_the_object_it_was_made_from():
+    scorer, _calls = scorer_with_counter()
+    query, impostor = varied(2, 11)
+    scorer.prepare(varied(4, 12))
+    scorer.prepare_queries([query])
+    # Simulate a reused id: the cache entry under impostor's id holds query.
+    scorer._queries[id(impostor)] = (query, scorer._queries[id(query)][1])
+    fresh, _ = scorer_with_counter()
+    fresh.prepare(varied(4, 12))
+    assert scorer.scores(impostor) == pytest.approx(fresh.scores(impostor), abs=1e-5)
+
+
 def test_scoring_before_prepare_is_refused():
     vocab = build_vocab([(("p", "f", "g"), ["push"])], min_functions=1)
     scorer = EncoderScorer(tiny(vocab_size=len(vocab)), vocab)

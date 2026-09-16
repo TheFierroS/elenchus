@@ -3,6 +3,17 @@
 evaluate() asks a scorer to prepare the pool once and then score each query
 against it. Here that means embedding the pool once, and a dot product per
 query - the reason retrieval scales where reading every function would not.
+
+Queries are embedded in batches too, ahead of scoring (prepare_queries). One
+at a time, every query is a forward pass of its own length: 1,643 val
+queries asked the CUDA allocator for 1,643 differently sized blocks, and its
+cache grew to 9.00 GiB reserved for 2.46 GiB of tensors - past the card,
+into shared system memory. With expandable segments the same epoch reserved
+3.61 GiB and ran 30 s instead of 40 s, the same MRR: fragmentation, not need.
+
+Batched and single vectors agree to ~1e-7, which can still swap two
+candidates whose scores are that close. Neither order is more correct; what
+matters is that every measurement is taken one way, and it is this one.
 """
 
 import torch
@@ -25,6 +36,7 @@ class EncoderScorer:
         if name:
             self.name = name
         self.pool = None
+        self._queries = {}
 
     def _ids(self, sample):
         tokens = normalise(sample.listing)
@@ -51,9 +63,24 @@ class EncoderScorer:
 
     def prepare(self, pool):
         self.pool = self.embed(pool)
+        self._queries = {}
+
+    def prepare_queries(self, queries):
+        """Embed every query in length-sorted batches, before scoring them.
+
+        Kept by object identity, with the object itself held, so a vector can
+        only ever be handed back for the very query it was computed from.
+        """
+        vectors = self.embed(queries)
+        self._queries = {id(query): (query, vector)
+                         for query, vector in zip(queries, vectors)}
 
     def scores(self, query):
         if self.pool is None:
             raise RuntimeError("prepare(pool) must be called first")
-        vector = self.embed([query])[0]
+        cached = self._queries.get(id(query))
+        if cached is not None and cached[0] is query:
+            vector = cached[1]
+        else:
+            vector = self.embed([query])[0]
         return (self.pool @ vector).tolist()

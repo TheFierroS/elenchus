@@ -71,8 +71,12 @@ def evaluate(scorer, queries, pool, gold, cutoffs=(1, 10)):
     scorer.prepare(pool) is called once, then scorer.scores(query) per query,
     returning one number per pool entry. Splitting it that way lets an index
     (BM25's, or later the encoder's embedded pool) be built a single time.
+    A scorer that can also work on all queries at once (the encoder batches
+    their forward passes) offers prepare_queries, called after prepare.
     """
     scorer.prepare(pool)
+    if hasattr(scorer, "prepare_queries"):
+        scorer.prepare_queries(queries)
 
     ranks = [
         rank_of(scorer.scores(query), answers)
