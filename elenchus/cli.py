@@ -713,7 +713,24 @@ def build_parser():
     return parser
 
 
+# The CUDA caching allocator, unless the user chose one. Validation embeds
+# batches of many lengths, and the default allocator cannot reuse blocks
+# across them: embedding the val pool and queries held 6.52 GiB for 2.40 GiB
+# of tensors, and a contrastive epoch 9.00 GiB on an 8 GiB card, spilling
+# into shared memory. Expandable segments held 2.67 GiB for the same work,
+# with the same vectors. PyTorch reads the setting when CUDA first allocates,
+# so it is set here, before any command imports torch.
+CUDA_ALLOCATOR = "expandable_segments:True"
+
+
+def default_cuda_allocator(environ=os.environ):
+    """Set PYTORCH_CUDA_ALLOC_CONF if unset; return the value in force."""
+    environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", CUDA_ALLOCATOR)
+    return environ["PYTORCH_CUDA_ALLOC_CONF"]
+
+
 def main(argv=None):
+    default_cuda_allocator()
     args = build_parser().parse_args(argv)
 
     # Say which database is being used whenever it was not spelled out, so a

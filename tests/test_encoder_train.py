@@ -495,10 +495,14 @@ def test_the_probe_reads_cuda_peaks_in_gib_for_its_own_device(monkeypatch):
     card = types.SimpleNamespace(name="Card", total_memory=8 * 1024 ** 3)
     monkeypatch.setattr(torch.cuda, "get_device_properties", lambda d: card)
 
+    monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     probe = module.MemoryProbe("cuda:1")
     probe.reset()
     assert probe.read() == {"allocated_gib": 3.0, "reserved_gib": 4.0}
-    assert probe.describe() == {"name": "Card", "total_gib": 8.0}
+    assert probe.describe() == {"name": "Card", "total_gib": 8.0,
+                                "allocator": "expandable_segments:True"}
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF")
+    assert probe.describe()["allocator"] is None
     assert {device for _name, device in calls} == {torch.device("cuda:1")}
     assert [name for name, _device in calls] == ["reset", "allocated", "reserved"]
 

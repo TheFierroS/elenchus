@@ -14,6 +14,14 @@ into shared system memory. With expandable segments the same epoch reserved
 Batched and single vectors agree to ~1e-7, which can still swap two
 candidates whose scores are that close. Neither order is more correct; what
 matters is that every measurement is taken one way, and it is this one.
+
+Batches are formed shortest first but run longest first. Run shortest first,
+each batch outgrew every block the allocator already held: embedding the val
+pool and queries peaked at 2.40 GiB of tensors but reserved 6.52 GiB; run
+longest first, 4.61 GiB, and 4.8 s against 5.0 s. The batches themselves are
+unchanged, so the vectors are bit-identical, measured over all 3,290. With
+expandable segments, which the command line sets, both orders reserve
+~2.7 GiB; the order is kept for speed and for any run without it.
 """
 
 import torch
@@ -50,9 +58,11 @@ class EncoderScorer:
             sequences = [self._ids(s) for s in samples]
             # Similar lengths share a batch: less padding, same result.
             order = sorted(range(len(sequences)), key=lambda i: len(sequences[i]))
+            chunks = [order[start:start + self.batch_size]
+                      for start in range(0, len(order), self.batch_size)]
             vectors = [None] * len(sequences)
-            for start in range(0, len(order), self.batch_size):
-                chunk = order[start:start + self.batch_size]
+            # Longest batch first, so later ones fit in blocks already held.
+            for chunk in reversed(chunks):
                 ids, mask = pad([sequences[i] for i in chunk], self.vocab.pad_id)
                 out = self.model.embed(ids.to(self.device), mask.to(self.device))
                 for row, index in enumerate(chunk):

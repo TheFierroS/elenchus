@@ -43,6 +43,7 @@ import dataclasses
 import hashlib
 import json
 import math
+import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -260,7 +261,10 @@ class MemoryProbe:
             return None
         properties = torch.cuda.get_device_properties(self.device)
         return {"name": properties.name,
-                "total_gib": properties.total_memory / GIB}
+                "total_gib": properties.total_memory / GIB,
+                # The readings depend on it: the same epoch reserved 9.00 GiB
+                # with the default allocator and 3.61 with expandable segments.
+                "allocator": os.environ.get("PYTORCH_CUDA_ALLOC_CONF")}
 
 
 def _memory_text(train_peak, eval_peak):

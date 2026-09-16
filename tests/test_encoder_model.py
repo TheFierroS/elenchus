@@ -440,6 +440,32 @@ def test_a_cached_vector_is_only_returned_for_the_object_it_was_made_from():
     assert scorer.scores(impostor) == pytest.approx(fresh.scores(impostor), abs=1e-5)
 
 
+def test_batches_are_formed_shortest_first_and_run_longest_first():
+    """Longest first lets later batches reuse the allocator's blocks; the
+    batches themselves must not change, or the vectors would."""
+    scorer, calls = scorer_with_counter(batch_size=4)
+    samples = varied(10, 13)
+    lengths = [len(scorer._ids(s)) for s in samples]
+    ascending = sorted(range(10), key=lambda i: lengths[i])
+    formed = [ascending[0:4], ascending[4:8], ascending[8:10]]
+
+    vectors = scorer.embed(samples)
+
+    assert [shape[0] for shape in calls] == [2, 4, 4]
+    assert [shape[1] for shape in calls] == [
+        max(lengths[i] for i in chunk) for chunk in reversed(formed)]
+
+    # Bit-identical to walking the same batches shortest first.
+    with torch.no_grad():
+        scorer.model.eval()
+        expected = [None] * 10
+        for chunk in formed:
+            ids, mask = pad([scorer._ids(samples[i]) for i in chunk], scorer.vocab.pad_id)
+            for row, index in zip(range(len(chunk)), chunk):
+                expected[index] = scorer.model.embed(ids, mask)[row]
+    assert torch.equal(vectors, torch.stack(expected))
+
+
 def test_scoring_before_prepare_is_refused():
     vocab = build_vocab([(("p", "f", "g"), ["push"])], min_functions=1)
     scorer = EncoderScorer(tiny(vocab_size=len(vocab)), vocab)
