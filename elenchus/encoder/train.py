@@ -535,6 +535,15 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
     summary = _selection_loop(settings, epoch_fn, evaluate_fn, lambda a, b: a > b,
                               "mrr", model, vocab, run_id, log, memory)
 
+    # The epoch the package mean would have kept, beside the one kept: whether
+    # the two criteria disagree is measured on every run, not assumed.
+    for entry, metrics in zip(summary["history"], measured):
+        entry["package_mrr"] = metrics.get("package_mean", {}).get("mrr")
+    trained = [entry for entry in summary["history"]
+               if entry["epoch"] >= 0 and entry["package_mrr"] is not None]
+    best_by_package = max(trained, key=lambda entry: entry["package_mrr"], default=None)
+    summary["best_epoch_by_package_mrr"] = best_by_package and best_by_package["epoch"]
+
     results = {f"encoder-{run_id}-start": measured[0]}
     summary["start_val_metrics"] = measured[0]
     if summary["checkpoint"] is not None:

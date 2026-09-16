@@ -114,6 +114,61 @@ def test_metrics_are_computed_as_defined():
     assert metrics["median_rank"] == 2
 
 
+def test_packages_are_summarised_alone_and_averaged_with_equal_weight():
+    """Two queries from a big package, one from a small one: the query mean
+    lets the big package count twice, the package mean does not."""
+    queries = [sample("a", ["mov"], package="big"), sample("b", ["mov"], package="big"),
+               sample("c", ["mov"], package="small")]
+    pool = [sample(n, ["mov"]) for n in ("a", "b", "c", "d")]
+    scorer = Fixed({
+        "a": [9.0, 1.0, 1.0, 0.0],   # rank 1
+        "b": [9.0, 5.0, 1.0, 0.0],   # rank 2
+        "c": [9.0, 8.0, 1.0, 5.0],   # rank 4
+    })
+    metrics = evaluate(scorer, queries, pool, [0, 1, 2], cutoffs=(1, 2))
+
+    assert metrics["mrr"] == pytest.approx((1 + 1 / 2 + 1 / 4) / 3)
+    assert metrics["per_package"]["big"] == pytest.approx(
+        {"queries": 2, "recall@1": 1 / 2, "recall@2": 1.0, "mrr": 3 / 4,
+         "median_rank": 2})
+    assert metrics["per_package"]["small"]["mrr"] == pytest.approx(1 / 4)
+    assert metrics["package_mean"] == pytest.approx(
+        {"packages": 2, "recall@1": 1 / 4, "recall@2": 1 / 2, "mrr": (3 / 4 + 1 / 4) / 2})
+    assert list(metrics["per_package"]) == ["big", "small"]
+
+
+def test_queries_without_a_package_get_no_package_summary():
+    import types
+
+    queries = [types.SimpleNamespace(name="a")]
+    metrics = evaluate(Fixed({"a": [1.0, 0.0]}), queries, [None, None], [0])
+    assert "per_package" not in metrics and "package_mean" not in metrics
+    assert metrics["mrr"] == 1.0
+
+
+def test_the_package_table_lists_big_packages_first_and_ends_with_both_means():
+    from elenchus.evaluation.metrics import format_packages
+
+    def result(mrr, packages):
+        return {"mrr": mrr, "recall@10": 0.0,
+                "package_mean": {"mrr": sum(v for _, v in packages.values()) / 2,
+                                 "recall@10": 0.0},
+                "per_package": {p: {"queries": q, "mrr": v, "recall@10": 0.0}
+                                for p, (q, v) in packages.items()}}
+
+    lines = format_packages({
+        "strong": result(0.9, {"small": (3, 0.8), "big": (40, 0.95)}),
+        "weak": result(0.1, {"big": (40, 0.1)}),
+    })
+    assert lines[0].strip() == "mrr per package"
+    assert lines[1].split()[-2:] == ["weak", "strong"]
+    assert lines[2].split()[0] == "big" and lines[3].split()[0] == "small"
+    assert lines[3].split()[-2:] == ["-", "0.800"]
+    assert lines[-2].split()[-2:] == ["0.100", "0.900"]
+    assert "mean over packages" in lines[-1] and lines[-1].split()[-1] == "0.875"
+    assert format_packages({"bare": {"mrr": 0.5}}) == []
+
+
 def test_an_empty_task_reports_nothing_rather_than_dividing_by_zero():
     assert evaluate(Fixed({}), [], [], []) == {"queries": 0}
 

@@ -96,7 +96,12 @@ def cmd_train(args):
 
     def retrieval(label, m):
         print(f"{label:12}: recall@1 {m['recall@1']:.3f}  recall@10 "
-              f"{m['recall@10']:.3f}  mrr {m['mrr']:.3f}")
+              f"{m['recall@10']:.3f}  mrr {m['mrr']:.3f}  (mean over queries)")
+        if "package_mean" in m:
+            p = m["package_mean"]
+            print(f"{'':12}  recall@1 {p['recall@1']:.3f}  recall@10 "
+                  f"{p['recall@10']:.3f}  mrr {p['mrr']:.3f}  "
+                  f"(mean over {p['packages']} packages)")
 
     print()
     for key, value in summary.items():
@@ -113,6 +118,11 @@ def cmd_train(args):
                 print(f"{key:12}: {value:.4f}")
         if "best_val_metrics" in summary:
             retrieval("val", summary["best_val_metrics"])
+        by_package = summary.get("best_epoch_by_package_mrr")
+        if by_package is not None:
+            verdict = ("the same" if by_package == summary["best_epoch"]
+                       else f"DIFFERENT from {summary['best_epoch']}")
+            print(f"by packages : epoch {by_package} would be kept ({verdict})")
     if summary.get("peak_allocated_gib") is not None:
         print(f"peak memory : {summary['peak_allocated_gib']:.2f} GiB allocated, "
               f"{summary['peak_reserved_gib']:.2f} GiB reserved")

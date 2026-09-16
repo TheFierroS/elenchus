@@ -26,9 +26,18 @@ that compile to identical code - a parser combinator library is half made of
 them - and no method can be asked to pick between things that are the same.
 So a query is scored against the whole set of functions indistinguishable
 from its answer, and any of them counts.
+
+Every number is also given per package, and averaged over packages with
+each package weighing the same. The query mean lets big packages speak for
+the rest: 65% of val identities come from three packages (stb, libuv,
+libsodium), and test's largest package alone holds 25%. A model chosen by
+the query mean may be the one best at those three. The package mean is
+reported beside it, not instead of it, so that whether the two ever
+disagree is a measurement rather than a worry.
 """
 
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
+from statistics import fmean
 
 
 def rank_of(scores, targets, tolerance=1e-12):
@@ -73,6 +82,10 @@ def evaluate(scorer, queries, pool, gold, cutoffs=(1, 10)):
     (BM25's, or later the encoder's embedded pool) be built a single time.
     A scorer that can also work on all queries at once (the encoder batches
     their forward passes) offers prepare_queries, called after prepare.
+
+    Queries that carry a package (every Sample does) are also summarised per
+    package, under per_package, and averaged over packages, under
+    package_mean.
     """
     scorer.prepare(pool)
     if hasattr(scorer, "prepare_queries"):
@@ -85,14 +98,63 @@ def evaluate(scorer, queries, pool, gold, cutoffs=(1, 10)):
 
     if not ranks:
         return {"queries": 0}
-
     result = OrderedDict(queries=len(ranks), pool=len(pool))
+    result.update(summarise(ranks, cutoffs))
+
+    packages = [getattr(query, "package", None) for query in queries]
+    if all(package is not None for package in packages):
+        grouped = defaultdict(list)
+        for package, rank in zip(packages, ranks):
+            grouped[package].append(rank)
+        per_package = {package: {"queries": len(group), **summarise(group, cutoffs)}
+                       for package, group in sorted(grouped.items())}
+        averaged = [f"recall@{k}" for k in cutoffs] + ["mrr"]
+        result["package_mean"] = {"packages": len(per_package),
+                                  **{key: fmean(m[key] for m in per_package.values())
+                                     for key in averaged}}
+        result["per_package"] = per_package
+    return result
+
+
+def summarise(ranks, cutoffs=(1, 10)):
+    """recall@k, MRR and median rank of a non-empty list of ranks."""
+    result = OrderedDict()
     for k in cutoffs:
         result[f"recall@{k}"] = sum(1 for r in ranks if r <= k) / len(ranks)
     result["mrr"] = sum(1 / r for r in ranks) / len(ranks)
     result["median_rank"] = sorted(ranks)[len(ranks) // 2]
-
     return result
+
+
+def format_packages(results, metric="mrr"):
+    """Render one metric per package, a column per method, as a table.
+
+    Packages are listed largest first, with their query count; the last two
+    rows are the mean over queries and the mean over packages, which is where
+    the two can be compared. Methods run in the same order as format_table.
+    """
+    measured = {name: m for name, m in results.items() if "per_package" in m}
+    if not measured:
+        return []
+    order = sorted(measured, key=lambda name: measured[name].get("mrr", 0))
+    sizes = {}
+    for metrics in measured.values():
+        for package, row in metrics["per_package"].items():
+            sizes[package] = max(sizes.get(package, 0), row["queries"])
+    widths = [max(9, len(name)) for name in order]
+
+    def line(label, cells):
+        return f"  {label:<22}" + " ".join(f"{c:>{w}}" for c, w in zip(cells, widths))
+
+    lines = [f"  {metric} per package", line("package (queries)", order)]
+    for package in sorted(sizes, key=lambda p: (-sizes[p], p)):
+        cells = [f"{measured[n]['per_package'][package][metric]:.3f}"
+                 if package in measured[n]["per_package"] else "-" for n in order]
+        lines.append(line(f"{package} ({sizes[package]})", cells))
+    lines.append(line("mean over queries", [f"{measured[n][metric]:.3f}" for n in order]))
+    lines.append(line("mean over packages",
+                      [f"{measured[n]['package_mean'][metric]:.3f}" for n in order]))
+    return lines
 
 
 def format_table(results):

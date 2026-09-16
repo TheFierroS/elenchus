@@ -317,6 +317,8 @@ def test_a_trained_checkpoint_joins_the_baselines_table(corpus, vocab, tmp_path,
     out = capsys.readouterr().out
     assert f"encoder (run {summary['run_id']})" in out
     assert "bm25-mnemonic" in out
+    assert "mrr per package" in out and "recall@10 per package" in out
+    assert "mean over packages" in out
 
 
 # ---------------------------------------------------------------- model size
@@ -694,6 +696,35 @@ def test_a_step_cap_stops_exactly_there(corpus, vocab, tmp_path, monkeypatch):
     assert [h["epoch"] for h in summary["history"]] == [-1, 0]
 
 
+def test_a_run_says_which_epoch_the_package_mean_would_keep(corpus, vocab, tmp_path,
+                                                          monkeypatch):
+    """Epoch 0 wins over queries, epoch 1 over packages: both are recorded."""
+    scores = iter([(0.05, 0.05), (0.50, 0.20), (0.40, 0.60)])
+
+    def fake(*a, **k):
+        mrr, package_mrr = next(scores, (0.40, 0.60))
+        return {"queries": 1, "pool": 1, "recall@1": 0.0, "recall@10": 0.0, "mrr": mrr,
+                "median_rank": 1,
+                "package_mean": {"packages": 2, "recall@1": 0.0, "recall@10": 0.0,
+                                 "mrr": package_mrr}}
+
+    monkeypatch.setattr(module, "evaluate", fake)
+    summary = train(corpus, vocab, settings(tmp_path, "contrastive", epochs=2,
+                                            patience=5), config(vocab), log=quiet)
+
+    assert [h["package_mrr"] for h in summary["history"]] == [0.05, 0.20, 0.60]
+    assert summary["best_epoch"] == 0
+    assert summary["best_epoch_by_package_mrr"] == 1
+
+
+def test_measuring_only_the_start_names_no_epoch_for_either_criterion(corpus, vocab,
+                                                                      tmp_path):
+    summary = train(corpus, vocab, settings(tmp_path, "contrastive", max_steps=0),
+                    config(vocab), log=quiet)
+    assert summary["best_epoch_by_package_mrr"] is None
+    assert summary["history"][0]["package_mrr"] is not None
+
+
 def test_a_negative_step_cap_is_refused():
     with pytest.raises(ValueError, match="max_steps"):
         Settings(stage="mlm", out="x", max_steps=-1)
@@ -709,7 +740,8 @@ def test_the_train_command_reports_the_start_and_an_untrained_run(monkeypatch, c
     args = cli.build_parser().parse_args(["train", "contrastive", "--out", str(tmp_path)])
     args.db = ":memory:"
     start = {"queries": 5, "pool": 5, "recall@1": 0.2, "recall@10": 0.4, "mrr": 0.3,
-             "median_rank": 2}
+             "median_rank": 2, "package_mean": {"packages": 2, "recall@1": 0.1,
+                                                "recall@10": 0.3, "mrr": 0.25}}
     untrained = {"start_val_mrr": 0.3, "start_val_metrics": start, "best_epoch": None,
                  "best_val_mrr": None, "checkpoint": None, "peak_allocated_gib": None}
     monkeypatch.setattr(module, "train", lambda *a, **k: untrained)
@@ -718,8 +750,31 @@ def test_the_train_command_reports_the_start_and_an_untrained_run(monkeypatch, c
     out = capsys.readouterr().out
     assert "start_val_mrr: 0.3000  (before training)" in out
     assert "start val   : recall@1 0.200  recall@10 0.400  mrr 0.300" in out
+    assert "(mean over 2 packages)" in out
     assert "trained     : nothing (--max-steps 0)" in out
     assert "checkpoint" not in out and "best epoch" not in out
+
+
+@pytest.mark.parametrize("by_package, verdict", [(3, "the same"),
+                                                 (1, "DIFFERENT from 3")])
+def test_the_train_command_says_whether_the_criteria_agree(monkeypatch, capsys,
+                                                         tmp_path, by_package, verdict):
+    from elenchus import cli
+    from elenchus.encoder import vocab as vocab_module
+
+    monkeypatch.setattr("elenchus.encoder.cli.connect", lambda _p: None)
+    monkeypatch.setattr(vocab_module.Vocab, "load", staticmethod(lambda _p: None))
+    args = cli.build_parser().parse_args(["train", "contrastive", "--out", str(tmp_path)])
+    args.db = ":memory:"
+    metrics = {"recall@1": 0.1, "recall@10": 0.2, "mrr": 0.15}
+    trained = {"start_val_mrr": 0.03, "best_epoch": 3, "best_val_mrr": 0.15,
+               "best_val_metrics": metrics, "best_epoch_by_package_mrr": by_package,
+               "checkpoint": "x/best.pt", "peak_allocated_gib": None}
+    monkeypatch.setattr(module, "train", lambda *a, **k: trained)
+
+    assert args.func(args) == 0
+    assert f"by packages : epoch {by_package} would be kept ({verdict})" in (
+        capsys.readouterr().out)
 
 
 def test_the_train_command_parses_its_stages():

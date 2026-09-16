@@ -28,7 +28,7 @@ from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
 from elenchus.encoder.cli import cmd_train, cmd_vocab
 from elenchus.evaluation.baselines import all_baselines
-from elenchus.evaluation.metrics import evaluate, format_table
+from elenchus.evaluation.metrics import evaluate, format_packages, format_table
 from elenchus.evaluation.store import (
     format_history,
     history,
@@ -367,6 +367,12 @@ def cmd_baselines(args):
     print()
     for line in format_table(results):
         print(line)
+    for metric in ("mrr", "recall@10"):
+        lines = format_packages(results, metric)
+        if lines:
+            print()
+            for line in lines:
+                print(line)
 
     return 0
 
