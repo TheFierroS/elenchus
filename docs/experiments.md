@@ -57,6 +57,38 @@ it may over-fit the exam.
 **Settles it:** val MRR on `-O0 → -O3`, and also on the other pairs, so a gain
 on the exam that costs everything else is visible.
 
+**Measured (at 1da5e5e, fingerprint `47c82734a3cb7f08`).** Uniform holds
+within a function, not across the dataset. Of 11,009 pairable train
+functions only 5,561 have both `-O0` and `-O3`; many small functions are
+inlined away from `-O2` up and can only form O0-O1. Counted over 33,024 draws
+of the real `PairSampler` (3 epochs), agreeing with the exact expectation:
+
+| level pair | share of draws | identical code |
+|---|---|---|
+| O0-O1 | 46.0% | 0.0% |
+| O0-O2 | 15.2% | 0.0% |
+| O1-O2 | 11.3% | 1.3% |
+| O0-O3 | **10.1%** | 0.0% |
+| O2-O3 | 10.0% | 43.1% |
+| O1-O3 | 7.5% | 1.2% |
+
+So training spends 46% of its pairs on the pair nearest to identity and 10%
+on the pair the exam asks. That O0-O1 is "easy" is a hypothesis; O0-O1 pairs
+still teach that register choice and frame layout do not change identity,
+and a sampler that only drew O0-O3 would halve the pairable data. Moved to
+the front of the experiments.
+
+**Option:** `--eval-pair-share P` draws O0-O3 with probability P wherever a
+function has both levels, and otherwise draws uniformly; unset, the sampler
+is exactly the uniform one. Each trained epoch records the level pairs it
+drew (`history[].pairs`), so the share actually trained on is visible.
+
+**Identical pairs (same measurement).** 4.6% of draws (4.5% expected) pair
+two identical listings, almost all O2-O3; 49 functions (0.4%) are one code at
+every level. Under the 5% threshold set before measuring, so the sampler is
+not changed for it. Such a function is still a real negative for the rest of
+its batch.
+
 ### E4 — Hard negatives: functions per package in a batch
 
 **Default:** batches are built from several packages, up to 8 functions each.
@@ -88,6 +120,16 @@ the `-O3` side, which is the pool.
 **Settles it:** val MRR restricted to functions longer than the limit, truncate
 vs split-and-average.
 
+**Measured (fingerprint `47c82734a3cb7f08`).** Rows cut at 1023 tokens after
+`[CLS]`: train 6.3%, val 6.2%, test 5.3%. Token length p50/p90/p99: train
+145/715/4251, max 112,709. The longest are real, not scan errors: yyjson's
+`yyjson_read_opts` is 40,096 instructions at -O0 and shrinks steadily
+(15,415 / 12,914 / 12,923 at O1-O3) because yyjson forces inlining; the rest
+are interpreter loops and macro-expanded cipher rounds (`sqlite3VdbeExec`,
+`duk__js_execute_bytecode_inner`, pcre2 `match`, `saferp_ecb_*`). Contrastive
+views are cut from the start, and -O3 reorders code, so the first 1023 tokens
+of the two views of a long function may show different parts of it.
+
 ### E7 — One vector per function: `[CLS]` or mean of tokens
 
 **Settles it:** val MRR.
@@ -106,6 +148,31 @@ instruction-index embedding would tell it.
 
 **Settles it:** the vocabulary's own coverage report on val - the share of
 tokens falling to `[UNK]` and `IMPORT:<rare>` - then val MRR at 2, 5, 10.
+
+### L — Is there enough data? (learning curve)
+
+**Default:** all of train.
+
+**Doubt:** 16,651 train identities from 23 packages. If val MRR is still
+climbing at 100%, the corpus should grow (wave 2) - and that has to be
+decided before full training, since new packages change the split, which is
+locked by the first trained model.
+
+**Two questions, two units.** `--train-fraction F --train-unit identity`
+keeps that share of functions, every level of each: do more functions from
+the same packages help? `--train-unit package` keeps that share of packages
+whole: do more *different* packages help, which is what wave 2 adds - but
+with 23 packages, which few are kept moves the result. Subsets are a prefix
+of one shuffle per (unit, seed), so 25% ⊂ 50% ⊂ 100%. The vocabulary stays
+the one built from all of train.
+
+**Settles it:** val MRR (query and package means) at 25/50/100% for both
+units, read against the run-to-run noise (F5). Val is the same at every
+step, so the steps differ only by the training data.
+
+**Wave 2, if it is needed:** train's thinnest domains are data-format (5.1%
+of identities) and text (6.1%); val and test lean on a few large packages, so
+a few mid-sized packages help more than many small ones.
 
 ---
 
@@ -225,3 +292,164 @@ worth teaching that. Recorded as a corpus gap.
 dies on one pathological function must cost that function, not the binary -
 a requirement for graceful degradation (week 11), not something to fix in
 the corpus.
+
+---
+
+## Findings before the first full training (week 6)
+
+Measured on 16 September, corpus fingerprint `47c82734a3cb7f08` throughout;
+none of them changed the dataset.
+
+### F1 — Embedding scale: the untrained model was confidently wrong (84b0762)
+
+Token and position embeddings started at PyTorch's std 1.0. The MLM head
+reads logits through the token embedding, so logits spread by ~18: smoke run
+492 averaged a loss of 78 over its first 50 steps, against ln(321) = 5.77 for
+an even guess, and gradients measured 16-28 against a clipping norm of 1.0.
+At std 0.02 the start is 5.8. Setting every Linear to 0.02 as well changed
+nothing in the loss and made untrained vectors of different functions more
+alike (cosine 0.84 → 0.90), so the other layers keep their defaults.
+
+Probe run 495 (1,500 MLM steps): val loss 2.48 / 2.17 / 2.02 over three
+epochs, against a unigram floor of 3.206 - the model reads context, not only
+token frequency. Sandbox runs on synthetic data had plateaued at their
+unigram floor; that was a short, warm-up-dominated schedule, not the model.
+
+Side finding: the padding row does not stay zero. `padding_idx` stops only
+the input lookup's gradient; the tied head trains the row from the output
+side. Harmless - padding is masked out of attention and pooling - and tested
+with a padding row that has moved.
+
+### F2 — Model size flags, and two silent failures (9720c45)
+
+A 4-head checkpoint loads into an 8-head model without an error and computes
+different vectors (the attention matrices have one shape for any head
+count). `--init` used to ignore a requested size silently; shape fields that
+differ from the checkpoint are now refused, dropout and pooling may differ
+and are recorded. `max_len` lived in both Settings and the model config;
+the config is now the authority.
+
+### F3 — GPU memory (b8e188f, e9b70e1, 6a69b30)
+
+Peak memory is recorded per epoch, training and validation apart (GiB,
+allocated / reserved). 3.6M MLM, batch 64, length 1024: 3.23 / 3.52. **11M
+MLM: 6.85 / 7.30** on an 8 GiB card that also drives the desktop - at the
+limit; B5 needs a memory plan (batch 32, accumulation, or length 512, each
+with a cost to compare).
+
+Validation was the problem. Contrastive run 498 reserved 9.00 GiB for 2.46
+GiB of tensors - past the card, into shared memory. Queries were embedded one
+forward pass each (1,643 lengths); batching them cut 713 passes to 24.
+Batches ran shortest first, so each outgrew every block held. Measured on
+the val pool and queries, each setting in a fresh process:
+
+| allocator | shortest first | longest first |
+|---|---|---|
+| default | 2.40 / 6.52 GiB, 5.0 s | 2.40 / 4.61, 4.7 s |
+| expandable segments | 2.40 / 2.67, 5.4 s | 2.40 / 2.69, 4.7 s |
+
+Vectors bit-identical between orders. The command line now sets expandable
+segments unless the user chose otherwise, and batches run longest first; a
+contrastive smoke epoch went from 40 s and 9.00 GiB to 26 s and 3.59 GiB.
+
+### F4 — Where an untrained encoder starts (f302c2a)
+
+Every run now scores its starting point on val first. Val, -O0 → -O3:
+
+| model | MRR | recall@10 |
+|---|---|---|
+| random baseline | 0.007 | 0.008 |
+| untrained encoder (run 502) | 0.034 | 0.053 |
+| MLM probe 495, before any contrastive step (run 503) | 0.047 | 0.088 |
+| best baseline, import-jaccard | 0.124 | 0.164 |
+| 50 contrastive steps from random (run 501) | 0.131 | 0.250 |
+
+50 steps, most of them in warm-up, already quadrupled the untrained score -
+an expectation that they would teach almost nothing was wrong. MLM
+pre-training gives a better start (+37% MRR); its effect after full
+contrastive training is B4.
+
+### F5 — Run-to-run noise
+
+Evaluation is deterministic: the start MRR was 0.034163 in every run. Training
+on the GPU is not: four identical 50-step contrastive runs (same seed) gave
+val MRR 0.1309, 0.1312, 0.1313, 0.1314 - a spread of ~0.0005. Three runs had
+suggested 0.0002; few samples understate noise. This is a floor: noise after
+full training, and between seeds, is expected to be larger and is measured
+in B3 with 2-3 seeds. An experiment's difference is read against it.
+
+### F6 — `decl_file` of `#line` names was machine-dependent (1f2f2e4)
+
+duktape's amalgamation names 142 files in 145 `#line` directives without a
+directory; DWARF resolved them against the build directory, so all 2,443
+eligible duktape rows read `/home/<user>/elenchus/duk_*.c`. 47 packages were
+clean, and no identities had merged (the names are distinct, the source tree
+has no two files of one name). Anchored at the unit's source directory
+instead. Refreshed on the real database: duktape 2,793 paths changed and
+nothing else, fingerprint unchanged. `src-noline` was not an alternative:
+duktape's error macros embed `__FILE__`/`__LINE__`, so it compiles
+differently.
+
+### F7 — Loading: the dedup was repeated, not the read (1da5e5e)
+
+A 25 s smoke epoch took minutes. Every `eligible_rows` call normalised all
+56,747 listings again for the cross-package dedup (31.6 s), four times a run.
+`content_key` now remembers each listing; a run reads its rows once. Loading
+150 s → 44 s; a digest of every eligible row's id, identity and content key
+was identical before and after.
+
+### F8 — Baselines per package (f42a34d)
+
+Val, -O0 → -O3, MRR:
+
+| method | mean over queries | mean over 11 packages |
+|---|---|---|
+| import-jaccard | 0.124 | 0.091 |
+| bm25-mnemonic | 0.099 | 0.090 |
+| structural | 0.063 | 0.074 |
+
+The bar's lead is largely one package: import-jaccard scores 0.389 on libuv
+(372 queries, heavy Windows API use) and 0.002-0.152 elsewhere; on stb, with
+no imports, 0.038. Each method has its own ground: bm25 on libdeflate
+(0.267), structural on inih. The package mean has its own weakness - inih
+has 4 queries, libcsv 9 - so neither mean is read alone. The week's success
+criterion stays as written (test, mean over queries); both means are
+reported.
+
+### F9 — The dataset as training sees it
+
+| | train | val | test |
+|---|---|---|---|
+| packages | 23 | 11 | 14 |
+| identities | 16,651 | 3,209 | 2,787 |
+| pairable (≥ 2 levels) | 66.1% | 75.9% | 76.9% |
+| with -O0 and -O3 | 33.4% | 49.8% | 42.4% |
+| rows without an import | 69.5% | 67.4% | 67.0% |
+
+The three splits look alike in import share, cut share and length, so val is
+a fair stand-in for test. Val identities: stb 24%, libuv 21%, libsodium 20%.
+Test: mujs 25%. Train's largest: flecs 16%, sqlite 13%, mbedtls 13%.
+
+---
+
+## Open questions carried into full training
+
+- **Seed noise.** Measured only for one seed (F5). B3 runs 2-3 seeds.
+- **Is O0-O1 the easy pair?** A hypothesis behind E3 (see E3), not measured.
+- **Which mean selects the model?** Selection stays on the query mean; every
+  contrastive run prints the epoch the package mean would keep. Decide only
+  if they disagree. A third mean over packages with ≥ 20 queries is an option.
+- **11M memory plan** (F3), before B5.
+- **Validation's reserved figure** includes what training cached before it;
+  its allocated figure is validation's own.
+- **Learning-curve runs use the full-train vocabulary.** Tokens only seen in
+  the dropped part stay in it; noted, not expected to matter.
+
+## Before full training - checklist
+
+- [x] F1-F9 above, each committed and measured
+- [ ] E3 short runs (`--eval-pair-share`), decision rule written before the runs
+- [ ] Learning curve, both units, decision rule written before the runs
+- [ ] Corpus decision (wave 2 or not); if wave 2: build, `check`,
+      `dataset --assign --force`, `vocab`, baselines again
+- [ ] B1 vocabulary fingerprint check, then B2 onwards
