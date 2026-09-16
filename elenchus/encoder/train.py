@@ -12,9 +12,17 @@ here; its single look belongs at the end, through `elenchus baselines`.
 
 A vocabulary built from a different dataset than the one being trained on is
 refused: its ids would be right for some other corpus.
+
+The model's configuration is the one authority on its size. Settings.max_len
+left as None takes the model's; given, it must agree, because the samplers
+cut functions to it and the model cannot read past its own. Starting from a
+checkpoint (init), a requested shape that differs from the checkpoint's is
+refused before any run is recorded; dropout and pooling may differ, own no
+weights, and the change is written into the run's params.
 """
 
 import contextlib
+import dataclasses
 import hashlib
 import json
 import math
@@ -34,7 +42,13 @@ from elenchus.encoder.losses import (
     momentum_copy,
     momentum_update,
 )
-from elenchus.encoder.model import EncoderConfig, FunctionEncoder, count_parameters
+from elenchus.encoder.model import (
+    FREE_FIELDS,
+    SHAPE_FIELDS,
+    EncoderConfig,
+    FunctionEncoder,
+    count_parameters,
+)
 from elenchus.encoder.scorer import EncoderScorer
 from elenchus.encoder.vocab import Vocab
 from elenchus.evaluation.metrics import evaluate
@@ -44,6 +58,10 @@ from elenchus.evaluation.task import retrieval_task
 
 class StaleVocabulary(ValueError):
     """The vocabulary was built from a different dataset."""
+
+
+class ConfigConflict(ValueError):
+    """A requested model size disagrees with the model it has to fit."""
 
 
 @dataclass
@@ -60,7 +78,7 @@ class Settings:
     queue_size: int = 4096
     momentum: float = 0.999
     mask_rate: float = 0.15
-    max_len: int = 1024
+    max_len: int | None = None      # None: the model's own max_len
     grad_clip: float = 1.0
     patience: int = 3
     seed: int = 0
@@ -133,6 +151,62 @@ def measure_checkpoint(path, vocab, queries, pool, gold, device="cpu"):
     return evaluate(scorer, queries, pool, gold)
 
 
+def build_model(vocab, settings, config=None, overrides=None, device="cpu"):
+    """Return (model, settings with max_len resolved, init changes, init meta).
+
+    overrides holds only the configuration fields a user actually asked for.
+    Nothing is recorded here, so a refusal leaves no run behind and does not
+    lock the split.
+    """
+    overrides = dict(overrides or {})
+    unknown = set(overrides) - set(SHAPE_FIELDS) - set(FREE_FIELDS)
+    if unknown:
+        raise ValueError(f"not configuration fields: {sorted(unknown)}")
+    if settings.max_len is not None:
+        if overrides.get("max_len", settings.max_len) != settings.max_len:
+            raise ConfigConflict("max_len given twice with different values")
+        overrides["max_len"] = settings.max_len
+
+    changes = {}
+    if settings.init:
+        if config is not None:
+            raise ConfigConflict("give a configuration or a checkpoint to start "
+                                 "from, not both")
+        model, _, init_meta = load_checkpoint(settings.init, device, vocab)
+        stored = model.config
+        conflicts = {name: (getattr(stored, name), value)
+                     for name, value in overrides.items()
+                     if name in SHAPE_FIELDS and getattr(stored, name) != value}
+        if conflicts:
+            listed = ", ".join(f"{name} {old} in the checkpoint, {new} asked"
+                               for name, (old, new) in sorted(conflicts.items()))
+            raise ConfigConflict(f"{settings.init} cannot take this size: {listed}")
+        changes = {name: [getattr(stored, name), value]
+                   for name, value in overrides.items()
+                   if name in FREE_FIELDS and getattr(stored, name) != value}
+        if changes:
+            # dropout and pooling own no weights: rebuild, then load them all.
+            rebuilt = FunctionEncoder(dataclasses.replace(
+                stored, **{name: new for name, (_old, new) in changes.items()}))
+            rebuilt.load_state_dict(model.state_dict())
+            model = rebuilt.to(device)
+    else:
+        base = config or EncoderConfig(vocab_size=len(vocab), pad_id=vocab.pad_id)
+        if config is not None:
+            conflicts = {name: (getattr(config, name), value)
+                         for name, value in overrides.items()
+                         if getattr(config, name) != value}
+            if conflicts:
+                raise ConfigConflict(f"the given configuration disagrees: {conflicts}")
+        model = FunctionEncoder(dataclasses.replace(base, **overrides)).to(device)
+        init_meta = None
+
+    if model.config.vocab_size != len(vocab):
+        raise ValueError("model and vocabulary disagree on the vocabulary size")
+    settings = dataclasses.replace(settings, max_len=model.config.max_len)
+    return model, settings, changes, init_meta
+
+
 def _device(settings):
     if settings.device != "auto":
         return settings.device
@@ -149,21 +223,16 @@ def _to(batch, device):
     return {k: v.to(device, non_blocking=True) for k, v in batch.items()}
 
 
-def train(conn, vocab, settings, config=None, log=print):
-    """Train one stage and return a summary; the best checkpoint is on disk."""
+def train(conn, vocab, settings, config=None, log=print, overrides=None):
+    """Train one stage and return a summary; the best checkpoint is on disk.
+
+    overrides: configuration fields asked for by name (see build_model).
+    """
     check_vocabulary(conn, vocab)
     torch.manual_seed(settings.seed)
     device = _device(settings)
-
-    if settings.init:
-        model, _, init_meta = load_checkpoint(settings.init, device, vocab)
-    else:
-        config = config or EncoderConfig(vocab_size=len(vocab), pad_id=vocab.pad_id,
-                                         max_len=settings.max_len)
-        model = FunctionEncoder(config).to(device)
-        init_meta = None
-    if model.config.vocab_size != len(vocab):
-        raise ValueError("model and vocabulary disagree on the vocabulary size")
+    model, settings, changes, init_meta = build_model(vocab, settings, config,
+                                                      overrides, device)
 
     fingerprint = dataset_fingerprint(conn)
     params = {
@@ -173,12 +242,15 @@ def train(conn, vocab, settings, config=None, log=print):
         "dataset": fingerprint,
         "vocab": vocab_hash(vocab),
         "init": settings.init,
+        "init_changes": changes,
         "parameters": count_parameters(model),
     }
     run_id = start_run(conn, "train", tool="elenchus-encoder", params=params,
                        seed=settings.seed)
     log(f"run {run_id}: {settings.stage}, {count_parameters(model):,} parameters, "
         f"device {device}")
+    for name, (old, new) in changes.items():
+        log(f"  {name}: {old} in {settings.init}, {new} here")
 
     try:
         examples = load_examples(conn, "train")

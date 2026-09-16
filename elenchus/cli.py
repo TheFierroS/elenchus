@@ -660,12 +660,28 @@ def build_parser():
     training.add_argument("--temperature", type=float, default=0.07)
     training.add_argument("--queue-size", type=int, default=4096)
     training.add_argument("--momentum", type=float, default=0.999)
-    training.add_argument("--max-len", type=int, default=1024)
+    training.add_argument("--max-len", type=int, default=None,
+                          help="longest function read, in tokens (default: the "
+                               "model's, 1024 for a new one)")
     training.add_argument("--patience", type=int, default=3)
     training.add_argument("--seed", type=int, default=0)
     training.add_argument("--device", default="auto")
     training.add_argument("--max-steps", type=int, default=None,
                           help="stop after this many steps (for a quick check)")
+    # Model size. Left unset, a new model takes EncoderConfig's defaults and a
+    # model started with --init keeps its checkpoint's. Shape flags that
+    # disagree with --init are refused; --dropout and --pooling may differ.
+    size = training.add_argument_group(
+        "model size", "unset: EncoderConfig defaults, or the --init checkpoint's")
+    size.add_argument("--d-model", type=int, help="width of each token's vector (256)")
+    size.add_argument("--layers", type=int, help="Transformer layers (4)")
+    size.add_argument("--heads", type=int,
+                      help="attention heads; must divide --d-model (4)")
+    size.add_argument("--d-ff", type=int, help="feed-forward width in each layer (1024)")
+    size.add_argument("--embed-dim", type=int, help="length of a function's vector (128)")
+    size.add_argument("--dropout", type=float, help="dropout rate while training (0.1)")
+    size.add_argument("--pooling", choices=["mean", "cls"],
+                      help="how a function's vector is read off: mean or [CLS] (mean)")
     training.set_defaults(func=cmd_train)
 
     bases = sub.add_parser(

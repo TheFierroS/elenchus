@@ -61,9 +61,21 @@ def cmd_vocab(args):
     return 0
 
 
+# Command-line flag -> EncoderConfig field.
+SIZE_FLAGS = {"d_model": "d_model", "layers": "n_layers", "heads": "n_heads",
+              "d_ff": "d_ff", "embed_dim": "embed_dim", "dropout": "dropout",
+              "pooling": "pooling"}
+
+
+def size_overrides(args):
+    """The configuration fields given on the command line, and only those."""
+    return {field: getattr(args, flag) for flag, field in SIZE_FLAGS.items()
+            if getattr(args, flag, None) is not None}
+
+
 def cmd_train(args):
     """Train one stage: masked-LM pre-training or contrastive training."""
-    from elenchus.encoder.train import Settings, StaleVocabulary, train
+    from elenchus.encoder.train import ConfigConflict, Settings, StaleVocabulary, train
     from elenchus.encoder.vocab import Vocab
 
     conn = connect(args.db)
@@ -77,8 +89,8 @@ def cmd_train(args):
         max_steps=args.max_steps,
     )
     try:
-        summary = train(conn, vocab, settings)
-    except StaleVocabulary as exc:
+        summary = train(conn, vocab, settings, overrides=size_overrides(args))
+    except (StaleVocabulary, ConfigConflict) as exc:
         print(f"refused: {exc}")
         return 1
 

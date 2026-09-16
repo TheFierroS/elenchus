@@ -156,6 +156,48 @@ def test_unknown_pooling_is_refused():
         FunctionEncoder(EncoderConfig(vocab_size=10, pooling="max"))
 
 
+@pytest.mark.parametrize("fields, message", [
+    (dict(d_model=256, n_heads=3), "divisible"),
+    (dict(n_layers=0), "n_layers"),
+    (dict(d_ff=-1), "d_ff"),
+    (dict(embed_dim=12.5), "embed_dim"),
+    (dict(max_len=0), "max_len"),
+    (dict(dropout=1.0), "dropout"),
+    (dict(dropout=-0.1), "dropout"),
+])
+def test_an_impossible_size_is_refused_by_name_before_any_layer_is_built(fields,
+                                                                          message):
+    with pytest.raises(ValueError, match=message):
+        EncoderConfig(vocab_size=10, **fields)
+
+
+def test_every_configuration_field_is_either_shape_or_free():
+    """A new field must be classified, or --init would silently ignore it."""
+    import dataclasses
+
+    from elenchus.encoder.model import FREE_FIELDS, SHAPE_FIELDS
+
+    names = {f.name for f in dataclasses.fields(EncoderConfig)}
+    assert set(SHAPE_FIELDS) | set(FREE_FIELDS) == names
+    assert not set(SHAPE_FIELDS) & set(FREE_FIELDS)
+
+
+def test_a_different_head_count_loads_silently_and_computes_something_else():
+    """Why n_heads counts as shape: PyTorch does not refuse it."""
+    a = tiny()
+    b = FunctionEncoder(dataclasses_replace(a.config, n_heads=4)).eval()
+    b.load_state_dict(a.state_dict())  # no error
+    ids, mask = pad([[1, 5, 6, 7, 8]], 0)
+    with torch.no_grad():
+        assert not torch.allclose(a.embed(ids, mask), b.embed(ids, mask), atol=1e-4)
+
+
+def dataclasses_replace(config, **changes):
+    import dataclasses
+
+    return dataclasses.replace(config, **changes)
+
+
 # ---------------------------------------------------------------- mlm loss
 
 

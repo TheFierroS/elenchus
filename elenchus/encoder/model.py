@@ -8,9 +8,9 @@ A small Transformer trained from scratch. Two heads share one body:
 
 Size is deliberately modest. Train holds about 16,650 distinct functions;
 a model with capacity far beyond that memorises them instead of learning
-what they have in common. The default (4 layers, width 256) is about 3.5M
-parameters, and larger configurations are an experiment to measure, not an
-assumption.
+what they have in common. The default (4 layers, width 256) has 3,602,881
+parameters at a 321-token vocabulary, and larger configurations are an
+experiment to measure, not an assumption.
 
 Padding must never change a function's vector. Attention is masked with the
 padding mask, and mean pooling averages only real positions, so a function
@@ -39,6 +39,17 @@ import torch.nn.functional as F
 from torch import nn
 
 EMBEDDING_STD = 0.02
+POOLINGS = ("mean", "cls")
+
+# Fields that decide how a checkpoint's weights are read. Most set a weight's
+# shape, so a mismatch fails to load; n_heads does not - the attention
+# matrices are the same size for any head count and load without an error,
+# then are cut into different slices and compute something else. None of
+# them may differ from a checkpoint. dropout and pooling own no weights, so a
+# pre-trained body can be continued with other values.
+SHAPE_FIELDS = ("vocab_size", "pad_id", "max_len", "d_model", "n_layers",
+                "n_heads", "d_ff", "embed_dim")
+FREE_FIELDS = ("dropout", "pooling")
 
 
 @dataclass
@@ -54,6 +65,22 @@ class EncoderConfig:
     embed_dim: int = 128
     pooling: str = "mean"  # "mean" or "cls"; docs/experiments.md E7
 
+    def __post_init__(self):
+        # Checked here, before any layer is built, so a bad size fails with
+        # its own name instead of deep inside PyTorch.
+        for name in ("vocab_size", "max_len", "d_model", "n_layers", "n_heads",
+                     "d_ff", "embed_dim"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if self.d_model % self.n_heads:
+            raise ValueError(f"d_model {self.d_model} is not divisible by "
+                             f"n_heads {self.n_heads}: each head gets an equal slice")
+        if not 0.0 <= self.dropout < 1.0:
+            raise ValueError(f"dropout must be in [0, 1), got {self.dropout!r}")
+        if self.pooling not in POOLINGS:
+            raise ValueError(f"unknown pooling {self.pooling!r}")
+
     def to_dict(self):
         return asdict(self)
 
@@ -61,8 +88,6 @@ class EncoderConfig:
 class FunctionEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
-        if config.pooling not in ("mean", "cls"):
-            raise ValueError(f"unknown pooling {config.pooling!r}")
         self.config = config
 
         self.tokens = nn.Embedding(config.vocab_size, config.d_model,

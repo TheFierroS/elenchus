@@ -17,6 +17,7 @@ from elenchus.encoder import train as module
 from elenchus.encoder.batching import pad
 from elenchus.encoder.model import EncoderConfig
 from elenchus.encoder.train import (
+    ConfigConflict,
     Settings,
     StaleVocabulary,
     learning_rate,
@@ -301,6 +302,163 @@ def test_a_trained_checkpoint_joins_the_baselines_table(corpus, vocab, tmp_path,
     out = capsys.readouterr().out
     assert f"encoder (run {summary['run_id']})" in out
     assert "bm25-mnemonic" in out
+
+
+# ---------------------------------------------------------------- model size
+
+
+def train_runs(conn):
+    return conn.execute("SELECT COUNT(*) FROM runs WHERE kind = 'train'").fetchone()[0]
+
+
+def recorded_params(conn, run_id):
+    row = conn.execute("SELECT params FROM runs WHERE id = ?", (run_id,)).fetchone()
+    return json.loads(row[0])
+
+
+def test_a_new_model_takes_the_sizes_asked_for(corpus, vocab, tmp_path):
+    asked = dict(d_model=48, n_layers=2, n_heads=4, d_ff=96, embed_dim=12,
+                 dropout=0.0, pooling="cls")
+    summary = train(corpus, vocab, settings(tmp_path, "mlm", max_steps=1, epochs=1),
+                    log=quiet, overrides=asked)
+    model, _, _ = load_checkpoint(summary["checkpoint"], vocab=vocab)
+    for name, value in asked.items():
+        assert getattr(model.config, name) == value, name
+    assert model.config.max_len == 32
+    assert recorded_params(corpus, summary["run_id"])["config"]["d_model"] == 48
+
+
+def test_max_len_left_unset_is_the_models_own(corpus, vocab, tmp_path):
+    summary = train(corpus, vocab,
+                    settings(tmp_path, "mlm", max_len=None, max_steps=1, epochs=1),
+                    config(vocab), log=quiet)
+    params = recorded_params(corpus, summary["run_id"])
+    assert params["settings"]["max_len"] == params["config"]["max_len"] == 32
+
+
+def test_a_max_len_the_given_model_cannot_read_is_refused_before_a_run(corpus, vocab,
+                                                                       tmp_path):
+    with pytest.raises(ConfigConflict):
+        train(corpus, vocab, settings(tmp_path, "mlm", max_len=64), config(vocab),
+              log=quiet)
+    assert train_runs(corpus) == 0
+
+
+def test_max_len_given_twice_with_different_values_is_refused(corpus, vocab, tmp_path):
+    with pytest.raises(ConfigConflict, match="twice"):
+        train(corpus, vocab, settings(tmp_path, "mlm", max_len=32), log=quiet,
+              overrides=dict(max_len=64))
+    assert train_runs(corpus) == 0
+
+
+@pytest.fixture
+def pretrained(corpus, vocab, tmp_path):
+    summary = train(corpus, vocab, settings(tmp_path, "mlm", max_steps=2, epochs=1),
+                    config(vocab), log=quiet)
+    return summary["checkpoint"]
+
+
+@pytest.mark.parametrize("asked", [
+    dict(d_model=64), dict(n_layers=2), dict(n_heads=1), dict(d_ff=128),
+    dict(embed_dim=8), dict(max_len=16),
+])
+def test_init_refuses_a_shape_that_differs_from_the_checkpoint(corpus, vocab, tmp_path,
+                                                               pretrained, asked):
+    before = train_runs(corpus)
+    s = settings(tmp_path, "contrastive", init=pretrained, max_len=None)
+    with pytest.raises(ConfigConflict, match=next(iter(asked))):
+        train(corpus, vocab, s, log=quiet, overrides=asked)
+    assert train_runs(corpus) == before, "a refusal must not record a run"
+
+
+def test_init_refuses_a_settings_max_len_the_checkpoint_cannot_read(corpus, vocab,
+                                                                    tmp_path, pretrained):
+    s = settings(tmp_path, "contrastive", init=pretrained, max_len=64)
+    with pytest.raises(ConfigConflict, match="max_len"):
+        train(corpus, vocab, s, log=quiet)
+
+
+def test_init_accepts_its_own_shape_given_again(corpus, vocab, tmp_path, pretrained):
+    s = settings(tmp_path, "contrastive", init=pretrained, max_steps=1, epochs=1)
+    summary = train(corpus, vocab, s, log=quiet,
+                    overrides=dict(d_model=32, n_heads=2, dropout=0.0))
+    assert recorded_params(corpus, summary["run_id"])["init_changes"] == {}
+
+
+def test_init_may_change_dropout_and_pooling_and_says_so(corpus, vocab, tmp_path,
+                                                         pretrained, monkeypatch):
+    weights, _, _ = load_checkpoint(pretrained, vocab=vocab)
+    captured = {}
+    real_optimiser = module._optimiser
+
+    def spy(model, s):
+        captured["model"] = model
+        captured["state"] = {k: v.clone() for k, v in model.state_dict().items()}
+        return real_optimiser(model, s)
+
+    monkeypatch.setattr(module, "_optimiser", spy)
+    lines = []
+    s = settings(tmp_path, "contrastive", init=pretrained, max_steps=1, epochs=1)
+    summary = train(corpus, vocab, s, log=lines.append,
+                    overrides=dict(dropout=0.2, pooling="cls"))
+
+    assert captured["model"].config.pooling == "cls"
+    assert captured["model"].config.dropout == 0.2
+    assert captured["model"].body.layers[0].dropout.p == 0.2
+    for name, value in weights.state_dict().items():
+        assert torch.equal(captured["state"][name], value), name
+    assert recorded_params(corpus, summary["run_id"])["init_changes"] == {
+        "dropout": [0.0, 0.2], "pooling": ["mean", "cls"]}
+    assert any("pooling: mean" in line for line in lines)
+
+
+def test_size_flags_reach_the_overrides_and_unset_ones_do_not():
+    from elenchus import cli
+    from elenchus.encoder.cli import size_overrides
+
+    args = cli.build_parser().parse_args(
+        ["train", "mlm", "--out", "m", "--d-model", "384", "--layers", "6",
+         "--heads", "6", "--d-ff", "1536", "--embed-dim", "96", "--dropout", "0.2",
+         "--pooling", "cls"])
+    assert size_overrides(args) == dict(d_model=384, n_layers=6, n_heads=6, d_ff=1536,
+                                        embed_dim=96, dropout=0.2, pooling="cls")
+    bare = cli.build_parser().parse_args(["train", "mlm", "--out", "m"])
+    assert size_overrides(bare) == {}
+    assert bare.max_len is None
+
+
+def test_the_defaults_in_the_size_help_are_the_real_defaults():
+    """The help text states defaults it cannot import; keep them honest."""
+    import re
+
+    from elenchus import cli
+    from elenchus.encoder.cli import SIZE_FLAGS
+
+    parser = cli.build_parser()
+    train_parser = next(a for a in parser._subparsers._group_actions[0].choices.values()
+                        if a.prog.endswith(" train"))
+    defaults = EncoderConfig(vocab_size=1)
+    for action in train_parser._actions:
+        flag = action.dest
+        if flag in SIZE_FLAGS:
+            stated = re.search(r"\(([^()]*)\)$", action.help).group(1)
+            assert stated == str(getattr(defaults, SIZE_FLAGS[flag])), flag
+
+
+def test_the_train_command_refuses_a_conflict_and_says_why(corpus, vocab, tmp_path,
+                                                          pretrained, monkeypatch,
+                                                          capsys):
+    from elenchus import cli
+
+    vocab_path = tmp_path / "vocab.json"
+    vocab.save(vocab_path)
+    monkeypatch.setattr("elenchus.encoder.cli.connect", lambda _p: corpus)
+    args = cli.build_parser().parse_args(
+        ["train", "contrastive", "--out", str(tmp_path / "c"), "--init", pretrained,
+         "--vocab", str(vocab_path), "--d-model", "64", "--device", "cpu"])
+    args.db = ":memory:"
+    assert args.func(args) == 1
+    assert "d_model 32 in the checkpoint, 64 asked" in capsys.readouterr().out
 
 
 def test_the_train_command_parses_its_stages():
