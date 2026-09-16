@@ -94,17 +94,28 @@ def cmd_train(args):
         print(f"refused: {exc}")
         return 1
 
-    print()
-    print(f"best epoch  : {summary['best_epoch']}")
-    for key, value in summary.items():
-        if key.startswith("best_val_") and not isinstance(value, dict):
-            print(f"{key:12}: {value:.4f}")
-    if "best_val_metrics" in summary:
-        m = summary["best_val_metrics"]
-        print(f"val         : recall@1 {m['recall@1']:.3f}  recall@10 "
+    def retrieval(label, m):
+        print(f"{label:12}: recall@1 {m['recall@1']:.3f}  recall@10 "
               f"{m['recall@10']:.3f}  mrr {m['mrr']:.3f}")
+
+    print()
+    for key, value in summary.items():
+        if key.startswith("start_val_") and not isinstance(value, dict):
+            print(f"{key:12}: {value:.4f}  (before training)")
+    if "start_val_metrics" in summary:
+        retrieval("start val", summary["start_val_metrics"])
+    if summary["checkpoint"] is None:
+        print("trained     : nothing (--max-steps 0)")
+    else:
+        print(f"best epoch  : {summary['best_epoch']}")
+        for key, value in summary.items():
+            if key.startswith("best_val_") and not isinstance(value, dict):
+                print(f"{key:12}: {value:.4f}")
+        if "best_val_metrics" in summary:
+            retrieval("val", summary["best_val_metrics"])
     if summary.get("peak_allocated_gib") is not None:
         print(f"peak memory : {summary['peak_allocated_gib']:.2f} GiB allocated, "
               f"{summary['peak_reserved_gib']:.2f} GiB reserved")
-    print(f"checkpoint  : {summary['checkpoint']}")
+    if summary["checkpoint"] is not None:
+        print(f"checkpoint  : {summary['checkpoint']}")
     return 0

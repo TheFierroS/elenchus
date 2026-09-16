@@ -25,7 +25,17 @@ because the larger of the two is not known in advance: contrastive
 validation embeds the whole val pool at once. "allocated" is what tensors
 needed, "reserved" what PyTorch's caching allocator held - the part of
 nvidia-smi's number that belongs to this process's tensors. Both are GiB. On
-a CPU they are None, never a made-up zero.
+a CPU they are None, never a made-up zero. Validation's reserved figure
+still holds what training cached before it; its allocated figure is the one
+that belongs to validation alone.
+
+Every run measures its starting point on val before the first step, logged
+as "start" and kept in the history as epoch -1; a contrastive run records it
+beside its result as encoder-<run>-start. Without it a score cannot be
+credited to learning: an untrained Transformer already gives functions with
+similar tokens similar vectors, and a 50-step smoke run, still in warm-up,
+reached val MRR 0.131 - above the model-free bar. The start is a reference,
+never a checkpoint. max_steps=0 measures it and trains nothing.
 """
 
 import contextlib
@@ -92,11 +102,13 @@ class Settings:
     init: str | None = None
     device: str = "auto"
     amp: bool = True
-    max_steps: int | None = None    # for smoke tests; None trains fully
+    max_steps: int | None = None    # None trains fully; 0 measures the start only
 
     def __post_init__(self):
         if self.stage not in ("mlm", "contrastive"):
             raise ValueError(f"unknown stage {self.stage!r}")
+        if self.max_steps is not None and self.max_steps < 0:
+            raise ValueError(f"max_steps must be None or >= 0, got {self.max_steps}")
 
 
 def vocab_hash(vocab):
@@ -252,19 +264,24 @@ class MemoryProbe:
 
 
 def _memory_text(train_peak, eval_peak):
-    if train_peak["allocated_gib"] is None:
+    if eval_peak["allocated_gib"] is None:
         return ""
-    return (f"  mem train {train_peak['allocated_gib']:.2f}"
-            f"/{train_peak['reserved_gib']:.2f}"
-            f" val {eval_peak['allocated_gib']:.2f}"
-            f"/{eval_peak['reserved_gib']:.2f} GiB")
+    parts = [("train", train_peak), ("val", eval_peak)]
+    text = " ".join(f"{name} {peak['allocated_gib']:.2f}/{peak['reserved_gib']:.2f}"
+                    for name, peak in parts if peak is not None)
+    return f"  mem {text} GiB"
 
 
 def _peak(history, key):
     values = [entry[phase][key] for entry in history
               for phase in ("train_memory", "val_memory")
-              if entry[phase][key] is not None]
+              if entry[phase] is not None and entry[phase][key] is not None]
     return max(values) if values else None
+
+
+def reached(step, settings):
+    """Whether a run capped by max_steps has taken them all. 0 is a cap too."""
+    return settings.max_steps is not None and step >= settings.max_steps
 
 
 def _device(settings):
@@ -356,8 +373,26 @@ def _step(model, optimiser, loss, settings, step, total_steps):
 def _selection_loop(settings, epoch_fn, evaluate_fn, better, metric_name,
                     model, vocab, run_id, log, memory):
     best, best_epoch, waited = None, -1, 0
-    history = []
     out = Path(settings.out)
+
+    started = time.time()
+    memory.reset()
+    start = evaluate_fn()
+    start_peak = memory.read()
+    history = [{"epoch": -1, "train_loss": None, metric_name: start,
+                "seconds": time.time() - started, "train_memory": None,
+                "val_memory": start_peak}]
+    log(f"start      val {metric_name} {start:.4f}  (before training, "
+        f"{time.time() - started:.0f}s){_memory_text(None, start_peak)}")
+
+    summary = {f"start_val_{metric_name}": start}
+    if settings.max_steps == 0:
+        log("max_steps 0: the start is measured; nothing is trained")
+        return summary | {"best_epoch": None, f"best_val_{metric_name}": None,
+                          "history": history, "checkpoint": None,
+                          "peak_allocated_gib": _peak(history, "allocated_gib"),
+                          "peak_reserved_gib": _peak(history, "reserved_gib")}
+
     for epoch in range(settings.epochs):
         started = time.time()
         memory.reset()
@@ -385,7 +420,8 @@ def _selection_loop(settings, epoch_fn, evaluate_fn, better, metric_name,
                 break
         if stop:
             break
-    return {"best_epoch": best_epoch, f"best_val_{metric_name}": best,
+    return summary | {
+            "best_epoch": best_epoch, f"best_val_{metric_name}": best,
             "history": history, "checkpoint": str(out / "best.pt"),
             "peak_allocated_gib": _peak(history, "allocated_gib"),
             "peak_reserved_gib": _peak(history, "reserved_gib")}
@@ -413,9 +449,9 @@ def _train_mlm(conn, model, vocab, settings, examples, device, run_id, log, memo
             _step(model, optimiser, loss, settings, state["step"], total_steps)
             losses.append(loss.item())
             state["step"] += 1
-            if settings.max_steps and state["step"] >= settings.max_steps:
+            if reached(state["step"], settings):
                 break
-        stop = bool(settings.max_steps and state["step"] >= settings.max_steps)
+        stop = reached(state["step"], settings)
         return sum(losses) / max(len(losses), 1), len(losses), stop
 
     @torch.no_grad()
@@ -451,7 +487,7 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
 
     queries, pool, gold = retrieval_task(conn, split="val")
     task = task_params(conn, "val", "O0", "O3", settings.seed)
-    last_metrics = {}
+    measured = []
 
     def epoch_fn(epoch):
         model.train()
@@ -473,24 +509,27 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
             queue.enqueue(k, batch.identities, batch.positive_content)
             losses.append(loss.item())
             state["step"] += 1
-            if settings.max_steps and state["step"] >= settings.max_steps:
+            if reached(state["step"], settings):
                 break
-        stop = bool(settings.max_steps and state["step"] >= settings.max_steps)
+        stop = reached(state["step"], settings)
         return sum(losses) / max(len(losses), 1), len(losses), stop
 
     def evaluate_fn():
         scorer = EncoderScorer(model, vocab, max_len=settings.max_len, device=device,
                                name="encoder")
         metrics = evaluate(scorer, queries, pool, gold)
-        last_metrics.clear()
-        last_metrics.update(metrics)
+        measured.append(metrics)
         return metrics.get("mrr", 0.0)
 
     summary = _selection_loop(settings, epoch_fn, evaluate_fn, lambda a, b: a > b,
                               "mrr", model, vocab, run_id, log, memory)
 
-    best_metrics = measure_checkpoint(summary["checkpoint"], vocab, queries, pool,
-                                      gold, device=device)
-    record(conn, run_id, task, {f"encoder-{run_id}": best_metrics})
-    summary["best_val_metrics"] = best_metrics
+    results = {f"encoder-{run_id}-start": measured[0]}
+    summary["start_val_metrics"] = measured[0]
+    if summary["checkpoint"] is not None:
+        best_metrics = measure_checkpoint(summary["checkpoint"], vocab, queries, pool,
+                                          gold, device=device)
+        results[f"encoder-{run_id}"] = best_metrics
+        summary["best_val_metrics"] = best_metrics
+    record(conn, run_id, task, results)
     return summary

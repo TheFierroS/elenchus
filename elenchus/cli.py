@@ -667,7 +667,8 @@ def build_parser():
     training.add_argument("--seed", type=int, default=0)
     training.add_argument("--device", default="auto")
     training.add_argument("--max-steps", type=int, default=None,
-                          help="stop after this many steps (for a quick check)")
+                          help="stop after this many steps (for a quick check); "
+                               "0 measures the untrained start and trains nothing")
     # Model size. Left unset, a new model takes EncoderConfig's defaults and a
     # model started with --init keeps its checkpoint's. Shape flags that
     # disagree with --init are refused; --dropout and --pooling may differ.
