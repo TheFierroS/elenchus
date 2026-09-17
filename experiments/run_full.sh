@@ -7,7 +7,8 @@
 #
 # SHARE must be given: the eval-pair-share E3 chose ("none" for uniform).
 # Runs whose summary.json exists are skipped, so the script can be started
-# again after an interruption; a run cut short starts over.
+# again after an interruption; a run cut short starts over. The working tree
+# must be clean and stay on one commit (experiments/guard.sh).
 #
 #   SHARE=none nohup sh experiments/run_full.sh > data/full.log 2>&1 &
 #   python experiments/full_results.py
@@ -20,7 +21,7 @@ SEEDS="${SEEDS:-0 1 2}"
 EPOCHS="${EPOCHS:-20}"
 PATIENCE="${PATIENCE:-3}"
 
-refuse() { echo "REFUSED: $*"; exit 2; }
+. experiments/guard.sh     # refuse, guard_start, guard_before_run
 
 # -- before anything: every check here protects hours of GPU time
 [ -n "${SHARE:-}" ] || refuse "set SHARE to E3's verdict (none, 0.25, 0.5 or 1.0)"
@@ -29,9 +30,7 @@ case "$SHARE" in
   0.25|0.5|1.0) share_flag="--eval-pair-share $SHARE" ;;
   *) refuse "SHARE must be none, 0.25, 0.5 or 1.0, got '$SHARE'" ;;
 esac
-if ! git diff --quiet HEAD -- . 2>/dev/null; then
-  refuse "tracked files have uncommitted changes; runs would be recorded as -dirty"
-fi
+guard_start
 # [b]in: the pattern must not match itself, or any command line quoting it.
 if pgrep -f "[b]in/elenchus train" > /dev/null 2>&1; then
   refuse "another training run is on the GPU (see: pgrep -af 'bin/elenchus train')"
@@ -44,6 +43,7 @@ run() {  # run <out> <log> <args...>
     echo "skip  $out (already done)"
     return 0
   fi
+  guard_before_run
   echo "=== $(date '+%H:%M:%S') start $out"
   "$ELENCHUS" train "$@" --out "$out" > "$log" 2>&1
   code=$?
