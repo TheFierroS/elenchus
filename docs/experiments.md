@@ -117,6 +117,97 @@ every level. Under the 5% threshold set before measuring, so the sampler is
 not changed for it. Such a function is still a real negative for the rest of
 its batch.
 
+**Result (runs 510-517, 16 September; fingerprint `47c82734a3cb7f08`).
+Uniform stays.** `experiments/e3_results.py` applied the rule above
+unchanged: `verdict: default becomes none`.
+
+Runs 510-512 recorded code `156bf13`, runs 513-517 `00ca9f4`; none is
+dirty, and nothing under `elenchus/` or `tests/` differs between the two
+commits (only `docs/` and `experiments/`), so all eight ran the same code.
+All eight exited 0, drew 1,500 × 64 = 96,000 pairs, and passed
+`elenchus check` afterwards.
+
+Val, last checkpoint (`last.pt`), MRR:
+
+| P | seed | run | O0-O3 drawn | O0→O3 queries | O0→O3 packages | O0→O2 | O1→O3 |
+|---|---|---|---|---|---|---|---|
+| unset | 0 | 510 | 10.1% | 0.3968 | 0.4688 | 0.4729 | 0.6547 |
+| unset | 1 | 514 | 10.2% | 0.3894 | 0.4645 | 0.4697 | 0.6488 |
+| 0.25 | 0 | 511 | 20.2% | 0.3983 | 0.4551 | 0.4686 | 0.6513 |
+| 0.25 | 1 | 515 | 20.3% | 0.3946 | 0.4889 | 0.4730 | 0.6445 |
+| 0.5 | 0 | 512 | 30.3% | 0.3871 | 0.4666 | 0.4687 | 0.6512 |
+| 0.5 | 1 | 516 | 30.2% | 0.3860 | 0.4787 | 0.4671 | 0.6427 |
+| 1.0 | 0 | 513 | 50.6% | 0.3671 | 0.4080 | 0.4367 | 0.6327 |
+| 1.0 | 1 | 517 | 50.6% | 0.3445 | 0.4189 | 0.4145 | 0.6428 |
+
+Means over the two seeds, and the difference from uniform:
+
+| P | O0→O3 queries | O0→O3 packages | O0→O2 | O1→O3 |
+|---|---|---|---|---|
+| unset | 0.3931 | 0.4667 | 0.4713 | 0.6518 |
+| 0.25 | 0.3965 (+0.003) | 0.4720 (+0.005) | 0.4708 (−0.001) | 0.6479 (−0.004) |
+| 0.5 | 0.3866 (−0.007) | 0.4727 (+0.006) | 0.4679 (−0.003) | 0.6470 (−0.005) |
+| 1.0 | 0.3558 (−0.037) | 0.4134 (−0.053) | 0.4256 (−0.046) | 0.6378 (−0.014) |
+
+M = max(0.005, 2 × |0.3968 − 0.3894|) = **0.0148**.
+
+- **0.25** fails condition 1 on both seeds: gains over uniform of +0.0015
+  (seed 0) and +0.0052 (seed 1), neither above M.
+- **0.5** fails condition 1 on both seeds: −0.0097 and −0.0034.
+- **1.0** fails condition 1 on both seeds (−0.0297, −0.0449); on seed 0 it
+  also fails conditions 2 and 3 on every task, on seed 1 condition 2 and
+  O0→O2.
+
+**Reading.** The more the sampler pushes O0-O3, the lower the scores, and
+at P = 1 every task falls, the exam pair included. Displacing the other
+pairs with the exam pair did not help; the idea behind E3 that those pairs
+are wasted on the near-identical O0-O1 is not supported. The shares
+actually drawn match the computed ones (10.1 / 20.2 / 30.3 / 50.5%), so the
+option did what it says; the result is about the sampling, not a bug in it.
+
+**How the verdict is used.** The code default does not change:
+`Settings.eval_pair_share` stays `None`, which is the uniform sampler bit
+for bit. Later runs pass no `--eval-pair-share`; `run_full.sh` and the
+learning-curve script take `SHARE=none`. Changing the default instead would
+make the recorded settings of earlier runs misleading.
+
+**Consequence for the learning curve.** T = max(0.01, M) = **0.0148**.
+
+**Observations, not decided on:**
+
+- **M rests partly on one epoch.** Uniform seed 1 fell from 0.3942 (epoch 7)
+  to 0.3894 in its last, partial epoch. Read at `best.pt`, the seed spread
+  would be 0.0026 and M 0.005. The verdict does not depend on it (at
+  M = 0.005 no share passes condition 1 on both seeds: 0.25's seed-0 gain is
+  0.0015), but the learning-curve threshold does. The rule stays as written;
+  M measures seed and last-epoch variation together.
+- **Seed noise is far larger than F5's floor.** Between seeds at 1,500 steps
+  the uniform runs differ by 0.0074 MRR, ~15 times the ~0.0005 of four
+  same-seed 50-step runs (F5). Full training's S (B3/B4) remains the noise
+  later experiments are read against.
+- **The seed moves the starting point.** Start MRR was 0.0342 in every
+  seed-0 run and 0.0298 in every seed-1 run: the seed sets the initial
+  weights, and evaluation stays deterministic for a given seed (F5).
+- **Still improving when stopped.** The best epoch was the last in 6 of 8
+  runs, and training loss was still falling in all of them. Full training
+  uses early stopping and is expected to go higher.
+- **Absolute level.** Without MLM, from random weights, after 1,500 steps:
+  val MRR ~0.39 and, from the `best.pt` measurements training recorded,
+  recall@10 0.51-0.56, about three times the val bar (0.124 / 0.189). This is
+  val, used for tuning; it is not evidence for the week's criterion, which
+  is read once on test.
+- **Task difficulty.** O1→O3 (~0.65) > O0→O2 (~0.47) > O0→O3 (~0.39), in the
+  expected order: the further apart the levels, the harder.
+- **Which mean selects.** The package mean would have kept a different epoch
+  in 2 of 8 runs (512: 8 instead of 7; 517: 7 instead of 8), one epoch apart
+  each time. Not enough to change the selection rule.
+- **Run 517's epoch 7 took 2,623 s instead of ~75 s**, stretching the run to
+  54 minutes. Memory was unchanged and there was no error; the likely cause
+  is the laptop sleeping or throttling. It does not affect the verdict (P = 1
+  fails every condition on seed 0 alone), but long runs need the power
+  settings (lid: do nothing on AC; sleep on AC: never) first.
+- **Memory.** Peak reserved 3.66-3.70 GiB, allocated 3.48 GiB in every run.
+
 ### E4 — Hard negatives: functions per package in a batch
 
 **Default:** batches are built from several packages, up to 8 functions each.
@@ -429,6 +520,12 @@ suggested 0.0002; few samples understate noise. This is a floor: noise after
 full training, and between seeds, is expected to be larger and is measured
 in B3 with 2-3 seeds. An experiment's difference is read against it.
 
+*Update after E3:* "every run" held because those runs shared seed 0. The
+seed sets the initial weights, so seed-1 runs start at 0.0298; evaluation is
+still deterministic for a given seed. And the floor was far too low for
+comparisons across seeds: two uniform E3 runs at 1,500 steps differ by
+0.0074 (E3, Result).
+
 ### F6 — `decl_file` of `#line` names was machine-dependent (1f2f2e4)
 
 duktape's amalgamation names 142 files in 145 `#line` directives without a
@@ -486,7 +583,11 @@ Test: mujs 25%. Train's largest: flecs 16%, sqlite 13%, mbedtls 13%.
 ## Open questions carried into full training
 
 - **Seed noise.** Measured only for one seed (F5). B3 runs 2-3 seeds.
+  *Update after E3:* two seeds at 1,500 steps differ by 0.0074 MRR (E3,
+  Result); S from B3/B4 is still the figure to read experiments against.
 - **Is O0-O1 the easy pair?** A hypothesis behind E3 (see E3), not measured.
+  *Update after E3:* not supported - drawing O0-O3 in place of the other
+  pairs did not raise O0→O3 and at P = 1 lowered every task (E3, Result).
 - **Which mean selects the model?** Selection stays on the query mean; every
   contrastive run prints the epoch the package mean would keep. Decide only
   if they disagree. A third mean over packages with ≥ 20 queries is an option.
@@ -556,8 +657,8 @@ with nvidia-smi, since PyTorch reports only its own memory.
 - [x] E3 and learning-curve options (dcf29a1), checked on real data (run 509)
 - [x] E3 protocol and decision rule written before the runs
 - [x] Learning-curve protocol and decision rule written before the runs
-- [ ] E3 runs (`experiments/run_e3.sh`, ~100 min) and verdict
-      (`experiments/e3_results.py`)
+- [x] E3 runs (`experiments/run_e3.sh`, ~100 min) and verdict
+      (`experiments/e3_results.py`): uniform stays, M = 0.0148
 - [ ] Learning-curve runs and verdict
 - [x] Full training protocol, B4 rule and B5 memory plan written before runs
 - [ ] B5 memory measurement (`experiments/b5_memory.sh`), when the GPU is free
