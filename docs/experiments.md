@@ -351,6 +351,73 @@ The protocol now:
 - **Time, estimated:** ~0.41 s a step (E3: 75 s for 172 steps with
   validation), so ~40 minutes a run and ~5.5 hours for eight.
 
+**Result (runs 522-529, 17 September, code `6866821`, fingerprint
+`47c82734a3cb7f08`). Wave 2: more packages help.** All eight ran the whole
+budget and exited 0 (10:20-15:27, 36.5-38.8 minutes each);
+`experiments/curve_results.py` applied the amended rule: `verdict: more
+packages help: wave 2, data-format and text first`.
+
+Val, `best.pt` measured again from disk:
+
+| run | seed | functions | packages | MRR (queries) | MRR (packages) | recall@10 | best at step |
+|---|---|---|---|---|---|---|---|
+| 100% | 0 | 16,651 | 23 | 0.4329 | 0.5213 | 0.612 | 3,784 |
+| 100% | 1 | 16,651 | 23 | 0.4343 | 0.5140 | 0.595 | 4,300 |
+| identity 50% | 0 | 8,326 | 23 | 0.3915 | 0.4603 | 0.546 | 3,268 |
+| package 50% | 0 | 7,360 | 12 | 0.3720 | 0.4561 | 0.547 | 2,408 |
+| package 50% | 1 | 9,834 | 12 | 0.3840 | 0.4489 | 0.550 | 2,580 |
+| identity 25% | 0 | 4,163 | 23 | 0.3491 | 0.4037 | 0.530 | 2,236 |
+| package 25% | 0 | 1,786 | 6 | 0.2664 | 0.3738 | 0.433 | 688 |
+| package 25% | 1 | 4,159 | 6 | 0.3094 | 0.3783 | 0.475 | 1,548 |
+
+- Identity gain 50% → 100%: **+0.0413**, 2.8 T.
+- Package gain 50% → 100%: **+0.0556**, 3.8 T (seed 0 +0.0608, seed 1
+  +0.0503). Both above T; the rule reads the package gain first.
+- Budget check: both 100% runs had levelled off by step 3,870 (their gains
+  after it: 0 and +0.0010, against T / 2 = 0.0074), so the budget was
+  enough and the verdict is not provisional.
+
+**Reading.** The data is what limits the model, and variety most of all.
+
+- *Doubling helps by a steady amount so far.* Identity unit: +0.0424 from 25%
+  to 50%, +0.0413 from 50% to 100%. On this curve, a corpus 40% larger would
+  gain about half a doubling (~+0.02); that is an extrapolation from three
+  points of one seed and one set of packages, not a prediction to rely on.
+- *Variety counts about as much as doubling.* Two runs saw almost the same
+  number of functions: identity 25% (4,163 from 23 packages) scored 0.3491,
+  package 25% seed 1 (4,159 from 6 packages) 0.3094, a gap of 0.040. Identity
+  50% (8,326 functions, 23 packages) also beat package 50% seed 1 (9,834
+  functions, 12 packages), 0.3915 against 0.3840. The seeds differ in both
+  pairs; a strong sign, not a controlled result.
+- The package 25% → 50% shape (+0.0901) mixes subsets of very different
+  sizes (1,786 and 4,159 functions at 25%) and is not read on its own.
+
+**Observations, not decided on:**
+
+- **Seeds agreed far more closely than E3 suggested.** The two 100% runs
+  differ by 0.0014, where E3's two uniform runs differed by 0.0074 and set
+  M = 0.0148. E3 read `last.pt` after 1,500 steps, one seed dipping in its
+  last partial epoch (E3, Result); fully decayed runs read at `best.pt`
+  vary much less. T was the rule as written and the gains are 3-4 T either
+  way; a threshold for later experiments should come from runs like these.
+- **Small data is learned, then over-fitted, early.** Package 25% seed 0
+  kept step 688; the full runs kept steps 3,784 and 4,300. On this data a
+  full run levels off around 4,000 steps; the full-training budget is set
+  from the same kind of curve on the corpus it will train on.
+- **The package mean would have kept another validation in some runs**, one
+  validation apart (identity 50%: 17 instead of 18), as in E3.
+- **Wall time** was 38.3 minutes a run on average (5 h 6 min for eight),
+  about 0.45 s a step with validation and loading, close to the estimate.
+
+**Next (decided with the user, 17 September).** Wave 2 before any full
+training: 19 candidate packages were compiled at all four levels in the
+sandbox, ~9,900 identities at ≥ 2 levels (text, data-format, media, systems,
+and a new math domain of three), each with no `decl_file` outside its
+package; they go into the manifest with the build. After the build, a
+shorter repeat of this experiment (the five deciding runs) on the new
+corpus, written as its own protocol before it runs, says whether the data
+has levelled off and what budget full training takes.
+
 **Wave 2, if it is needed:** train's thinnest domains are data-format (5.1%
 of identities) and text (6.1%); val and test lean on a few large packages, so
 a few mid-sized packages help more than many small ones.
@@ -624,13 +691,16 @@ Test: mujs 25%. Train's largest: flecs 16%, sqlite 13%, mbedtls 13%.
 - **Seed noise.** Measured only for one seed (F5). B3 runs 2-3 seeds.
   *Update after E3:* two seeds at 1,500 steps differ by 0.0074 MRR (E3,
   Result); S from B3/B4 is still the figure to read experiments against.
+  *Update after L:* two fully decayed 100% runs read at `best.pt` differ by
+  0.0014 (L, Result).
 - **Is O0-O1 the easy pair?** A hypothesis behind E3 (see E3), not measured.
   *Update after E3:* not supported - drawing O0-O3 in place of the other
   pairs did not raise O0→O3 and at P = 1 lowered every task (E3, Result).
 - **Which mean selects the model?** Selection stays on the query mean; every
   contrastive run prints the epoch the package mean would keep. Decide only
   if they disagree. A third mean over packages with ≥ 20 queries is an option.
-- **11M memory plan** (F3), before B5.
+- **11M memory plan** (F3), before B5. *Resolved 17 September:* 11M fits
+  with `--checkpoint-activations` (B5, Result).
 - **Validation's reserved figure** includes what training cached before it;
   its allocated figure is validation's own.
 - **Learning-curve runs use the full-train vocabulary.** Tokens only seen in
@@ -694,6 +764,37 @@ with nvidia-smi, since PyTorch reports only its own memory.
   full run's per-epoch peaks are recorded anyway, and a run that overflows
   is stopped and re-planned.
 
+**Result (17 September). 11M does not fit as it is; with activation
+checkpointing both 11M runs fit.** Two measurements, the same code path:
+
+- *Morning (runs 518-520, code `c0432d7`):* ref ok; mlm11
+  left **0.29 GiB** free (NO); con11 failed a few steps into training with
+  `CUDA driver error: device not ready / Failed to create GPU mapping`, the
+  card at 7.67 of 8.00 GiB. On WSL an overflow ends the run rather than
+  spilling slowly into system memory.
+- *Afternoon (code `12450b9`, `--checkpoint-activations` added and tested):*
+
+| run | torch allocated | torch reserved | card idle | card peak | free at peak | fits | epoch s |
+|---|---|---|---|---|---|---|---|
+| ref (3.6M) | 3.48 | 3.59 | 0.94 | 4.66 | 3.34 | yes | 26 |
+| mlm11 | 6.84 | 7.13 | 0.94 | 7.63 | 0.37 | NO | 85 |
+| con11 | - | - | - | - | - | failed again (same error) | - |
+| mlm11ac | 2.13 | 2.33 | 0.39 | 2.85 | **5.14** | yes | 66 |
+| con11ac | 3.79 | 4.23 | 0.39 | 4.83 | **3.16** | yes | 67 |
+
+GiB throughout; "epoch s" is the 50 steps with their validation.
+
+- **Decision, by the rule:** B5 runs 11M with `--checkpoint-activations`.
+  The flag changes no loss or gradient (bit-identical on CPU, tests in
+  `12450b9`), so 3.6M against 11M still compares size alone.
+- **Memory:** MLM's allocated peak fell from 6.84 to 2.13 GiB (-69%).
+- **Speed is not measured cleanly here.** mlm11ac (66 s) was faster than
+  mlm11 (85 s), most likely because mlm11 ran against the card's limit;
+  on this card, checkpointed 11M costs no more time than 11M without it.
+- **Card idle** read 0.39 GiB for the checkpointed runs and 0.94 for the
+  others, likely freed after con11's failure; with 0.94 they would still
+  leave ~4.6 and ~2.6 GiB.
+
 ## Before full training - checklist
 
 - [x] F1-F9 above, each committed and measured
@@ -704,10 +805,14 @@ with nvidia-smi, since PyTorch reports only its own memory.
       (`experiments/e3_results.py`): uniform stays, M = 0.0148
 - [x] Learning-curve protocol amended before the runs (fixed step budget,
       validation every 172 steps, 100% with two seeds)
-- [ ] Learning-curve runs (`experiments/run_curve.sh`, ~5.5 h) and verdict
-      (`experiments/curve_results.py`)
+- [x] Learning-curve runs (`experiments/run_curve.sh`, 5 h 6 min) and verdict
+      (`experiments/curve_results.py`): more packages help, wave 2
 - [x] Full training protocol, B4 rule and B5 memory plan written before runs
-- [ ] B5 memory measurement (`experiments/b5_memory.sh`), when the GPU is free
-- [ ] Corpus decision (wave 2 or not); if wave 2: build, `check`,
-      `dataset --assign --force`, `vocab`, baselines again
+- [x] B5 memory measurement (`experiments/b5_memory.sh`): 11M fits with
+      `--checkpoint-activations`
+- [x] Corpus decision: wave 2 (L, Result)
+- [ ] Wave 2: manifest, build, `check`, split preview, `dataset --assign
+      --force`, `vocab`, baselines again
+- [ ] Short learning-curve repeat on the new corpus (protocol first); sets
+      the full-training budget
 - [ ] B1 vocabulary fingerprint check, then B2 onwards
