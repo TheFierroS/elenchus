@@ -88,6 +88,7 @@ def cmd_train(args):
         seed=args.seed, init=args.init, device=args.device,
         max_steps=args.max_steps, train_fraction=args.train_fraction,
         train_unit=args.train_unit, eval_pair_share=args.eval_pair_share,
+        eval_every=args.eval_every,
     )
     try:
         summary = train(conn, vocab, settings, overrides=size_overrides(args))
@@ -113,7 +114,11 @@ def cmd_train(args):
     if summary["checkpoint"] is None:
         print("trained     : nothing (--max-steps 0)")
     else:
-        print(f"best epoch  : {summary['best_epoch']}")
+        kept = next((h for h in summary.get("history", [])
+                     if h["epoch"] == summary["best_epoch"]), None)
+        where = (f"  (step {kept['step']})"
+                 if args.eval_every is not None and kept and "step" in kept else "")
+        print(f"best epoch  : {summary['best_epoch']}{where}")
         for key, value in summary.items():
             if key.startswith("best_val_") and not isinstance(value, dict):
                 print(f"{key:12}: {value:.4f}")

@@ -41,6 +41,7 @@ never a checkpoint. max_steps=0 measures it and trains nothing.
 import contextlib
 import dataclasses
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -114,6 +115,7 @@ class Settings:
     train_fraction: float | None = None   # learning curve; None is all of train
     train_unit: str = "identity"          # "identity" or "package"
     eval_pair_share: float | None = None  # E3; None is uniform level pairs
+    eval_every: int | None = None   # validate every N steps; None: after each epoch
 
     def __post_init__(self):
         if self.stage not in ("mlm", "contrastive"):
@@ -128,6 +130,8 @@ class Settings:
                 f"eval_pair_share must be in [0, 1], got {self.eval_pair_share}")
         if self.max_steps is not None and self.max_steps < 0:
             raise ValueError(f"max_steps must be None or >= 0, got {self.max_steps}")
+        if self.eval_every is not None and self.eval_every < 1:
+            raise ValueError(f"eval_every must be None or >= 1, got {self.eval_every}")
 
 
 def vocab_hash(vocab):
@@ -138,9 +142,16 @@ def check_vocabulary(conn, vocab, rows=None):
     built = vocab.source.get("dataset_fingerprint")
     current = dataset_fingerprint(conn, rows)
     if built != current:
+        # The likelier cause is the wrong database (ELENCHUS_DB unset points at
+        # data/elenchus.db), and rebuilding the vocabulary then would strand every
+        # checkpoint trained on the right one - so that is asked about first.
+        where = next((row[2] for row in conn.execute("PRAGMA database_list")
+                      if row[1] == "main"), "") or "an in-memory database"
         raise StaleVocabulary(
-            f"vocabulary was built for dataset {built}, the database is {current}; "
-            "run `elenchus vocab` again")
+            f"vocabulary was built for dataset {built}, but {where} is dataset "
+            f"{current}. Is this the database you meant (ELENCHUS_DB, --db)? Only if "
+            "the data itself changed, run `elenchus vocab` again - models trained "
+            "on the old vocabulary will not load with the new one")
 
 
 def learning_rate(step, settings, total_steps):
@@ -301,6 +312,28 @@ def _peak(history, key):
     return max(values) if values else None
 
 
+def period_batches(sampler, settings):
+    """The batches of each validation period, as a function of the period.
+
+    Unset eval_every, a period is an epoch: exactly sampler.batches(epoch).
+    Set, the epochs run on as one stream, and each period takes the next
+    eval_every batches of it, across epoch boundaries. Each epoch's order comes
+    from its own seeded generator, so where validation falls cannot change
+    which batches are drawn. When the stream (all of `settings.epochs`) runs out,
+    the last period is short, and the one after it takes no steps and ends
+    the run.
+
+    Why: an epoch of a 25% subset is a quarter of a full one, so validating per
+    epoch gives runs on different fractions different chances and different
+    patience in steps. A fixed interval in steps gives every run the same.
+    """
+    if settings.eval_every is None:
+        return sampler.batches
+    stream = (batch for epoch in range(settings.epochs)
+              for batch in sampler.batches(epoch))
+    return lambda _period: itertools.islice(stream, settings.eval_every)
+
+
 def reached(step, settings):
     """Whether a run capped by max_steps has taken them all. 0 is a cap too."""
     return settings.max_steps is not None and step >= settings.max_steps
@@ -411,7 +444,7 @@ def _step(model, optimiser, loss, settings, step, total_steps):
 
 
 def _selection_loop(settings, epoch_fn, evaluate_fn, better, metric_name,
-                    model, vocab, run_id, log, memory):
+                    model, vocab, run_id, log, memory, step_of):
     best, best_epoch, waited = None, -1, 0
     out = Path(settings.out)
 
@@ -419,7 +452,7 @@ def _selection_loop(settings, epoch_fn, evaluate_fn, better, metric_name,
     memory.reset()
     start = evaluate_fn()
     start_peak = memory.read()
-    history = [{"epoch": -1, "train_loss": None, metric_name: start,
+    history = [{"epoch": -1, "step": 0, "train_loss": None, metric_name: start,
                 "seconds": time.time() - started, "train_memory": None,
                 "val_memory": start_peak}]
     log(f"start      val {metric_name} {start:.4f}  (before training, "
@@ -433,19 +466,27 @@ def _selection_loop(settings, epoch_fn, evaluate_fn, better, metric_name,
                           "peak_allocated_gib": _peak(history, "allocated_gib"),
                           "peak_reserved_gib": _peak(history, "reserved_gib")}
 
-    for epoch in range(settings.epochs):
+    # "epoch" in the history and checkpoints is the validation period: an
+    # epoch by default, eval_every steps when that is set ("step" says where).
+    by_steps = settings.eval_every is not None
+    periods = itertools.count() if by_steps else range(settings.epochs)
+    unit = "validations" if by_steps else "epochs"
+    for epoch in periods:
         started = time.time()
         memory.reset()
         train_loss, steps, stop = epoch_fn(epoch)
+        if by_steps and steps == 0:
+            break               # the stream ran out exactly at the last period
         train_peak = memory.read()
         memory.reset()
         metric = evaluate_fn()
         eval_peak = memory.read()
-        history.append({"epoch": epoch, "train_loss": train_loss,
+        history.append({"epoch": epoch, "step": step_of(), "train_loss": train_loss,
                         metric_name: metric, "seconds": time.time() - started,
                         "train_memory": train_peak, "val_memory": eval_peak})
         improved = best is None or better(metric, best)
-        log(f"epoch {epoch:3}  loss {train_loss:.4f}  val {metric_name} {metric:.4f}"
+        label = f"eval {epoch:3}  step {step_of():6}" if by_steps else f"epoch {epoch:3}"
+        log(f"{label}  loss {train_loss:.4f}  val {metric_name} {metric:.4f}"
             f"{'  *' if improved else ''}  ({steps} steps, {time.time() - started:.0f}s)"
             f"{_memory_text(train_peak, eval_peak)}")
         meta = _meta(settings, run_id, epoch, metric_name, metric)
@@ -456,7 +497,7 @@ def _selection_loop(settings, epoch_fn, evaluate_fn, better, metric_name,
         else:
             waited += 1
             if waited >= settings.patience:
-                log(f"no improvement for {settings.patience} epochs; stopping")
+                log(f"no improvement for {settings.patience} {unit}; stopping")
                 break
         if stop:
             break
@@ -478,11 +519,12 @@ def _train_mlm(conn, model, vocab, settings, examples, device, run_id, log, memo
     optimiser = _optimiser(model, settings)
     total_steps = settings.max_steps or len(sampler) * settings.epochs
     state = {"step": 0}
+    batches = period_batches(sampler, settings)
 
     def epoch_fn(epoch):
         model.train()
         losses = []
-        for batch in sampler.batches(epoch):
+        for batch in batches(epoch):
             tensors = _to(collate_masked(batch, vocab.pad_id), device)
             with _autocast(device, settings):
                 logits = model.mlm_logits(tensors["input_ids"], tensors["attention_mask"])
@@ -510,7 +552,8 @@ def _train_mlm(conn, model, vocab, settings, examples, device, run_id, log, memo
         return total / max(count, 1)
 
     return _selection_loop(settings, epoch_fn, evaluate_fn, lambda a, b: a < b,
-                           "loss", model, vocab, run_id, log, memory)
+                           "loss", model, vocab, run_id, log, memory,
+                           lambda: state["step"])
 
 
 def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, log,
@@ -525,6 +568,7 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
     optimiser = _optimiser(model, settings)
     total_steps = settings.max_steps or len(sampler) * settings.epochs
     state = {"step": 0}
+    batches = period_batches(sampler, settings)
 
     queries, pool, gold = retrieval_task(conn, split="val", rows=rows)
     task = task_params(conn, "val", "O0", "O3", settings.seed, rows)
@@ -536,7 +580,7 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
         losses = []
         drawn = defaultdict(int)
         pair_counts.append(drawn)
-        for batch in sampler.batches(epoch):
+        for batch in batches(epoch):
             for first, second in zip(batch.anchor_levels, batch.positive_levels):
                 drawn["-".join(sorted((first, second)))] += 1
             tensors = _to(collate_pairs(batch, vocab.pad_id), device)
@@ -568,7 +612,8 @@ def _train_contrastive(conn, model, vocab, settings, examples, device, run_id, l
         return metrics.get("mrr", 0.0)
 
     summary = _selection_loop(settings, epoch_fn, evaluate_fn, lambda a, b: a > b,
-                              "mrr", model, vocab, run_id, log, memory)
+                              "mrr", model, vocab, run_id, log, memory,
+                              lambda: state["step"])
 
     # The epoch the package mean would have kept, beside the one kept: whether
     # the two criteria disagree is measured on every run, not assumed.

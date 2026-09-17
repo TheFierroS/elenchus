@@ -675,6 +675,9 @@ def build_parser():
     training.add_argument("--max-steps", type=int, default=None,
                           help="stop after this many steps (for a quick check); "
                                "0 measures the untrained start and trains nothing")
+    training.add_argument("--eval-every", type=int, default=None,
+                          help="validate every N steps instead of after each epoch; "
+                               "--patience then counts validations")
     # Experiments on the data a run sees (docs/experiments.md: learning curve, E3).
     data = training.add_argument_group("data")
     data.add_argument("--train-fraction", type=float, default=None,

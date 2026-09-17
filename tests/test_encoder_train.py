@@ -163,10 +163,21 @@ def test_training_never_reads_the_test_split(corpus, vocab, tmp_path, monkeypatc
 def test_a_vocabulary_from_another_dataset_is_refused(corpus, vocab, tmp_path):
     stale = build_vocab([(("p", "f", "g"), list(vocab.tokens[5:]))], min_functions=1,
                         source={"dataset_fingerprint": "someothercorpus"})
-    with pytest.raises(StaleVocabulary):
+    with pytest.raises(StaleVocabulary) as refused:
         train(corpus, stale, settings(tmp_path, "contrastive"), log=quiet)
     trained = corpus.execute("SELECT COUNT(*) FROM runs WHERE kind = 'train'")
     assert trained.fetchone()[0] == 0
+
+    # The wrong database is the likelier cause, and rebuilding the vocabulary
+    # would strand the models trained on the right one: the message names the
+    # database and asks about it before it mentions `elenchus vocab`.
+    message = str(refused.value)
+    path = next(row[2] for row in corpus.execute("PRAGMA database_list")
+                if row[1] == "main")
+    assert path and path in message
+    assert "someothercorpus" in message and dataset_fingerprint(corpus) in message
+    assert message.index("ELENCHUS_DB") < message.index("elenchus vocab")
+    assert "Only if the data itself changed" in message
 
 
 def test_a_run_that_fails_is_recorded_as_failed(corpus, vocab, tmp_path, monkeypatch):
@@ -991,3 +1002,141 @@ def test_every_stage_of_a_run_works_from_that_one_list(corpus, vocab, tmp_path,
     assert received, "nothing was traced"
     assert all(rows is received[0] for rows in received)
     assert received[0] is not None
+
+
+# ------------------------------------------------ validating every N steps
+
+
+def weights_digest(path):
+    state = torch.load(path, map_location="cpu", weights_only=False)["state_dict"]
+    digest = hashlib.sha256()
+    for name in sorted(state):
+        digest.update(name.encode())
+        digest.update(state[name].numpy().tobytes())
+    return digest.hexdigest()
+
+
+def count_calls(monkeypatch, name):
+    calls = []
+    real = getattr(module, name)
+    monkeypatch.setattr(module, name, lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    return calls
+
+
+# The test corpus gives 6 contrastive steps and 12 MLM steps per epoch.
+@pytest.mark.parametrize("stage, per_epoch", [("contrastive", 6), ("mlm", 12)])
+@pytest.mark.parametrize("every", [4, 5])
+def test_validation_falls_every_n_steps_across_epochs(corpus, vocab, tmp_path,
+                                                     monkeypatch, stage, per_epoch,
+                                                     every):
+    steps = count_calls(monkeypatch, "_step")
+    summary = train(corpus, vocab, settings(tmp_path, stage, epochs=2, eval_every=every),
+                    config(vocab), log=quiet)
+    total = 2 * per_epoch
+    expected = list(range(0, total, every))[1:] + [total]
+    assert len(steps) == total
+    assert [h["step"] for h in summary["history"]] == [0] + expected
+    assert [h["epoch"] for h in summary["history"]] == list(range(-1, len(expected)))
+
+
+def test_a_stream_that_ends_on_a_period_boundary_adds_no_empty_validation(
+        corpus, vocab, tmp_path, monkeypatch):
+    evaluations = count_calls(monkeypatch, "evaluate")
+    summary = train(corpus, vocab, settings(tmp_path, "contrastive", epochs=2,
+                                            eval_every=6), config(vocab), log=quiet)
+    assert [h["step"] for h in summary["history"]] == [0, 6, 12]
+    # the start, two periods, and the kept checkpoint measured afterwards
+    assert len(evaluations) == 4
+    assert summary["best_val_metrics"] is not None
+
+
+def test_a_step_cap_ends_the_last_period_early(corpus, vocab, tmp_path, monkeypatch):
+    steps = count_calls(monkeypatch, "_step")
+    summary = train(corpus, vocab, settings(tmp_path, "contrastive", epochs=5,
+                                            max_steps=10, eval_every=4),
+                    config(vocab), log=quiet)
+    assert len(steps) == 10
+    assert [h["step"] for h in summary["history"]] == [0, 4, 8, 10]
+
+
+@pytest.mark.parametrize("stage", ["contrastive", "mlm"])
+def test_where_validation_falls_does_not_change_training(corpus, vocab, tmp_path, stage):
+    """The same steps, validated after each epoch, every 4 and every 5 steps."""
+    finals = []
+    for name, every in (("epochs", None), ("every-4", 4), ("every-5", 5)):
+        summary = train(corpus, vocab, settings(tmp_path / name, stage, epochs=2,
+                                                patience=100, eval_every=every),
+                        config(vocab), log=quiet)
+        finals.append(weights_digest(tmp_path / name / stage / "last.pt"))
+        losses = [h["train_loss"] for h in summary["history"][1:]]
+        assert all(loss is not None for loss in losses)
+    assert finals[0] == finals[1] == finals[2]
+
+
+def test_validating_once_per_epoch_by_steps_is_the_epoch_schedule(corpus, vocab,
+                                                                  tmp_path):
+    runs = {}
+    for name, every in (("epochs", None), ("steps", 6)):
+        summary = train(corpus, vocab, settings(tmp_path / name, "contrastive", epochs=3,
+                                                eval_every=every), config(vocab),
+                        log=quiet)
+        runs[name] = ([{k: v for k, v in h.items() if k != "seconds"}
+                       for h in summary["history"]],
+                      weights_digest(tmp_path / name / "contrastive" / "best.pt"))
+    assert runs["epochs"] == runs["steps"]
+
+
+def test_patience_counts_validations_when_validating_by_steps(corpus, vocab, tmp_path,
+                                                             monkeypatch):
+    scores = iter([0.1, 0.5, 0.4, 0.3, 0.2, 0.9])
+
+    def fake(*a, **k):
+        return {"queries": 1, "pool": 1, "recall@1": 0.0, "recall@10": 0.0,
+                "mrr": next(scores, 0.0), "median_rank": 1}
+
+    monkeypatch.setattr(module, "evaluate", fake)
+    lines = []
+    summary = train(corpus, vocab, settings(tmp_path, "contrastive", epochs=5,
+                                            eval_every=2, patience=3),
+                    config(vocab), log=lines.append)
+    # start 0.1; step 2 0.5 kept; 0.4, 0.3, 0.2 do not improve: stop at step 8
+    assert [h["step"] for h in summary["history"]] == [0, 2, 4, 6, 8]
+    assert summary["best_epoch"] == 0
+    assert "no improvement for 3 validations; stopping" in lines
+    assert any(line.startswith("eval   0  step      2") for line in lines)
+
+
+def test_each_period_counts_the_pairs_it_drew(corpus, vocab, tmp_path):
+    summary = train(corpus, vocab, settings(tmp_path, "contrastive", epochs=2,
+                                            eval_every=4), config(vocab), log=quiet)
+    # batches of 4: 4 steps draw 16 pairs, the short last period (12 = 4+4+4) too
+    assert [sum(h["pairs"].values()) for h in summary["history"][1:]] == [16, 16, 16]
+
+
+def test_an_impossible_validation_interval_is_refused():
+    with pytest.raises(ValueError, match="eval_every"):
+        Settings(stage="contrastive", out="x", eval_every=0)
+
+
+def test_the_eval_every_flag_reaches_the_settings_and_the_report(monkeypatch, capsys,
+                                                                 tmp_path):
+    from elenchus import cli
+    from elenchus.encoder import vocab as vocab_module
+
+    monkeypatch.setattr("elenchus.encoder.cli.connect", lambda _p: None)
+    monkeypatch.setattr(vocab_module.Vocab, "load", staticmethod(lambda _p: None))
+    captured = {}
+    trained = {"start_val_mrr": 0.03, "best_epoch": 1, "best_val_mrr": 0.2,
+               "checkpoint": "x/best.pt", "peak_allocated_gib": None,
+               "history": [{"epoch": -1, "step": 0}, {"epoch": 0, "step": 172},
+                           {"epoch": 1, "step": 344}]}
+    monkeypatch.setattr(module, "train", lambda conn, vocab, s, **k: (
+        captured.setdefault("settings", s), trained)[1])
+    args = cli.build_parser().parse_args(
+        ["train", "contrastive", "--out", str(tmp_path), "--eval-every", "172"])
+    args.db = ":memory:"
+    assert args.func(args) == 0
+    assert captured["settings"].eval_every == 172
+    assert "best epoch  : 1  (step 344)" in capsys.readouterr().out
+    bare = cli.build_parser().parse_args(["train", "mlm", "--out", "m"])
+    assert bare.eval_every is None
