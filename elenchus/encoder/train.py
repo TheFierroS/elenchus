@@ -116,6 +116,7 @@ class Settings:
     train_unit: str = "identity"          # "identity" or "package"
     eval_pair_share: float | None = None  # E3; None is uniform level pairs
     eval_every: int | None = None   # validate every N steps; None: after each epoch
+    checkpoint_activations: bool = False  # recompute layers in backward (B5, memory)
 
     def __post_init__(self):
         if self.stage not in ("mlm", "contrastive"):
@@ -370,6 +371,7 @@ def train(conn, vocab, settings, config=None, log=print, overrides=None):
     device = _device(settings)
     model, settings, changes, init_meta = build_model(vocab, settings, config,
                                                       overrides, device)
+    model.checkpoint_layers = settings.checkpoint_activations
     memory = MemoryProbe(device)
 
     fingerprint = dataset_fingerprint(conn, rows)
@@ -390,6 +392,8 @@ def train(conn, vocab, settings, config=None, log=print, overrides=None):
         f"device {device}")
     for name, (old, new) in changes.items():
         log(f"  {name}: {old} in {settings.init}, {new} here")
+    if settings.checkpoint_activations:
+        log("activation checkpointing: each layer recomputed in the backward pass")
 
     try:
         everything = load_examples(conn, "train", rows)

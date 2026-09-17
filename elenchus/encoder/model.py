@@ -30,6 +30,14 @@ convention): logits spread by ~0.3, the loss starts at ln(vocab), gradients
 0.02 as well left the starting loss unchanged and, on random batches, made
 an untrained model's vectors for different functions more alike (mean cosine
 0.84 -> 0.90), a worse start for contrastive training.
+
+Memory. Backpropagation needs every layer's intermediate results, and at the
+~11M size those filled the 8 GiB card (docs/experiments.md, B5). With
+`checkpoint_layers` set, training keeps only each layer's input and computes
+the layer again during the backward pass: less memory, more time, the same
+gradients (the random state is replayed, so dropout drops the same units).
+It is a way of training, not part of the model: it owns no weights, is not
+saved in a checkpoint, and changes nothing where no gradient is taken.
 """
 
 from dataclasses import asdict, dataclass
@@ -37,6 +45,7 @@ from dataclasses import asdict, dataclass
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 EMBEDDING_STD = 0.02
 POOLINGS = ("mean", "cls")
@@ -110,6 +119,9 @@ class FunctionEncoder(nn.Module):
         # matrix.
         self.mlm_bias = nn.Parameter(torch.zeros(config.vocab_size))
         self._init_embeddings()
+        # Recompute each layer in the backward pass instead of storing its
+        # activations (module docstring). Set by training; never saved.
+        self.checkpoint_layers = False
 
     def _init_embeddings(self):
         """Small embeddings, so an untrained model starts by guessing evenly.
@@ -133,8 +145,27 @@ class FunctionEncoder(nn.Module):
                              f"{self.config.max_len}")
         positions = torch.arange(length, device=ids.device)
         x = self.tokens(ids) + self.positions(positions)[None, :, :]
-        x = self.body(x, src_key_padding_mask=~mask)
+        if self.checkpoint_layers and torch.is_grad_enabled():
+            x = self._body_recomputed(x, ~mask)
+        else:
+            x = self.body(x, src_key_padding_mask=~mask)
         return self.norm(x)
+
+    def _body_recomputed(self, x, padding):
+        """self.body, one layer at a time, each recomputed in the backward pass.
+
+        While gradients are taken, nn.TransformerEncoder does two things: it
+        turns the boolean padding mask into the additive float mask its layers
+        expect, and calls the layers in order (its fast path never runs with
+        gradients, and the body has no final norm of its own). This does the
+        same, with each layer wrapped in torch.utils.checkpoint.
+        """
+        padding = F._canonical_mask(mask=padding, mask_name="src_key_padding_mask",
+                                    other_type=None, other_name="mask",
+                                    target_type=x.dtype)
+        for layer in self.body.layers:
+            x = checkpoint(layer, x, src_key_padding_mask=padding, use_reentrant=False)
+        return x
 
     def embed(self, ids, mask):
         """One unit-length vector per sequence, [batch, embed_dim]."""

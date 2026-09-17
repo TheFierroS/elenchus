@@ -262,7 +262,7 @@ FIRST_RUNS = [
     ("run_full.sh", {"SHARE": "none"}, "models/b2-mlm", 6),
     ("run_e3.sh", {}, "models/e3-share-none-seed-0", 7),
     ("run_curve.sh", {"SHARE": "none"}, "models/curve-full-seed-0", 7),
-    ("b5_memory.sh", {}, "models/b5-ref", 3),   # b5 measures again, skips nothing
+    ("b5_memory.sh", {}, "models/b5-ref", 5),   # b5 measures again, skips nothing
 ]
 
 
@@ -413,16 +413,22 @@ def test_curve_logs_the_training_exit_code(repo, fakes, shell):
 
 # -- b5_memory.sh -------------------------------------------------------------
 
-def test_b5_measures_the_three_sizes_and_reads_the_card(repo, fakes):
+def test_b5_measures_both_sizes_with_and_without_recomputation(repo, fakes):
     done, _, trained = run_script(repo, fakes, "b5_memory.sh", IDLE_SECONDS="1")
     assert done.returncode == 0, done.stdout + done.stderr
-    assert [out_of(c) for c in trained] == ["models/b5-ref", "models/b5-mlm11",
-                                            "models/b5-con11"]
+    assert [out_of(c) for c in trained] == [
+        "models/b5-ref", "models/b5-mlm11", "models/b5-con11", "models/b5-mlm11ac",
+        "models/b5-con11ac"]
     assert trained[0].startswith("train contrastive ") and "--d-model" not in trained[0]
-    assert trained[1].startswith("train mlm ")
+    assert trained[1].startswith("train mlm ") and trained[3].startswith("train mlm ")
+    assert trained[4].startswith("train contrastive ")
     size = "--d-model 384 --layers 6 --heads 6 --d-ff 1536"
-    assert size in trained[1] and size in trained[2]
+    assert all(size in c for c in trained[1:])
+    assert ["--checkpoint-activations" in c for c in trained] == [
+        False, False, False, True, True]
     assert all("--epochs 1 --max-steps 50" in c for c in trained)
+    for name in ("ref", "mlm11", "con11", "mlm11ac", "con11ac"):
+        assert f"\n{name:7} " in done.stdout
     # 600 of 8188 MiB: 7.41 GiB free, as the fake card reports
     assert "   7.41  yes" in done.stdout
 

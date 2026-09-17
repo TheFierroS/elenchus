@@ -192,6 +192,122 @@ def test_a_different_head_count_loads_silently_and_computes_something_else():
         assert not torch.allclose(a.embed(ids, mask), b.embed(ids, mask), atol=1e-4)
 
 
+# ------------------------------------------------ activation checkpointing
+
+
+def recomputable(dropout=0.1):
+    config = EncoderConfig(vocab_size=50, max_len=64, d_model=32, n_layers=3, n_heads=4,
+                           d_ff=64, dropout=dropout, embed_dim=16)
+    return FunctionEncoder(config)
+
+
+def backward_once(model, recompute, autocast=False, seed=123):
+    """Loss, gradients and bytes kept for backward, for one training step."""
+    model.train()
+    model.checkpoint_layers = recompute
+    model.zero_grad(set_to_none=True)
+    ids = torch.randint(1, 50, (6, 40), generator=torch.Generator().manual_seed(7))
+    mask = torch.ones(6, 40, dtype=torch.bool)
+    mask[0, 25:] = False
+    mask[3, 10:] = False
+    kept = [0]
+
+    def pack(tensor):
+        kept[0] += tensor.numel() * tensor.element_size()
+        return tensor
+
+    torch.manual_seed(seed)
+    precision = torch.autocast("cpu", dtype=torch.bfloat16, enabled=autocast)
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t), precision:
+        vectors = model.embed(ids, mask)
+        logits = model.mlm_logits(ids, mask)
+        loss = ((vectors ** 2).sum() + vectors[:, 0].sum()
+                + logits.float().logsumexp(-1).mean())
+    loss.backward()
+    grads = {name: p.grad.clone() for name, p in model.named_parameters()
+             if p.grad is not None}
+    return loss.detach(), grads, kept[0]
+
+
+@pytest.mark.parametrize("autocast", [False, True])
+def test_recomputing_layers_gives_the_same_loss_and_gradients(autocast):
+    model = recomputable(dropout=0.1)
+    stored_loss, stored_grads, _ = backward_once(model, recompute=False,
+                                                 autocast=autocast)
+    loss, grads, _ = backward_once(model, recompute=True, autocast=autocast)
+    assert torch.equal(loss, stored_loss)
+    assert grads.keys() == stored_grads.keys() and len(grads) > 0
+    for name in grads:
+        assert torch.equal(grads[name], stored_grads[name]), name
+
+
+def test_the_dropout_those_gradients_share_is_really_on():
+    # Otherwise equal gradients would prove nothing about replaying randomness.
+    model = recomputable(dropout=0.1)
+    first, _, _ = backward_once(model, recompute=True, seed=1)
+    second, _, _ = backward_once(model, recompute=True, seed=2)
+    assert not torch.equal(first, second)
+
+
+def test_recomputing_layers_keeps_far_less_for_the_backward_pass():
+    model = recomputable()
+    _, _, stored = backward_once(model, recompute=False)
+    _, _, recomputed = backward_once(model, recompute=True)
+    assert recomputed < stored / 4
+
+
+def test_recomputing_layers_takes_the_path_it_says(monkeypatch):
+    import elenchus.encoder.model as module
+
+    calls = []
+    real = module.checkpoint
+    monkeypatch.setattr(module, "checkpoint", lambda *a, **k: (calls.append(1),
+                                                               real(*a, **k))[1])
+    model = recomputable()
+    ids, mask = pad([[1, 5, 6, 7]], 0)
+    model.checkpoint_layers = True
+
+    model.train()
+    model.embed(ids, mask).sum().backward()
+    assert len(calls) == model.config.n_layers
+
+    calls.clear()
+    model.eval()
+    with torch.no_grad():
+        model.embed(ids, mask)          # validation: nothing to recompute
+    model.train()
+    with torch.no_grad():
+        model.embed(ids, mask)          # the momentum copy: no gradient taken
+    assert calls == []
+    model.eval()
+    model.embed(ids, mask).sum().backward()   # a gradient in eval mode: recomputed
+    assert len(calls) == model.config.n_layers
+
+    calls.clear()
+    model.train()
+    model.checkpoint_layers = False
+    model.embed(ids, mask).sum().backward()
+    assert calls == []
+
+
+def test_recomputing_layers_owns_no_weights_and_is_not_saved():
+    model = recomputable()
+    before = dict(model.state_dict())
+    model.checkpoint_layers = True
+    assert model.state_dict().keys() == before.keys()
+    assert "checkpoint_layers" not in model.config.to_dict()
+    assert momentum_copy(model).checkpoint_layers is True   # harmless: no gradients
+
+
+def test_recomputed_layers_match_the_stored_body_output_exactly():
+    model = recomputable(dropout=0.0).train()
+    ids, mask = pad([[1, 5, 6, 7, 8, 9], [1, 3, 4]], 0)
+    stored = model.hidden(ids, mask)
+    model.checkpoint_layers = True
+    recomputed = model.hidden(ids, mask)
+    assert torch.equal(stored, recomputed)
+
+
 def dataclasses_replace(config, **changes):
     import dataclasses
 

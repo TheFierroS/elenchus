@@ -8,6 +8,8 @@
 #   ref    3.6M contrastive                       (the reference)
 #   mlm11  11M MLM         d_model 384, 6 layers, 6 heads, d_ff 1536
 #   con11  11M contrastive the same size
+#   mlm11ac, con11ac  the same two with --checkpoint-activations, the plan if
+#          11M does not fit (17 September: mlm11 left 0.29 GiB, con11 failed)
 # Every flag other than size stays at its default: batch 64, length 1024.
 # The working tree must be clean and stay on one commit, and ELENCHUS_DB must
 # be set (experiments/guard.sh).
@@ -55,29 +57,37 @@ measure ref   contrastive
 measure mlm11 mlm $SIZE
 # shellcheck disable=SC2086
 measure con11 contrastive $SIZE
+# shellcheck disable=SC2086
+measure mlm11ac mlm $SIZE --checkpoint-activations
+# shellcheck disable=SC2086
+measure con11ac contrastive $SIZE --checkpoint-activations
 
 python3 - <<'PY'
 import json
 from pathlib import Path
 
 HEADROOM_GIB = 0.5
-print(f"\n{'run':6} {'torch alloc':>11} {'torch resv':>10} {'card idle':>9} "
-      f"{'card peak':>9} {'card total':>10} {'free at peak':>12}  fits")
-for name in ("ref", "mlm11", "con11"):
+print(f"\n{'run':7} {'torch alloc':>11} {'torch resv':>10} {'card idle':>9} "
+      f"{'card peak':>9} {'card total':>10} {'free at peak':>12}  fits  "
+      f"{'epoch s':>7}")
+for name in ("ref", "mlm11", "con11", "mlm11ac", "con11ac"):
     summary_path = Path(f"models/b5-{name}/summary.json")
     rows = [line.split(",") for line in Path(f"data/b5-{name}-gpu.csv").read_text().split("\n")
             if line.strip()]
     used = [int(r[0]) / 1024 for r in rows]
     total = int(rows[0][1]) / 1024 if rows else float("nan")
     if not summary_path.exists() or not used:
-        print(f"{name:6} did not finish (see data/b5-{name}.log)")
+        print(f"{name:7} did not finish (see data/b5-{name}.log)")
         continue
     s = json.loads(summary_path.read_text())
     idle = min(used[:5]) if len(used) >= 5 else min(used)
     peak = max(used)
     free = total - peak
-    print(f"{name:6} {s['peak_allocated_gib']:>11.2f} {s['peak_reserved_gib']:>10.2f} "
+    trained = [h for h in s.get("history", []) if h.get("epoch", -1) >= 0]
+    seconds = f"{trained[0]['seconds']:>7.0f}" if trained else f"{'-':>7}"
+    print(f"{name:7} {s['peak_allocated_gib']:>11.2f} {s['peak_reserved_gib']:>10.2f} "
           f"{idle:>9.2f} {peak:>9.2f} {total:>10.2f} {free:>12.2f}  "
-          f"{'yes' if free >= HEADROOM_GIB else 'NO'}")
-print(f"\nfits: at least {HEADROOM_GIB} GiB of the card left free at the peak (GiB throughout)")
+          f"{'yes ' if free >= HEADROOM_GIB else 'NO  '}  {seconds}")
+print(f"\nfits: at least {HEADROOM_GIB} GiB of the card left free at the peak (GiB throughout);"
+      "\nepoch s: the 50 steps and their validation, in seconds")
 PY

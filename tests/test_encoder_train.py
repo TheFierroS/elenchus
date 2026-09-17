@@ -1140,3 +1140,65 @@ def test_the_eval_every_flag_reaches_the_settings_and_the_report(monkeypatch, ca
     assert "best epoch  : 1  (step 344)" in capsys.readouterr().out
     bare = cli.build_parser().parse_args(["train", "mlm", "--out", "m"])
     assert bare.eval_every is None
+
+
+# ------------------------------------------------ activation checkpointing
+
+
+@pytest.mark.parametrize("stage", ["contrastive", "mlm"])
+def test_a_run_with_recomputed_layers_trains_identically_and_says_so(corpus, vocab,
+                                                                     tmp_path, stage):
+    finals, logs = [], []
+    for name, recompute in (("stored", False), ("recomputed", True)):
+        lines = []
+        summary = train(corpus, vocab, settings(tmp_path / name, stage, epochs=2,
+                                                checkpoint_activations=recompute),
+                        config(vocab), log=lines.append)
+        finals.append((weights_digest(tmp_path / name / stage / "last.pt"),
+                       [h["train_loss"] for h in summary["history"][1:]]))
+        logs.append(lines)
+        recorded = recorded_params(corpus, summary["run_id"])["settings"]
+        assert recorded["checkpoint_activations"] is recompute
+    assert finals[0] == finals[1]
+    assert not any("activation checkpointing" in line for line in logs[0])
+    assert any("activation checkpointing" in line for line in logs[1])
+
+
+def test_training_turns_recomputation_on_in_the_model_it_trains(corpus, vocab, tmp_path,
+                                                                monkeypatch):
+    seen = []
+    real = module.build_model
+
+    def spy(*a, **k):
+        model, *rest = real(*a, **k)
+        original = model.hidden
+
+        def hidden(ids, mask):
+            seen.append(model.checkpoint_layers)
+            return original(ids, mask)
+
+        model.hidden = hidden
+        return (model, *rest)
+
+    monkeypatch.setattr(module, "build_model", spy)
+    train(corpus, vocab, settings(tmp_path, "contrastive", max_steps=1,
+                                  checkpoint_activations=True), config(vocab), log=quiet)
+    assert seen and all(seen)
+
+
+def test_the_checkpoint_activations_flag_reaches_the_settings(monkeypatch, tmp_path):
+    from elenchus import cli
+    from elenchus.encoder import vocab as vocab_module
+
+    monkeypatch.setattr("elenchus.encoder.cli.connect", lambda _p: None)
+    monkeypatch.setattr(vocab_module.Vocab, "load", staticmethod(lambda _p: None))
+    captured = {}
+    monkeypatch.setattr(module, "train", lambda conn, vocab, s, **k: (
+        captured.setdefault("settings", s), {"checkpoint": None, "best_epoch": None})[1])
+    args = cli.build_parser().parse_args(
+        ["train", "mlm", "--out", str(tmp_path), "--checkpoint-activations"])
+    args.db = ":memory:"
+    args.func(args)
+    assert captured["settings"].checkpoint_activations is True
+    bare = cli.build_parser().parse_args(["train", "mlm", "--out", "m"])
+    assert bare.checkpoint_activations is False

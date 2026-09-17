@@ -89,6 +89,7 @@ def cmd_train(args):
         max_steps=args.max_steps, train_fraction=args.train_fraction,
         train_unit=args.train_unit, eval_pair_share=args.eval_pair_share,
         eval_every=args.eval_every,
+        checkpoint_activations=args.checkpoint_activations,
     )
     try:
         summary = train(conn, vocab, settings, overrides=size_overrides(args))

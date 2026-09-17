@@ -678,6 +678,10 @@ def build_parser():
     training.add_argument("--eval-every", type=int, default=None,
                           help="validate every N steps instead of after each epoch; "
                                "--patience then counts validations")
+    training.add_argument("--checkpoint-activations", action="store_true",
+                          help="recompute each layer in the backward pass instead of "
+                               "storing its activations: less GPU memory, slower, "
+                               "the same gradients")
     # Experiments on the data a run sees (docs/experiments.md: learning curve, E3).
     data = training.add_argument_group("data")
     data.add_argument("--train-fraction", type=float, default=None,
