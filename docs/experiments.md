@@ -312,6 +312,45 @@ pair sampling E3 chooses).**
   - The 25→50% gains are recorded as the curve's shape, not used to decide.
   - For the package unit, the gain is the mean over its two seeds.
 
+**Amendment (17 September, before any learning-curve run).** Two faults in
+the budget above, found reading the schedule, not a result. This supersedes
+the first two bullets and the runs; the gains, T and the branches stand.
+
+- *Patience was not equal.* `--patience 3` counts epochs, and an epoch
+  shrinks with the fraction: 3 epochs are 516 steps at 100%, 258 at 50%, 129
+  at 25%. Smaller fractions would be stopped by fewer, noisier validations.
+- *Runs could stop before the learning rate came down.* The cosine decay
+  spans all `--epochs 40`: at 100% the rate is still 89% of its peak at epoch
+  10 and 75% at epoch 15, so an early stop would keep an un-annealed model.
+  In E3, whose schedule ended at 1,500 steps, every run gained 0.026-0.039
+  MRR after step 860, while its rate fell from 54% to 10% of peak; how much
+  of that was the decay rather than the extra steps was not measured, so it
+  is not assumed away.
+
+The protocol now:
+
+- Every run: contrastive from random weights, **5,160 steps** (30 epochs of
+  full train), the learning rate decaying over all of them, validation
+  **every 172 steps** (`--eval-every 172`, one full-train epoch; identical
+  training wherever validation falls, tested), no early stopping, read at
+  `best.pt`. Every run gets the same steps and the same 30 validations.
+  Smaller fractions see their data many more times; `best.pt` keeps the
+  best before any over-fitting. `experiments/run_curve.sh`,
+  `experiments/curve_results.py`.
+- **Eight runs:** 100% with seeds 0 **and 1**; identity 50%, 25% (seed 0);
+  package 50%, 25% (seeds 0, 1). The added 100% seed-1 run pairs each
+  package seed with a full run of its own seed: E3 measured 0.0074 between
+  two seeds, half of T, and a gain taken across seeds would carry it.
+  Identity gain = MRR(100%, 0) − MRR(identity 50%, 0); package gain = mean
+  over s of MRR(100%, s) − MRR(package 50%, s). T = 0.0148, branches as above.
+- **Budget check.** If a 100% run's best MRR exceeds its best up to 75% of the
+  steps (3,870) by more than T / 2, it was still climbing when the budget
+  ended. A "flattened" verdict is then provisional, and the runs repeat at
+  twice the budget. A gain above T stands either way: longer training of
+  under-trained runs would not be expected to shrink it.
+- **Time, estimated:** ~0.41 s a step (E3: 75 s for 172 steps with
+  validation), so ~40 minutes a run and ~5.5 hours for eight.
+
 **Wave 2, if it is needed:** train's thinnest domains are data-format (5.1%
 of identities) and text (6.1%); val and test lean on a few large packages, so
 a few mid-sized packages help more than many small ones.
@@ -629,6 +668,10 @@ given explicitly), read by `experiments/full_results.py`.
   another epoch; runs above the val bar (MRR 0.124, recall@10 0.189).
 - **B6:** `elenchus baselines --split val --encoder <best of B3/B4>`, both
   means, recorded.
+- *Open (17 September), before any full run:* the same early-stopping fault
+  found in L applies here (`--epochs 20 --patience 3` stops while the rate
+  is still high). The B budget is rewritten, before B2, from the 100% runs'
+  validation curves in L.
 
 ### B5 - model size, memory first
 
@@ -659,7 +702,10 @@ with nvidia-smi, since PyTorch reports only its own memory.
 - [x] Learning-curve protocol and decision rule written before the runs
 - [x] E3 runs (`experiments/run_e3.sh`, ~100 min) and verdict
       (`experiments/e3_results.py`): uniform stays, M = 0.0148
-- [ ] Learning-curve runs and verdict
+- [x] Learning-curve protocol amended before the runs (fixed step budget,
+      validation every 172 steps, 100% with two seeds)
+- [ ] Learning-curve runs (`experiments/run_curve.sh`, ~5.5 h) and verdict
+      (`experiments/curve_results.py`)
 - [x] Full training protocol, B4 rule and B5 memory plan written before runs
 - [ ] B5 memory measurement (`experiments/b5_memory.sh`), when the GPU is free
 - [ ] Corpus decision (wave 2 or not); if wave 2: build, `check`,
