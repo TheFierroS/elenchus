@@ -173,7 +173,7 @@ def package_sizes(rows):
 
 
 DOMAINS = ("compression", "crypto", "data-format", "text", "interpreter",
-           "systems", "media")
+           "systems", "media", "math")
 
 
 def assign_splits(sizes, shares=DEFAULT_SHARES, domains=None):

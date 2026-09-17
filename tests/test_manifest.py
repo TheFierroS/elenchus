@@ -142,6 +142,23 @@ def test_the_shipped_manifest_stays_varied():
                      "sqlite", "libuv", "miniaudio", "stb"):
         assert expected in names_, f"{expected} keeps the corpus varied"
 
+    # Wave 2 (docs/experiments.md, L): at the same number of functions, more
+    # packages scored higher. The additions that carry the thin domains and
+    # the new one are pinned so that none is dropped unnoticed.
+    for expected in ("lexbor", "tidy-html5", "oniguruma", "mpack", "libcbor",
+                     "libwebp", "flac", "opus", "c-ares", "cglm", "chipmunk2d",
+                     "libtommath"):
+        assert expected in names_, f"{expected} was added in wave 2"
+
+
+def test_wave_2_did_not_leave_any_domain_thin():
+    """After wave 2 the two thinnest domains in train had at least 15 packages."""
+    from collections import Counter
+
+    counts = Counter(p.domain for p in load_manifest(MANIFEST))
+    assert counts["text"] >= 15 and counts["data-format"] >= 15, counts
+    assert counts["media"] >= 6 and counts["math"] >= 3, counts
+
 
 def test_every_package_has_a_known_domain_and_every_domain_can_fill_three_splits():
     """The stratified split only guarantees coverage for domains of three or more."""

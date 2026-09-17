@@ -795,6 +795,28 @@ GiB throughout; "epoch s" is the 50 steps with their validation.
   others, likely freed after con11's failure; with 0.94 they would still
   leave ~4.6 and ~2.6 GiB.
 
+**~15M, measured again (code `f6eb793`, 16:27-16:41).** Eight layers of the
+11M width (14,910,401 parameters), checkpointed; the whole script ran again:
+
+| run | torch allocated | torch reserved | card idle | card peak | free at peak | fits | epoch s |
+|---|---|---|---|---|---|---|---|
+| ref (3.6M) | 3.48 | 3.59 | 0.52 | 4.24 | 3.76 | yes | 25 |
+| mlm11 | 6.84 | 7.13 | 0.51 | 7.63 | 0.36 | NO | 83 |
+| con11 | - | - | - | - | - | failed (third time, same script) | - |
+| mlm11ac | 2.13 | 2.33 | 0.38 | 3.01 | 4.99 | yes | 67 |
+| con11ac | 3.79 | 4.23 | 0.47 | 4.87 | 3.13 | yes | 67 |
+| mlm15ac | 2.35 | 2.53 | 0.42 | 3.20 | **4.79** | yes | 88 |
+| con15ac | 3.86 | 4.30 | 0.49 | 4.99 | **3.00** | yes | 88 |
+
+- **15M fits with checkpointing**, 3.00 GiB free for contrastive. Measured,
+  not decided on: whether B5 includes 15M is settled on the new corpus.
+- **Two more layers cost almost no memory** when only layer inputs are kept:
+  contrastive allocated 3.79 → 3.86 GiB (+0.07).
+- **They cost time in proportion:** 67 → 88 s (+31%) for 6 → 8 layers
+  (+33% layer compute).
+- **The measurement repeats:** the 11M rows match the earlier run to within
+  0.16 GiB of card peak, idle this time steady at 0.38-0.52 GiB.
+
 ## Before full training - checklist
 
 - [x] F1-F9 above, each committed and measured

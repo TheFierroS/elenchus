@@ -34,7 +34,8 @@
 #
 # Diversity matters more than count. An encoder trained only on compressors
 # learns compressors. The mix below is deliberate: compression, parsing,
-# cryptography, text processing, networking, paths and logging.
+# cryptography, text processing, networking, paths and logging, media and,
+# from wave 2, mathematics.
 #
 # Packages marked verified have compiled and matched ground truth at 99-100%
 # across -O0..-O3. The rest have had their layout checked against the real
@@ -576,3 +577,239 @@ url = "https://github.com/LoupVaillant/Monocypher/archive/refs/tags/4.0.2.tar.gz
 license = "BSD-2-Clause"
 sources = ["src/monocypher.c", "src/optional/monocypher-ed25519.c"]  # (~120)
 include_dirs = ["src", "src/optional"]
+
+# ---------------- wave 2 (17 September 2026) ----------------
+#
+# Added after the learning curve (docs/experiments.md, L): more packages
+# help, and variety most. Each was compiled at -O0..-O3 in the sandbox with
+# MinGW-w64 GCC 13 through build_package, its ground truth read, and no
+# decl_file fell outside the package. The count on each is identities
+# (decl_file, name) found at >= 2 levels there, before Ghidra matching and
+# duplicate removal; build-corpus gives the real ones. Tried and left out:
+# tinycbor and lzfse (62 and 22 identities after inlining) and openlibm (its
+# per-architecture file lists need its Makefile).
+
+[[package]]
+name = "lexbor"
+domain = "text"
+version = "3.0.0"
+url = "https://github.com/lexbor/lexbor/archive/refs/tags/v3.0.0.tar.gz"
+license = "Apache-2.0"
+# HTML, CSS, URL and encoding parsers. The posix and windows_nt ports share
+# file names, so exclude cannot pick one: the modules are listed, with the
+# windows_nt port. One package this large lands whole in one split - check
+# where it goes before dataset --assign --force.
+sources = ["source/lexbor/core/*.c", "source/lexbor/css/**/*.c", "source/lexbor/dom/**/*.c", "source/lexbor/encoding/*.c", "source/lexbor/engine/*.c", "source/lexbor/html/**/*.c", "source/lexbor/ns/*.c", "source/lexbor/punycode/*.c", "source/lexbor/selectors/**/*.c", "source/lexbor/style/**/*.c", "source/lexbor/tag/*.c", "source/lexbor/unicode/*.c", "source/lexbor/url/*.c", "source/lexbor/utils/*.c", "source/lexbor/ports/windows_nt/lexbor/core/*.c"]   # (~2642 at >= 2 levels, sandbox)
+include_dirs = ["source"]
+defines = ["LEXBOR_BUILDING"]
+
+[[package]]
+name = "tidy-html5"
+domain = "text"
+version = "5.8.0"
+url = "https://github.com/htacg/tidy-html5/archive/refs/tags/5.8.0.tar.gz"
+license = "W3C"
+sources = ["src/*.c"]   # (~797 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+# sprtf.c: debug printing helper
+exclude = ["sprtf.c"]
+
+[[package]]
+name = "oniguruma"
+domain = "text"
+version = "6.9.10"
+url = "https://github.com/kkos/oniguruma/archive/refs/tags/v6.9.10.tar.gz"
+license = "BSD-2-Clause"
+# Regular expressions (Ruby's engine).
+sources = ["src/*.c"]   # (~607 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+# mktable.c is a table generator with main(); the unicode_*_data.c
+# files are #included by unicode.c
+exclude = ["mktable.c", "unicode_fold_data.c", "unicode_property_data.c", "unicode_property_data_posix.c", "unicode_wb_data.c", "unicode_egcb_data.c"]
+# the Windows config header ships with the source
+copy = [["src/config.h.win64", "src/config.h"]]
+
+[[package]]
+name = "gumbo"
+domain = "text"
+version = "0.10.1"
+url = "https://github.com/google/gumbo-parser/archive/refs/tags/v0.10.1.tar.gz"
+license = "Apache-2.0"
+# HTML5 parser. char_ref.c carries #line "char_ref.rl"; the name resolves
+# inside the package (checked), so the identity does not depend on the machine.
+sources = ["src/*.c"]   # (~256 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+
+[[package]]
+name = "hoedown"
+domain = "text"
+version = "3.0.7"
+url = "https://github.com/hoedown/hoedown/archive/refs/tags/3.0.7.tar.gz"
+license = "ISC"
+# Markdown.
+sources = ["src/*.c"]   # (~136 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+
+[[package]]
+name = "tre"
+domain = "text"
+version = "0.9.0"
+url = "https://github.com/laurikari/tre/archive/refs/tags/v0.9.0.tar.gz"
+license = "BSD-2-Clause"
+# Regular expressions with approximate matching; ships a Windows config.
+sources = ["lib/*.c"]   # (~73 at >= 2 levels, sandbox)
+include_dirs = ["win32", "lib", "local_includes", "include"]
+defines = ["HAVE_CONFIG_H"]
+
+[[package]]
+name = "mpack"
+domain = "data-format"
+version = "1.1.1"
+url = "https://github.com/ludocode/mpack/archive/refs/tags/v1.1.1.tar.gz"
+license = "MIT"
+# MessagePack.
+sources = ["src/mpack/*.c"]   # (~343 at >= 2 levels, sandbox)
+include_dirs = ["src/mpack"]
+
+[[package]]
+name = "libucl"
+domain = "data-format"
+version = "0.9.4"
+url = "https://github.com/vstakhov/libucl/archive/refs/tags/0.9.4.tar.gz"
+license = "BSD-2-Clause"
+# UCL/JSON-like configuration language; bundles uthash and klib headers.
+sources = ["src/*.c"]   # (~269 at >= 2 levels, sandbox)
+include_dirs = ["include", "src", "uthash", "klib"]
+
+[[package]]
+name = "libcbor"
+domain = "data-format"
+version = "0.14.0"
+url = "https://github.com/PJK/libcbor/archive/refs/tags/v0.14.0.tar.gz"
+license = "MIT"
+# CBOR.
+sources = ["src/*.c", "src/cbor/*.c", "src/cbor/internal/*.c"]   # (~210 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+# CMake generates both headers: build constants and an empty export macro
+create = [["src/cbor/configuration.h", "#ifndef LIBCBOR_CONFIGURATION_H\n#define LIBCBOR_CONFIGURATION_H\n#define CBOR_MAJOR_VERSION 0\n#define CBOR_MINOR_VERSION 14\n#define CBOR_PATCH_VERSION 0\n#define CBOR_BUFFER_GROWTH 2\n#define CBOR_MAX_STACK_SIZE 2048\n#define CBOR_PRETTY_PRINTER 1\n#define CBOR_RESTRICT_SPECIFIER restrict\n#endif\n"], ["src/cbor/cbor_export.h", "#ifndef CBOR_EXPORT_H\n#define CBOR_EXPORT_H\n#define CBOR_EXPORT\n#define CBOR_NO_EXPORT\n#endif\n"]]
+
+[[package]]
+name = "json-c"
+domain = "data-format"
+version = "0.19-20260627"
+url = "https://github.com/json-c/json-c/archive/refs/tags/json-c-0.19-20260627.tar.gz"
+license = "MIT"
+# JSON, a design unlike cJSON and jansson. CMake generates three headers.
+sources = ["*.c"]   # (~186 at >= 2 levels, sandbox)
+include_dirs = ["."]
+# config.h: what MinGW has (STDC_HEADERS makes arraylist.c include stdlib.h;
+# long is 4 bytes on Win64); json.h lists the public headers
+create = [["json_config.h", "#define JSON_C_HAVE_INTTYPES_H 1\n"], ["config.h", "#define STDC_HEADERS 1\n#define HAVE_STDARG_H 1\n#define HAVE_STDLIB_H 1\n#define HAVE_STRING_H 1\n#define HAVE_INTTYPES_H 1\n#define HAVE_STDINT_H 1\n#define HAVE_LIMITS_H 1\n#define HAVE_LOCALE_H 1\n#define HAVE_SETLOCALE 1\n#define HAVE_SNPRINTF 1\n#define HAVE_VSNPRINTF 1\n#define HAVE_VPRINTF 1\n#define HAVE_STRDUP 1\n#define HAVE_STRERROR 1\n#define HAVE_STRTOLL 1\n#define HAVE_STRTOULL 1\n#define HAVE_REALLOC 1\n#define HAVE_OPEN 1\n#define HAVE_FCNTL_H 1\n#define HAVE_SYS_STAT_H 1\n#define HAVE_SYS_TYPES_H 1\n#define HAVE_UNISTD_H 1\n#define HAVE_DECL_INFINITY 1\n#define HAVE_DECL_NAN 1\n#define HAVE_DECL_ISINF 1\n#define HAVE_DECL_ISNAN 1\n#define HAVE_DECL__ISNAN 1\n#define HAVE_DECL__FINITE 1\n#define SIZEOF_INT 4\n#define SIZEOF_INT64_T 8\n#define SIZEOF_LONG 4\n#define SIZEOF_LONG_LONG 8\n#define SIZEOF_SIZE_T 8\n#define SIZEOF_SSIZE_T 8\n#define JSON_C_VERSION \"0.19\"\n"], ["json.h", "#ifndef _json_h_\n#define _json_h_\n#include \"arraylist.h\"\n#include \"debug.h\"\n#include \"json_c_version.h\"\n#include \"json_object.h\"\n#include \"json_object_iterator.h\"\n#include \"json_patch.h\"\n#include \"json_pointer.h\"\n#include \"json_tokener.h\"\n#include \"json_util.h\"\n#include \"linkhash.h\"\n#endif\n"]]
+
+[[package]]
+name = "mxml"
+domain = "data-format"
+version = "4.0.5"
+url = "https://github.com/michaelrsweet/mxml/archive/refs/tags/v4.0.5.tar.gz"
+license = "Apache-2.0"
+# XML.
+sources = ["mxml-*.c"]   # (~120 at >= 2 levels, sandbox)
+include_dirs = ["."]
+# configure generates config.h; only the version is needed
+create = [["config.h", "#ifndef MXML_CONFIG_H\n#define MXML_CONFIG_H\n#define MXML_VERSION \"Mini-XML v4.0.5\"\n#endif\n"]]
+
+[[package]]
+name = "libwebp"
+domain = "media"
+version = "1.6.0"
+url = "https://github.com/webmproject/libwebp/archive/refs/tags/v1.6.0.tar.gz"
+license = "BSD-3-Clause"
+# WebP image codec. The NEON, MIPS and SSE4.1 files compile empty without
+# their -m flags; the SSE2 ones are real code on x86-64.
+sources = ["src/dec/*.c", "src/enc/*.c", "src/dsp/*.c", "src/utils/*.c", "src/demux/*.c", "src/mux/*.c", "sharpyuv/*.c"]   # (~1019 at >= 2 levels, sandbox)
+include_dirs = [".", "src"]
+
+[[package]]
+name = "flac"
+domain = "media"
+version = "1.5.0"
+url = "https://github.com/xiph/flac/archive/refs/tags/1.5.0.tar.gz"
+license = "BSD-3-Clause"
+# Lossless audio. Without libogg, the ogg_* files are left out.
+# win_utf8_io.c provides fopen_utf8 and friends on Windows
+sources = ["src/libFLAC/*.c", "src/share/win_utf8_io/win_utf8_io.c"]   # (~467 at >= 2 levels, sandbox)
+include_dirs = ["include", "src/libFLAC/include"]
+# what config.h would say; HAVE_FSEEKO stops compat.h redefining fseeko
+defines = ["PACKAGE_VERSION=\"1.5.0\"", "FLAC__HAS_OGG=0", "CPU_IS_BIG_ENDIAN=0", "CPU_IS_LITTLE_ENDIAN=1", "FLAC_API_EXPORTS", "HAVE_LROUND=1", "HAVE_FSEEKO=1", "HAVE_INTTYPES_H=1"]
+exclude = ["ogg_decoder_aspect.c", "ogg_encoder_aspect.c", "ogg_helper.c", "ogg_mapping.c"]
+
+[[package]]
+name = "opus"
+domain = "media"
+version = "1.6.1"
+url = "https://github.com/xiph/opus/archive/refs/tags/v1.6.1.tar.gz"
+license = "BSD-3-Clause"
+# Speech/audio codec, the float build (silk/float, not silk/fixed); the
+# optional dnn/ and the x86 intrinsics directories are not compiled.
+sources = ["src/*.c", "celt/*.c", "silk/*.c", "silk/float/*.c"]   # (~413 at >= 2 levels, sandbox)
+include_dirs = [".", "include", "celt", "silk", "silk/float"]
+defines = ["OPUS_BUILD", "USE_ALLOCA", "HAVE_LRINTF", "HAVE_LRINT"]
+# programs with main(); laplace.c and extensions.c keep theirs behind #if
+exclude = ["opus_demo.c", "opus_compare.c", "qext_compare.c", "repacketizer_demo.c", "opus_custom_demo.c", "mlp_train.c"]
+
+[[package]]
+name = "c-ares"
+domain = "systems"
+version = "1.34.8"
+url = "https://github.com/c-ares/c-ares/archive/refs/tags/v1.34.8.tar.gz"
+license = "MIT"
+# Asynchronous DNS.
+sources = ["src/lib/*.c", "src/lib/dsa/*.c", "src/lib/event/*.c", "src/lib/legacy/*.c", "src/lib/record/*.c", "src/lib/str/*.c", "src/lib/util/*.c"]   # (~719 at >= 2 levels, sandbox)
+include_dirs = ["include", "src/lib", "src/lib/include"]
+defines = ["CARES_BUILDING_LIBRARY"]
+# the distribution's header, as its own Windows build uses
+copy = [["include/ares_build.h.dist", "include/ares_build.h"]]
+libs = ["ws2_32", "advapi32", "iphlpapi"]
+
+[[package]]
+name = "lmdb"
+domain = "systems"
+version = "0.9.36"
+url = "https://github.com/LMDB/lmdb/archive/refs/tags/LMDB_0.9.36.tar.gz"
+license = "OLDAP-2.8"
+# Memory-mapped key-value store; the library, not its tools.
+sources = ["libraries/liblmdb/mdb.c", "libraries/liblmdb/midl.c"]   # (~139 at >= 2 levels, sandbox)
+include_dirs = ["libraries/liblmdb"]
+
+[[package]]
+name = "cglm"
+domain = "math"
+version = "0.9.6"
+url = "https://github.com/recp/cglm/archive/refs/tags/v0.9.6.tar.gz"
+license = "MIT"
+# Graphics math. The exported functions wrap inline ones in the headers:
+# real code, but similar to each other - look at the duplicate removal.
+sources = ["src/*.c", "src/clipspace/*.c"]   # (~742 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+defines = ["CGLM_EXPORTS"]
+
+[[package]]
+name = "chipmunk2d"
+domain = "math"
+version = "7.0.3"
+url = "https://github.com/slembcke/Chipmunk2D/archive/refs/tags/Chipmunk-7.0.3.tar.gz"
+license = "MIT"
+# 2D rigid-body physics.
+sources = ["src/*.c"]   # (~572 at >= 2 levels, sandbox)
+include_dirs = ["include"]
+defines = ["NDEBUG"]
+
+[[package]]
+name = "libtommath"
+domain = "math"
+version = "1.3.0"
+url = "https://github.com/libtom/libtommath/archive/refs/tags/v1.3.0.tar.gz"
+license = "Unlicense"
+# Multiple-precision integers; the same author as libtomcrypt, different code.
+sources = ["*.c"]   # (~209 at >= 2 levels, sandbox)
+include_dirs = ["."]
