@@ -147,7 +147,7 @@ def test_the_shipped_manifest_stays_varied():
     # the new one are pinned so that none is dropped unnoticed.
     for expected in ("lexbor", "tidy-html5", "oniguruma", "mpack", "libcbor",
                      "libwebp", "flac", "opus", "c-ares", "cglm", "chipmunk2d",
-                     "libtommath"):
+                     "libtommath", "wasm3", "speexdsp", "enet"):
         assert expected in names_, f"{expected} was added in wave 2"
 
 

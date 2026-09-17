@@ -813,3 +813,48 @@ license = "Unlicense"
 # Multiple-precision integers; the same author as libtomcrypt, different code.
 sources = ["*.c"]   # (~209 at >= 2 levels, sandbox)
 include_dirs = ["."]
+
+# ---------------- wave 2, second batch (17 September 2026) ----------------
+#
+# The same checks as above. Tried and left out: zopfli (67 identities, and
+# deflate is already here three times), berry (its constant tables come from
+# a generator script) and libhydrogen (no tagged releases).
+
+[[package]]
+name = "wasm3"
+domain = "interpreter"
+version = "0.5.0"
+url = "https://github.com/wasm3/wasm3/archive/refs/tags/v0.5.0.tar.gz"
+license = "MIT"
+# WebAssembly interpreter. Its WASI and tracer front ends compile to nothing
+# without their d_m3Has* switches; the interpreter core is the code.
+sources = ["source/*.c"]   # (~749 at >= 2 levels, sandbox)
+include_dirs = ["source"]
+
+[[package]]
+name = "speexdsp"
+domain = "media"
+version = "1.2.1"
+url = "https://github.com/xiph/speexdsp/archive/refs/tags/SpeexDSP-1.2.1.tar.gz"
+license = "BSD-3-Clause"
+# Audio DSP: resampler, echo canceller, preprocessor, jitter buffer; the
+# float build with the bundled KISS FFT.
+sources = ["libspeexdsp/*.c"]   # (~110 at >= 2 levels, sandbox)
+include_dirs = ["include", "libspeexdsp"]
+defines = ["FLOATING_POINT", "USE_KISS_FFT", "EXPORT="]
+# test programs with main(); resample.c keeps its own behind #if 0
+exclude = ["testdenoise.c", "testecho.c", "testresample.c", "testresample2.c", "testjitter.c"]
+# autotools substitutes the integer types into this header
+create = [["include/speex/speexdsp_config_types.h", "#ifndef __SPEEX_TYPES_H__\n#define __SPEEX_TYPES_H__\n#include <stdint.h>\ntypedef int16_t spx_int16_t;\ntypedef uint16_t spx_uint16_t;\ntypedef int32_t spx_int32_t;\ntypedef uint32_t spx_uint32_t;\n#endif\n"]]
+
+[[package]]
+name = "enet"
+domain = "systems"
+version = "1.3.18"
+url = "https://github.com/lsalzman/enet/archive/refs/tags/v1.3.18.tar.gz"
+license = "MIT"
+# Reliable UDP networking; the Windows socket layer, not unix.c.
+sources = ["*.c"]   # (~86 at >= 2 levels, sandbox)
+include_dirs = ["include"]
+exclude = ["unix.c"]
+libs = ["ws2_32", "winmm"]
