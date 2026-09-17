@@ -1,5 +1,5 @@
-# Checks shared by the long-run scripts (run_e3.sh, run_full.sh), sourced
-# from the repo root after `cd`:  . experiments/guard.sh
+# Checks shared by the long-run scripts (run_e3.sh, run_full.sh, run_curve.sh,
+# b5_memory.sh), sourced from the repo root after `cd`:  . experiments/guard.sh
 #
 # A run records code_version(), which is the commit plus "-dirty" when
 # `git status --porcelain` prints anything - tracked changes and new,
@@ -25,8 +25,18 @@ $guard_status"
   fi
 }
 
+# guard_database: ELENCHUS_DB must name an existing file. Unset, elenchus falls
+# back to data/elenchus.db, and a run would train on (or `check` would pass
+# on) whatever that holds - on 17 September B5 started there.
+guard_database() {
+  [ -n "${ELENCHUS_DB:-}" ] \
+    || refuse "ELENCHUS_DB is not set, so elenchus would use data/elenchus.db (export ELENCHUS_DB=~/elenchus/data/corpus2.db)"
+  [ -f "$ELENCHUS_DB" ] || refuse "ELENCHUS_DB is $ELENCHUS_DB, which does not exist"
+}
+
 # guard_start: the checks before the first run; remembers the commit.
 guard_start() {
+  guard_database
   guard_clean
   GUARD_HEAD=$(git rev-parse --short HEAD 2>/dev/null) \
     || refuse "git rev-parse HEAD failed (no commit yet?); runs would record no commit"

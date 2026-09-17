@@ -9,6 +9,8 @@
 #   mlm11  11M MLM         d_model 384, 6 layers, 6 heads, d_ff 1536
 #   con11  11M contrastive the same size
 # Every flag other than size stays at its default: batch 64, length 1024.
+# The working tree must be clean and stay on one commit, and ELENCHUS_DB must
+# be set (experiments/guard.sh).
 #
 #   nohup sh experiments/b5_memory.sh > data/b5.log 2>&1 &    (~6 min)
 
@@ -18,8 +20,12 @@ export PYTHONUNBUFFERED=1
 ELENCHUS="${ELENCHUS:-elenchus}"
 NVSMI="${NVSMI:-nvidia-smi}"
 SIZE="--d-model 384 --layers 6 --heads 6 --d-ff 1536"
+IDLE_SECONDS="${IDLE_SECONDS:-5}"    # the card sampled before each run
+TAIL_SECONDS="${TAIL_SECONDS:-3}"    # and after it
 
-refuse() { echo "REFUSED: $*"; exit 2; }
+. experiments/guard.sh     # refuse, guard_start, guard_before_run
+
+guard_start
 # [b]in: the pattern must not match itself, or any command line quoting it.
 if pgrep -f "[b]in/elenchus train" > /dev/null 2>&1; then
   refuse "another training run is on the GPU; its memory would be counted too"
@@ -28,16 +34,17 @@ fi
 measure() {  # measure <name> <train args...>
   name="$1"; shift
   out="models/b5-$name"; csv="data/b5-$name-gpu.csv"
+  guard_before_run
   rm -rf "$out"
   "$NVSMI" --query-gpu=memory.used,memory.total --format=csv,noheader,nounits -l 1 \
     > "$csv" &
   sampler=$!
-  sleep 5                                  # the card before the run
+  sleep "$IDLE_SECONDS"                    # the card before the run
   echo "=== $(date '+%H:%M:%S') $name"
   "$ELENCHUS" train "$@" --out "$out" --epochs 1 --max-steps 50 \
     > "data/b5-$name.log" 2>&1
   echo "    exit $?"
-  sleep 3
+  sleep "$TAIL_SECONDS"
   kill "$sampler" 2>/dev/null
   wait "$sampler" 2>/dev/null
 }

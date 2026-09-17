@@ -1,16 +1,17 @@
 """Scenario tests for the long-run experiment scripts.
 
-run_e3.sh and run_full.sh start hours of GPU work, and every run records
-code_version(): the commit, plus "-dirty" when `git status --porcelain`
-prints anything. The scripts must refuse to start a run that would be
-recorded as dirty, by that same definition, and must stop before a run if the
-commit moved while they were going (E3's eight runs were recorded under two
-commits because one landed mid-way).
+run_e3.sh, run_full.sh, run_curve.sh and b5_memory.sh start GPU work, and
+every run records code_version(): the commit, plus "-dirty" when
+`git status --porcelain` prints anything. The scripts must refuse to start a
+run that would be recorded as dirty, by that same definition, and must stop
+before a run if the commit moved while they were going (E3's eight runs were
+recorded under two commits because one landed mid-way), and must refuse to
+start without ELENCHUS_DB (B5 first started on the wrong database).
 
 Each test copies the scripts into a throwaway git repository and runs them
 with a fake `elenchus` that records its arguments and writes the run's
-summary.json, and a fake `pgrep`, so a real training run on the machine
-running the tests cannot change the outcome.
+summary.json, and a fake `pgrep` and `nvidia-smi`, so a real training run on
+the machine running the tests cannot change the outcome.
 """
 
 import os
@@ -22,7 +23,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPTS = ("guard.sh", "run_e3.sh", "run_full.sh")
+SCRIPTS = ("guard.sh", "run_e3.sh", "run_full.sh", "run_curve.sh", "b5_memory.sh")
 GIT = ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
        "-c", "commit.gpgsign=false"]
 
@@ -32,7 +33,8 @@ echo "$*" >> "$FAKE_CALLS"
 [ "$1" = check ] && exit "${FAKE_CHECK_EXIT:-0}"
 out=""; prev=""
 for arg in "$@"; do [ "$prev" = "--out" ] && out="$arg"; prev="$arg"; done
-mkdir -p "$out" && echo '{}' > "$out/summary.json"
+mkdir -p "$out"
+echo '{"peak_allocated_gib": 1.0, "peak_reserved_gib": 1.5}' > "$out/summary.json"
 if [ "$out" = "${FAKE_COMMIT_AFTER:-}" ]; then
   echo more >> tracked.txt
   git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qam mid-run
@@ -76,6 +78,9 @@ def fakes(tmp_path):
     fake.mkdir()
     _executable(fake / "elenchus", FAKE_ELENCHUS)
     _executable(fake / "pgrep", "#!/bin/sh\nexit \"${FAKE_PGREP_EXIT:-1}\"\n")
+    _executable(fake / "nvidia-smi",
+                "#!/bin/sh\nwhile true; do echo '600, 8188'; sleep 0.2; done\n")
+    (fake / "corpus.db").write_text("a database\n")
     return fake
 
 
@@ -83,11 +88,15 @@ def run_script(repo, fakes, script, shell="sh", **env):
     calls = repo.parent / "calls.txt"
     calls.unlink(missing_ok=True)
     environ = {**os.environ, "PATH": f"{fakes}{os.pathsep}{os.environ['PATH']}",
-               "ELENCHUS": str(fakes / "elenchus"), "FAKE_CALLS": str(calls),
-               **env}
-    for name in ("SHARE", "SEEDS"):
+               "ELENCHUS": str(fakes / "elenchus"), "NVSMI": str(fakes / "nvidia-smi"),
+               "FAKE_CALLS": str(calls), "ELENCHUS_DB": str(fakes / "corpus.db"),
+               "IDLE_SECONDS": "0", "TAIL_SECONDS": "0", **env}
+    for name in ("SHARE", "SEEDS", "STEPS", "EVERY"):
         if name not in env:
             environ.pop(name, None)
+    for name, value in env.items():
+        if value is None:
+            environ.pop(name)
     done = subprocess.run([shell, f"experiments/{script}"], cwd=repo, env=environ,
                           capture_output=True, text=True, timeout=60)
     lines = calls.read_text().splitlines() if calls.exists() else []
@@ -165,7 +174,8 @@ def test_full_stops_when_mlm_fails(repo, fakes):
 
 # -- the working tree, both scripts ------------------------------------------
 
-LONG_RUNS = [("run_full.sh", {"SHARE": "none"}), ("run_e3.sh", {})]
+LONG_RUNS = [("run_full.sh", {"SHARE": "none"}), ("run_e3.sh", {}),
+             ("run_curve.sh", {"SHARE": "none"}), ("b5_memory.sh", {})]
 
 
 @pytest.mark.parametrize("script,env", LONG_RUNS)
@@ -179,14 +189,14 @@ def test_refuses_a_modified_tracked_file(repo, fakes, script, env):
 
 @pytest.mark.parametrize("script,env", LONG_RUNS)
 def test_refuses_a_new_uncommitted_file(repo, fakes, script, env):
-    (repo / "experiments" / "run_curve.sh").write_text("#!/bin/sh\n")
+    (repo / "experiments" / "run_next.sh").write_text("#!/bin/sh\n")
     # The old check (git diff --quiet HEAD) saw nothing here, while
     # code_version() would record the runs as dirty.
     old_check = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "."], cwd=repo)
     assert old_check.returncode == 0
     done, calls, _ = run_script(repo, fakes, script, **env)
     assert done.returncode == 2
-    assert "-dirty" in done.stdout and "run_curve.sh" in done.stdout
+    assert "-dirty" in done.stdout and "run_next.sh" in done.stdout
     assert calls == []
 
 
@@ -198,6 +208,21 @@ def test_ignored_data_and_models_do_not_count(repo, fakes, script, env):
     done, _, trained = run_script(repo, fakes, script, **{**env, "SEEDS": "0"})
     assert done.returncode == 0, done.stdout
     assert trained
+
+
+@pytest.mark.parametrize("script,env", LONG_RUNS)
+def test_refuses_without_elenchus_db(repo, fakes, script, env):
+    done, calls, _ = run_script(repo, fakes, script, **{**env, "ELENCHUS_DB": None})
+    assert done.returncode == 2 and "ELENCHUS_DB is not set" in done.stdout
+    assert calls == []
+
+
+@pytest.mark.parametrize("script,env", LONG_RUNS)
+def test_refuses_an_elenchus_db_that_does_not_exist(repo, fakes, script, env):
+    missing = str(repo / "data" / "nowhere.db")
+    done, calls, _ = run_script(repo, fakes, script, **{**env, "ELENCHUS_DB": missing})
+    assert done.returncode == 2 and "which does not exist" in done.stdout
+    assert calls == []
 
 
 @pytest.mark.parametrize("script,env", LONG_RUNS)
@@ -233,11 +258,17 @@ def test_refuses_a_repository_with_no_commit(repo, fakes, script, env):
     assert calls == []
 
 
-@pytest.mark.parametrize("script,env,first", [
-    ("run_full.sh", {"SHARE": "none"}, "models/b2-mlm"),
-    ("run_e3.sh", {}, "models/e3-share-none-seed-0"),
-])
-def test_stops_before_the_next_run_when_head_moves(repo, fakes, script, env, first):
+FIRST_RUNS = [
+    ("run_full.sh", {"SHARE": "none"}, "models/b2-mlm", 6),
+    ("run_e3.sh", {}, "models/e3-share-none-seed-0", 7),
+    ("run_curve.sh", {"SHARE": "none"}, "models/curve-full-seed-0", 7),
+    ("b5_memory.sh", {}, "models/b5-ref", 3),   # b5 measures again, skips nothing
+]
+
+
+@pytest.mark.parametrize("script,env,first,rest", FIRST_RUNS)
+def test_stops_before_the_next_run_when_head_moves(repo, fakes, script, env, first,
+                                                   rest):
     before = _git(repo, "rev-parse", "--short", "HEAD").strip()
     done, _, trained = run_script(repo, fakes, script, FAKE_COMMIT_AFTER=first, **env)
     after = _git(repo, "rev-parse", "--short", "HEAD").strip()
@@ -246,19 +277,18 @@ def test_stops_before_the_next_run_when_head_moves(repo, fakes, script, env, fir
     assert [out_of(c) for c in trained] == [first]
     assert (repo / first / "summary.json").exists()
 
-    # Started again on the new commit, by choice: the finished run is kept
+    # Started again on the new commit, by choice: a finished run is kept
     # and skipped, the rest go on.
     again, _, trained = run_script(repo, fakes, script, **env)
     assert again.returncode == 0, again.stdout
-    assert first not in [out_of(c) for c in trained]
-    assert len(trained) == (6 if script == "run_full.sh" else 7)
+    assert len(trained) == rest
+    if script != "b5_memory.sh":
+        assert first not in [out_of(c) for c in trained]
 
 
-@pytest.mark.parametrize("script,env,first", [
-    ("run_full.sh", {"SHARE": "none"}, "models/b2-mlm"),
-    ("run_e3.sh", {}, "models/e3-share-none-seed-0"),
-])
-def test_stops_before_the_next_run_when_a_file_appears(repo, fakes, script, env, first):
+@pytest.mark.parametrize("script,env,first,rest", FIRST_RUNS)
+def test_stops_before_the_next_run_when_a_file_appears(repo, fakes, script, env, first,
+                                                       rest):
     done, _, trained = run_script(repo, fakes, script, FAKE_NEW_FILE_AFTER=first, **env)
     assert done.returncode == 2
     assert "-dirty" in done.stdout and "new_module.py" in done.stdout
@@ -302,3 +332,102 @@ def test_e3_logs_the_training_exit_code(repo, fakes, shell):
     done, _, _ = run_script(repo, fakes, "run_e3.sh", shell=shell, FAKE_TRAIN_EXIT="3")
     assert "(exit 3)" in done.stdout
     assert "(exit 0)" not in done.stdout
+
+
+# -- run_curve.sh -------------------------------------------------------------
+
+def test_curve_runs_the_deciding_runs_first_with_one_budget(repo, fakes):
+    done, calls, trained = run_script(repo, fakes, "run_curve.sh", SHARE="none")
+    assert done.returncode == 0, done.stdout
+    assert calls[0] == "check"
+    assert [out_of(c) for c in trained] == [
+        "models/curve-full-seed-0", "models/curve-identity-0.5-seed-0",
+        "models/curve-package-0.5-seed-0", "models/curve-package-0.5-seed-1",
+        "models/curve-full-seed-1", "models/curve-identity-0.25-seed-0",
+        "models/curve-package-0.25-seed-0", "models/curve-package-0.25-seed-1"]
+    for call in trained:
+        assert call.startswith("train contrastive ")
+        assert ("--max-steps 5160 --eval-every 172 --epochs 100000 --patience 100000"
+                in call)
+        assert "--eval-pair-share" not in call
+    fractions = [(c.split("--seed ")[1].split()[0],
+                  c.split("--train-fraction ")[1].split()[:3] if "--train-fraction" in c
+                  else None) for c in trained]
+    assert fractions == [
+        ("0", None), ("0", ["0.5", "--train-unit", "identity"]),
+        ("0", ["0.5", "--train-unit", "package"]),
+        ("1", ["0.5", "--train-unit", "package"]), ("1", None),
+        ("0", ["0.25", "--train-unit", "identity"]),
+        ("0", ["0.25", "--train-unit", "package"]),
+        ("1", ["0.25", "--train-unit", "package"])]
+    assert "=== all done" in done.stdout
+
+
+@pytest.mark.parametrize("share", [None, "0.3"])
+def test_curve_refuses_without_a_valid_share(repo, fakes, share):
+    env = {} if share is None else {"SHARE": share}
+    done, calls, _ = run_script(repo, fakes, "run_curve.sh", **env)
+    assert done.returncode == 2 and "SHARE" in done.stdout
+    assert calls == []
+
+
+def test_curve_passes_a_chosen_share_to_every_run(repo, fakes):
+    done, _, trained = run_script(repo, fakes, "run_curve.sh", SHARE="0.25")
+    assert done.returncode == 0, done.stdout
+    assert len(trained) == 8
+    assert all("--eval-pair-share 0.25" in c for c in trained)
+
+
+def test_curve_skips_finished_runs(repo, fakes):
+    for name in ("full-seed-0", "package-0.5-seed-1"):
+        (repo / "models" / f"curve-{name}").mkdir()
+        (repo / "models" / f"curve-{name}" / "summary.json").write_text("{}")
+    done, _, trained = run_script(repo, fakes, "run_curve.sh", SHARE="none")
+    assert done.returncode == 0, done.stdout
+    outs = [out_of(c) for c in trained]
+    assert len(outs) == 6
+    assert "models/curve-full-seed-0" not in outs
+    assert "models/curve-package-0.5-seed-1" not in outs
+
+
+def test_curve_refuses_when_another_run_is_training(repo, fakes):
+    done, calls, _ = run_script(repo, fakes, "run_curve.sh", SHARE="none",
+                                FAKE_PGREP_EXIT="0")
+    assert done.returncode == 2 and "another training run" in done.stdout
+    assert calls == []
+
+
+def test_curve_refuses_when_check_fails(repo, fakes):
+    done, calls, _ = run_script(repo, fakes, "run_curve.sh", SHARE="none",
+                                FAKE_CHECK_EXIT="1")
+    assert done.returncode == 2 and "check failed" in done.stdout
+    assert calls == ["check"]
+
+
+@pytest.mark.parametrize("shell", ["sh", "bash"])
+def test_curve_logs_the_training_exit_code(repo, fakes, shell):
+    done, _, _ = run_script(repo, fakes, "run_curve.sh", shell=shell, SHARE="none",
+                            FAKE_TRAIN_EXIT="3")
+    assert "(exit 3)" in done.stdout and "(exit 0)" not in done.stdout
+
+
+# -- b5_memory.sh -------------------------------------------------------------
+
+def test_b5_measures_the_three_sizes_and_reads_the_card(repo, fakes):
+    done, _, trained = run_script(repo, fakes, "b5_memory.sh", IDLE_SECONDS="1")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert [out_of(c) for c in trained] == ["models/b5-ref", "models/b5-mlm11",
+                                            "models/b5-con11"]
+    assert trained[0].startswith("train contrastive ") and "--d-model" not in trained[0]
+    assert trained[1].startswith("train mlm ")
+    size = "--d-model 384 --layers 6 --heads 6 --d-ff 1536"
+    assert size in trained[1] and size in trained[2]
+    assert all("--epochs 1 --max-steps 50" in c for c in trained)
+    # 600 of 8188 MiB: 7.41 GiB free, as the fake card reports
+    assert "   7.41  yes" in done.stdout
+
+
+def test_b5_refuses_when_another_run_is_training(repo, fakes):
+    done, calls, _ = run_script(repo, fakes, "b5_memory.sh", FAKE_PGREP_EXIT="0")
+    assert done.returncode == 2 and "another training run" in done.stdout
+    assert calls == []
