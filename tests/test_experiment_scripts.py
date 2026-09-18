@@ -390,6 +390,34 @@ def test_curve_skips_finished_runs(repo, fakes):
     assert "models/curve-package-0.5-seed-1" not in outs
 
 
+def test_curve_leaves_out_the_shape_runs_for_the_short_repeat(repo, fakes):
+    """L2 is L's five deciding runs; the 25% runs described the shape and
+    decided nothing (docs/experiments.md, L2)."""
+    done, _, trained = run_script(repo, fakes, "run_curve.sh", SHARE="none",
+                                  SHAPE="0", STEPS="11550", EVERY="385")
+    assert done.returncode == 0, done.stdout
+    assert [out_of(c) for c in trained] == [
+        "models/curve-full-seed-0", "models/curve-identity-0.5-seed-0",
+        "models/curve-package-0.5-seed-0", "models/curve-package-0.5-seed-1",
+        "models/curve-full-seed-1"]
+    assert all("--max-steps 11550 --eval-every 385" in c for c in trained)
+
+
+def test_a_prefix_keeps_a_second_curve_apart_from_the_first(repo, fakes):
+    """Without it the earlier curve's finished runs would be skipped as done,
+    and they were trained on a split that no longer exists."""
+    for name in ("full-seed-0", "package-0.5-seed-1"):
+        (repo / "models" / f"curve-{name}").mkdir()
+        (repo / "models" / f"curve-{name}" / "summary.json").write_text("{}")
+    done, _, trained = run_script(repo, fakes, "run_curve.sh", SHARE="none",
+                                  PREFIX="curve2", SHAPE="0")
+    assert done.returncode == 0, done.stdout
+    outs = [out_of(c) for c in trained]
+    assert len(outs) == 5
+    assert outs[0] == "models/curve2-full-seed-0"
+    assert all(o.startswith("models/curve2-") for o in outs)
+
+
 def test_curve_refuses_when_another_run_is_training(repo, fakes):
     done, calls, _ = run_script(repo, fakes, "run_curve.sh", SHARE="none",
                                 FAKE_PGREP_EXIT="0")

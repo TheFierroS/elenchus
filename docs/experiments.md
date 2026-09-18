@@ -422,6 +422,70 @@ has levelled off and what budget full training takes.
 of identities) and text (6.1%); val and test lean on a few large packages, so
 a few mid-sized packages help more than many small ones.
 
+### L2 — Has the enlarged corpus levelled off? (short learning curve)
+
+**Default:** all of train, which wave 2 took from 16,651 identities in 23
+packages to 35,510 in 38 (F10).
+
+**Doubt:** L found the curve still climbing at 3-4 T, the package unit
+fastest, and wave 2 followed. The same question has to be asked of the
+corpus that answered it, and now it costs more to get wrong in either
+direction: the split is already locked (F10), so a wave 3 afterwards means
+recomputing it and discarding whatever was trained, while a wave 3 that was
+not needed spends days on packages the model would not have learnt from.
+
+**Settles it:** val MRR over queries at 100% and 50% for both units, read
+against T.
+
+**Protocol (written 18 September, before any run; after the wave 2 build and
+the split of F10).**
+
+- **Five runs**, L's deciding subset: 100% with seeds 0 and 1; package 50%
+  with seeds 0 and 1; identity 50% with seed 0. L's 25% runs described the
+  shape of the curve and were explicitly not used to decide, so they are not
+  repeated.
+- **Every run:** contrastive from random weights, **11,550 steps** (30 epochs
+  of full train at 385 steps an epoch), the learning rate decaying over all
+  of them, validation **every 385 steps** (`--eval-every 385`, 30
+  validations), no early stopping, read at `best.pt`. This is L's amended
+  budget in epochs, not in steps: L's full runs peaked at 3,784 and 4,300 of
+  5,160 steps, that is 22 and 25 epochs of 30, and where the peak sits on a
+  corpus 2.2 times larger is exactly what is not known. Twenty epochs (7,700
+  steps) would be enough if the peak stays where it was in steps, and would
+  fail its own budget check if it moved with the epochs - and a failed check
+  costs the whole set again at twice the budget.
+- **Gains.** Identity gain = MRR(100%, seed 0) − MRR(identity 50%, seed 0).
+  Package gain = mean over s of MRR(100%, s) − MRR(package 50%, s), each
+  seed against the full run of its own seed.
+- **Threshold T = 0.01.** L's rule was T = max(0.01, M); only M changes. L
+  took M = 0.0148 from E3, which read `last.pt` at 1,500 steps with one seed
+  dipping in its last partial epoch. L's own two 100% runs, fully decayed and
+  read at `best.pt` - the runs below are of that kind - differ by 0.0014, and
+  L recorded that "a threshold for later experiments should come from runs
+  like these". M = 0.0014 falls under the floor, so T is the floor: 0.01.
+- **Noise check on this experiment's own runs.** If the two 100% runs differ
+  by more than T, the seed spread is as large as the threshold and every
+  verdict below is provisional, whatever it says.
+- **Budget check**, as in L: if a 100% run's best MRR exceeds its best up to
+  75% of the steps (8,662) by more than T / 2, it was still climbing when the
+  budget ended; a "levelled off" verdict is then provisional and the runs
+  repeat at twice the budget. A gain above T stands either way.
+- **Branches.**
+  - Both gains <= T: the curve has flattened. Full training, with its budget
+    set from where the 100% runs' `best.pt` lands.
+  - Larger gain in (T, 2T]: still climbing, but by less than the doubling
+    that produced it. Full training anyway, and the gain is recorded as what
+    a wave 3 would have been worth - re-splitting after a trained model
+    costs more than this is worth.
+  - Larger gain > 2T: wave 3 before any full training. If the package gain is
+    the larger, it favours variety - the thinnest domains after wave 2 are
+    binary-analysis (3 packages), math (5) and crypto (6). If only the
+    identity gain is above, it favours large packages in domains that exist.
+  - The units are read as L read them: the package gain first.
+- **Time, estimated:** ~0.45 s a step with validation and loading (L
+  measured 38.3 minutes for 5,160 steps), so ~87 minutes a run and ~7.3
+  hours for five.
+
 ---
 
 ## Open questions (not experiments, but unexplained)
@@ -683,6 +747,52 @@ reported.
 The three splits look alike in import share, cut share and length, so val is
 a fair stand-in for test. Val identities: stb 24%, libuv 21%, libsodium 20%.
 Test: mujs 25%. Train's largest: flecs 16%, sqlite 13%, mbedtls 13%.
+
+### F10 — The corpus and split after wave 2 (`a7140cc`)
+
+Wave 2 built 40 packages in 2 h 40 min, matching 113,129 of 113,151 ground
+truth functions (99%); the corpus is 88 packages. The split was recomputed
+once, with `--force`, before any full training: 74 packages moved, 34 of the
+48 the earlier models had learnt from, so every measurement taken before it
+(E3, L runs 522-529) compares nothing that exists now.
+
+| | before | after |
+|---|---|---|
+| eligible rows | 55,997 | 132,657 (69% of ground truth) |
+| train | 23 packages, 16,651 identities | 38 packages, **35,510** identities |
+| pairable train identities | 11,008 | **24,703** (385 steps an epoch at batch 64) |
+| val / test share of rows | 7% / 6% of eligible | 15% / 15% |
+| domains in all three splits | 7 | **9** |
+| dedup collisions across splits | 247 forms | 748 forms |
+
+- The dependency rule (`_deps/`) dropped 38 source files - zlib inside
+  libpng and minizip-ng, ogg inside vorbis, zycore inside zydis - so those
+  packages contributed their own code and nothing else.
+- **Val and test no longer lean on one package.** Their largest members are
+  12% and 10% of their rows, where before val was a quarter stb and test a
+  quarter mujs. L read its val means against that concentration.
+- Vocabulary rebuilt from the new train: 448 tokens at the same threshold
+  (E9's default, a token in >= 5 train functions), fingerprint
+  `ad45cb78e6f1135a`. Val coverage 0.003% `[UNK]` and 0.025%
+  `IMPORT:<rare>` of tokens, 3.7% of functions touching either, so the
+  threshold was left alone.
+- **Baselines on the new val** (3,222 queries, 3,351 pool, -O0 -> -O3):
+  bm25-mnemonic 0.090 MRR over queries (0.100 over packages), import-jaccard
+  0.075, structural 0.050, random 0.003. 0.090 is the bar now; the week 6
+  numbers were measured on a split that no longer exists.
+- **The package mean is noisier than it was.** Val has 23 packages, and logc
+  contributes 3 queries and heatshrink 9, each weighing as much as
+  libjpeg-turbo's 400 - which is why logc reads 0.375 on bm25. Decisions are
+  read on the query mean, as in L; the package mean is recorded beside it.
+
+**A limitation, recorded rather than fixed.** The split now puts miniz in
+train and zlib in val, and lodepng in train and libpng in val: independent
+implementations of the same formats, in different splits. The dedup drops
+functions whose normalised form appears in two packages (748 across splits
+here), so no copy is shared, but near-copies are not caught and may lift val
+a little. It is not hand-corrected, because the split's worth is that it
+follows from the rule - a package's size changing can only move packages of
+its own domain - and an exception written by hand would end that.
 
 ---
 
