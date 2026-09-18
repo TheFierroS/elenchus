@@ -152,6 +152,15 @@ def test_the_shipped_manifest_stays_varied():
                      "libtommath", "wasm3", "speexdsp", "enet"):
         assert expected in names_, f"{expected} was added in wave 2"
 
+    # The second wave-2 batch. The large ones carry most of the identities and
+    # the three binary-analysis packages are the whole of a new domain, so
+    # losing any of them silently would change what the corpus teaches.
+    for expected in ("libxml2", "libarchive", "freetype", "curl", "xz",
+                     "libjpeg-turbo", "openjpeg", "libpng", "vorbis",
+                     "minizip-ng", "secp256k1", "chibi-scheme", "pdcurses",
+                     "qhull", "box2d", "capstone", "yara", "zydis"):
+        assert expected in names_, f"{expected} was added in wave 2"
+
 
 def test_wave_2_did_not_leave_any_domain_thin():
     """After wave 2 the two thinnest domains in train had at least 15 packages."""
@@ -160,6 +169,10 @@ def test_wave_2_did_not_leave_any_domain_thin():
     counts = Counter(p.domain for p in load_manifest(MANIFEST))
     assert counts["text"] >= 15 and counts["data-format"] >= 15, counts
     assert counts["media"] >= 6 and counts["math"] >= 3, counts
+    # binary-analysis is the corpus's own subject matter: disassemblers and
+    # scanners. It opened with exactly three, which is the least a stratified
+    # split can place in all three parts.
+    assert counts["binary-analysis"] >= 3, counts
 
 
 def test_every_package_has_a_known_domain_and_every_domain_can_fill_three_splits():
@@ -247,8 +260,13 @@ def test_a_dependency_is_loaded_as_a_package(tmp_path):
     assert zydis.depends[0].defines == ["ZYAN_NO_LIBC"]
 
 
-def test_the_shipped_packages_depend_on_nothing_yet():
-    assert all(p.depends == [] for p in load_manifest(MANIFEST))
+def test_the_packages_that_need_another_library_name_it():
+    """These four cannot be compiled from a tarball of their own."""
+    depends = {p.name: [d.name for d in p.depends] for p in load_manifest(MANIFEST)
+               if p.depends}
+
+    assert depends == {"minizip-ng": ["zlib"], "libpng": ["zlib"],
+                       "vorbis": ["ogg"], "zydis": ["zycore"]}
 
 
 def test_a_dependency_is_compiled_with_the_package(tmp_path, monkeypatch):

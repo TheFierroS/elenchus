@@ -858,3 +858,283 @@ sources = ["*.c"]   # (~86 at >= 2 levels, sandbox)
 include_dirs = ["include"]
 exclude = ["unix.c"]
 libs = ["ws2_32", "winmm"]
+
+# liblzma only; the dos/ config header adapted to 64-bit, the threaded
+# encoder and decoder left out (they need a thread backend), and the
+# small CRC variants excluded so they do not collide with the fast ones
+[[package]]
+name = "xz"
+domain = "compression"
+version = "5.8.4"
+url = "https://github.com/tukaani-project/xz/archive/refs/tags/v5.8.4.tar.gz"
+license = "0BSD"
+sources = ["src/liblzma/common/*.c", "src/liblzma/check/*.c", "src/liblzma/lz/*.c", "src/liblzma/lzma/*.c", "src/liblzma/rangecoder/*.c", "src/liblzma/delta/*.c", "src/liblzma/simple/*.c", "src/common/tuklib_cpucores.c", "src/common/tuklib_physmem.c"]  # (~334 at >= 2 levels, sandbox)
+include_dirs = [".", "src/common", "src/liblzma/api", "src/liblzma/common", "src/liblzma/check", "src/liblzma/lz", "src/liblzma/lzma", "src/liblzma/rangecoder", "src/liblzma/delta", "src/liblzma/simple"]
+defines = ["HAVE_CONFIG_H=1"]
+exclude = ["stream_encoder_mt.c", "stream_decoder_mt.c", "crc32_small.c", "crc64_small.c", "crc32_tablegen.c", "crc64_tablegen.c", "crc_clmul_consts_gen.c", "price_tablegen.c"]
+create = [["config.h", "#define ASSUME_RAM 128\n#define HAVE_CHECK_CRC32 1\n#define HAVE_CHECK_CRC64 1\n#define HAVE_CHECK_SHA256 1\n#define HAVE_DECODERS 1\n#define HAVE_DECODER_ARM 1\n#define HAVE_DECODER_ARM64 1\n#define HAVE_DECODER_ARMTHUMB 1\n#define HAVE_DECODER_DELTA 1\n#define HAVE_DECODER_IA64 1\n#define HAVE_DECODER_LZMA1 1\n#define HAVE_DECODER_LZMA2 1\n#define HAVE_DECODER_POWERPC 1\n#define HAVE_DECODER_RISCV 1\n#define HAVE_DECODER_SPARC 1\n#define HAVE_DECODER_X86 1\n#define HAVE_ENCODERS 1\n#define HAVE_ENCODER_ARM 1\n#define HAVE_ENCODER_ARM64 1\n#define HAVE_ENCODER_ARMTHUMB 1\n#define HAVE_ENCODER_DELTA 1\n#define HAVE_ENCODER_IA64 1\n#define HAVE_ENCODER_LZMA1 1\n#define HAVE_ENCODER_LZMA2 1\n#define HAVE_ENCODER_POWERPC 1\n#define HAVE_ENCODER_RISCV 1\n#define HAVE_ENCODER_SPARC 1\n#define HAVE_ENCODER_X86 1\n#define HAVE_INTTYPES_H 1\n#define HAVE_LZIP_DECODER 1\n#define HAVE_MF_BT2 1\n#define HAVE_MF_BT3 1\n#define HAVE_MF_BT4 1\n#define HAVE_MF_HC3 1\n#define HAVE_MF_HC4 1\n#define HAVE_STDBOOL_H 1\n#define HAVE_STDINT_H 1\n#define HAVE_STRING_H 1\n#define HAVE_LIMITS_H 1\n#define HAVE_VISIBILITY 0\n#define HAVE__BOOL 1\n#define HAVE___BUILTIN_ASSUME_ALIGNED 1\n#define HAVE___BUILTIN_BSWAPXX 1\n#define NDEBUG 1\n#define PACKAGE_BUGREPORT \"xz@tukaani.org\"\n#define PACKAGE_NAME \"XZ Utils\"\n#define PACKAGE_URL \"https://tukaani.org/xz/\"\n#define SIZEOF_SIZE_T 8\n#define TUKLIB_FAST_UNALIGNED_ACCESS 1\n"]]
+
+# config.h written by hand: libarchive degrades to what the
+# macros admit, so the optional zlib, bzip2 and lzma filters are
+# simply off. gid_t and uid_t come from the config on Windows
+[[package]]
+name = "libarchive"
+domain = "compression"
+version = "3.8.9"
+url = "https://github.com/libarchive/libarchive/archive/refs/tags/v3.8.9.tar.gz"
+license = "BSD-2-Clause"
+sources = ["libarchive/*.c"]  # (~1529 at >= 2 levels, sandbox)
+include_dirs = ["libarchive", "."]
+defines = ["HAVE_CONFIG_H"]
+libs = ["bcrypt", "advapi32"]
+create = [["config.h", "#define __LIBARCHIVE_CONFIG_H_INCLUDED 1\n#define HAVE_CTYPE_H 1\n#define HAVE_ERRNO_H 1\n#define HAVE_FCNTL_H 1\n#define HAVE_INTTYPES_H 1\n#define HAVE_LIMITS_H 1\n#define HAVE_STDARG_H 1\n#define HAVE_STDINT_H 1\n#define HAVE_STDLIB_H 1\n#define HAVE_STRING_H 1\n#define HAVE_TIME_H 1\n#define HAVE_WCHAR_H 1\n#define HAVE_WCTYPE_H 1\n#define HAVE_SYS_STAT_H 1\n#define HAVE_SYS_TYPES_H 1\n#define HAVE_IO_H 1\n#define HAVE_DIRECT_H 1\n#define HAVE_WINDOWS_H 1\n#define HAVE_WCRTOMB 1\n#define HAVE_MBRTOWC 1\n#define HAVE_WCSCMP 1\n#define HAVE_WCSLEN 1\n#define HAVE_WMEMCMP 1\n#define HAVE_WMEMCPY 1\n#define HAVE_WMEMMOVE 1\n#define HAVE_MEMMOVE 1\n#define HAVE_STRCHR 1\n#define HAVE_STRRCHR 1\n#define HAVE_STRDUP 1\n#define HAVE_STRERROR 1\n#define HAVE_VSNPRINTF 1\n#define HAVE_SNPRINTF 1\n#define HAVE_INT64_T 1\n#define HAVE_UINT64_T 1\n#define HAVE_INTMAX_T 1\n#define HAVE_UINTMAX_T 1\n#define SIZEOF_WCHAR_T 2\n#define SIZEOF_INT 4\n#define SIZEOF_LONG 4\n#define gid_t short\n#define uid_t short\n#define HAVE_WCSCPY 1\n#define id_t int\n"]]
+
+# ZLIB_COMPAT picks classic zlib over zlib-ng; the Apple, OpenSSL
+# and Windows XP crypto backends and the POSIX file layer are
+# replaced by the Vista backend and the Win32 layer
+[[package]]
+name = "minizip-ng"
+domain = "compression"
+version = "4.2.2"
+url = "https://github.com/zlib-ng/minizip-ng/archive/refs/tags/4.2.2.tar.gz"
+license = "Zlib"
+sources = ["*.c"]  # (~361 at >= 2 levels, sandbox)
+include_dirs = ["."]
+defines = ["HAVE_ZLIB", "ZLIB_COMPAT", "HAVE_WZAES", "HAVE_PKCRYPT"]
+libs = ["advapi32", "crypt32", "bcrypt", "ncrypt"]
+exclude = ["minigzip.c", "minizip.c", "mz_crypt_apple.c", "mz_crypt_openssl.c", "mz_crypt_winxp.c", "mz_os_posix.c", "mz_strm_os_posix.c", "mz_strm_bzip.c", "mz_strm_libcomp.c", "mz_strm_lzma.c", "mz_strm_zstd.c", "mz_strm_ppmd.c"]
+create = [["mz_config.h", "#ifndef MZ_CONFIG_H\n#define MZ_CONFIG_H\n#define HAVE_DIRENT_H 1\n#define HAVE_SYS_DIRENT_H 0\n#define HAVE_INTTYPES_H 1\n#define HAVE_STDINT_H 1\n#define HAVE_PDIR 1\n#define HAVE_FSEEKO 1\n#define HAVE_SYMLINK 0\n#define HAVE_READLINK 0\n#endif\n"]]
+
+[[package.depends]]
+name = "zlib"
+version = "1.3.1"
+url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz"
+license = "Zlib"
+sources = ["*.c"]
+include_dirs = ["."]
+exclude = ["example.c", "minigzip.c", "gz*.c"]
+
+# the two precomputed tables are compiled with the library; every
+# optional module is on, which is where most of the code is
+[[package]]
+name = "secp256k1"
+domain = "crypto"
+version = "0.8.0"
+url = "https://github.com/bitcoin-core/secp256k1/archive/refs/tags/v0.8.0.tar.gz"
+license = "MIT"
+sources = ["src/secp256k1.c", "src/precomputed_ecmult.c", "src/precomputed_ecmult_gen.c"]  # (~213 at >= 2 levels, sandbox)
+include_dirs = ["include", "src", "."]
+defines = ["ECMULT_WINDOW_SIZE=15", "ECMULT_GEN_PREC_BITS=4", "ENABLE_MODULE_ECDH", "ENABLE_MODULE_RECOVERY", "ENABLE_MODULE_EXTRAKEYS", "ENABLE_MODULE_SCHNORRSIG", "ENABLE_MODULE_MUSIG", "ENABLE_MODULE_ELLSWIFT"]
+
+# config.h and a short xmlversion.h written by hand rather than
+# generated; iconv, ICU, zlib, lzma, HTTP and the dlopen module are
+# off, so no dependency is needed
+[[package]]
+name = "libxml2"
+domain = "data-format"
+version = "2.15.4"
+url = "https://github.com/GNOME/libxml2/archive/refs/tags/v2.15.4.tar.gz"
+license = "MIT"
+sources = ["*.c"]  # (~2376 at >= 2 levels, sandbox)
+include_dirs = [".", "include"]
+libs = ["bcrypt", "ws2_32"]
+exclude = ["lintmain.c", "xmlcatalog.c", "xmllint.c", "shell.c", "runsuite.c", "runtest.c", "runxmlconf.c", "testModule.c", "testapi.c", "testcatalog.c", "testchar.c", "testdict.c", "testdso.c", "testlimits.c", "testparser.c", "testrecurse.c", "nanohttp.c", "xmlmodule.c"]
+create = [["config.h", "#define HAVE_DECL_GETENTROPY 0\n#define HAVE_DECL_GLOB 0\n#define HAVE_DECL_MMAP 0\n#define HAVE_STDINT_H 1\n#define XML_SYSCONFDIR \"/etc\"\n#define XML_THREAD_LOCAL __thread\n"], ["include/libxml/xmlversion.h", "#ifndef __XML_VERSION_H__\n#define __XML_VERSION_H__\n#define LIBXML_DOTTED_VERSION \"2.15.4\"\n#define LIBXML_VERSION 21504\n#define LIBXML_VERSION_STRING \"21504\"\n#define LIBXML_VERSION_EXTRA \"\"\n#define LIBXML_TEST_VERSION xmlCheckVersion(21504);\n#define LIBXML_THREAD_ENABLED\n#define LIBXML_THREAD_ALLOC_ENABLED\n#define LIBXML_TREE_ENABLED\n#define LIBXML_OUTPUT_ENABLED\n#define LIBXML_PUSH_ENABLED\n#define LIBXML_READER_ENABLED\n#define LIBXML_PATTERN_ENABLED\n#define LIBXML_WRITER_ENABLED\n#define LIBXML_SAX1_ENABLED\n#define LIBXML_HTTP_STUBS_ENABLED\n#define LIBXML_VALID_ENABLED\n#define LIBXML_HTML_ENABLED\n#define LIBXML_C14N_ENABLED\n#define LIBXML_CATALOG_ENABLED\n#define LIBXML_SGML_CATALOG_ENABLED\n#define LIBXML_XPATH_ENABLED\n#define LIBXML_XPTR_ENABLED\n#define LIBXML_XINCLUDE_ENABLED\n#define LIBXML_ISO8859X_ENABLED\n#define LIBXML_DEBUG_ENABLED\n#define LIBXML_REGEXP_ENABLED\n#define LIBXML_AUTOMATA_ENABLED\n#define LIBXML_RELAXNG_ENABLED\n#define LIBXML_SCHEMAS_ENABLED\n#define LIBXML_SCHEMATRON_ENABLED\n#include <libxml/xmlexports.h>\n#endif\n"]]
+
+# SEXP_STATIC_LIBRARY, or every symbol is declared dllimport and
+# the library cannot link against itself; install.h is the
+# template with its paths filled in
+[[package]]
+name = "chibi-scheme"
+domain = "interpreter"
+version = "0.12"
+url = "https://github.com/ashinn/chibi-scheme/archive/refs/tags/0.12.tar.gz"
+license = "BSD-3-Clause"
+sources = ["*.c"]  # (~367 at >= 2 levels, sandbox)
+include_dirs = ["include", "."]
+defines = ["SEXP_STATIC_LIBRARY", "SEXP_USE_DL=0"]
+libs = ["ws2_32"]
+exclude = ["main.c", "plan9.c"]
+create = [["include/chibi/install.h", "#define sexp_so_extension \".dll\"\n#define sexp_default_module_path \"/usr/local/share/chibi:/usr/local/lib/chibi\"\n#define sexp_platform \"windows\"\n#define sexp_architecture \"x86_64\"\n#define sexp_version \"0.12\"\n#define sexp_release_name \"neon\"\n"]]
+
+# curl carries lib/config-win32.h for exactly this build, so no config
+# is written; no TLS backend, and the Windows SSPI and LDAP code links
+# against the system libraries
+[[package]]
+name = "curl"
+domain = "systems"
+version = "8.19.0"
+url = "https://github.com/curl/curl/archive/refs/tags/curl-8_19_0.tar.gz"
+license = "curl"
+sources = ["lib/*.c", "lib/curlx/*.c", "lib/vauth/*.c", "lib/vtls/*.c", "lib/vquic/*.c", "lib/vssh/*.c"]  # (~1498 at >= 2 levels, sandbox)
+include_dirs = ["include", "lib", "."]
+defines = ["BUILDING_LIBCURL", "CURL_STATICLIB"]
+libs = ["ws2_32", "advapi32", "crypt32", "bcrypt", "normaliz", "wldap32"]
+
+# the Windows console port; pdcurses/ is the portable half and
+# wincon/ the platform half
+[[package]]
+name = "pdcurses"
+domain = "systems"
+version = "3.6"
+url = "https://github.com/wmcbrine/PDCurses/archive/refs/tags/PDCurses_3_6.tar.gz"
+license = "Unlicense"
+sources = ["pdcurses/*.c", "wincon/*.c"]  # (~418 at >= 2 levels, sandbox)
+include_dirs = ["."]
+libs = ["user32", "advapi32"]
+
+# 2.1.5.1, not 3.x: from 3.0 the core is compiled three times
+# over, for 8, 12 and 16-bit samples with renamed symbols, and
+# a manifest entry is one set of flags. SIMD off (jsimd_none.c)
+# and the image readers kept, since turbojpeg.c calls them
+[[package]]
+name = "libjpeg-turbo"
+domain = "media"
+version = "2.1.5.1"
+url = "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/2.1.5.1.tar.gz"
+license = "IJG"
+sources = ["*.c"]  # (~600 at >= 2 levels, sandbox)
+include_dirs = ["."]
+defines = ["BMP_SUPPORTED", "GIF_SUPPORTED", "PPM_SUPPORTED", "TARGA_SUPPORTED"]
+exclude = ["cjpeg.c", "djpeg.c", "jpegtran.c", "rdjpgcom.c", "wrjpgcom.c", "strtest.c", "tjbench.c", "tjexample.c", "tjunittest.c", "jcstest.c", "turbojpeg-jni.c", "jccolext.c", "jdcol565.c", "jdcolext.c", "jdmrg565.c", "jdmrgext.c", "jstdhuff.c"]
+create = [["jconfig.h", "#define JPEG_LIB_VERSION 62\n#define LIBJPEG_TURBO_VERSION 2.1.5.1\n#define LIBJPEG_TURBO_VERSION_NUMBER 2001005\n#define C_ARITH_CODING_SUPPORTED\n#define D_ARITH_CODING_SUPPORTED\n#define MEM_SRCDST_SUPPORTED\n#define BITS_IN_JSAMPLE 8\n#undef RIGHT_SHIFT_IS_UNSIGNED\n#ifndef __RPCNDR_H__\ntypedef unsigned char boolean;\n#endif\n#define HAVE_BOOLEAN\n#if !(defined(_BASETSD_H_) || defined(_BASETSD_H))\ntypedef short INT16;\ntypedef signed int INT32;\n#endif\n#define XMD_H\n"], ["jconfigint.h", "#define BUILD \"elenchus\"\n#undef inline\n#define INLINE inline __attribute__((always_inline))\n#define THREAD_LOCAL __thread\n#define PACKAGE_NAME \"libjpeg-turbo\"\n#define VERSION \"2.1.5.1\"\n#define SIZEOF_SIZE_T 8\n#define HAVE_BUILTIN_CTZL\n#define FALLTHROUGH __attribute__((fallthrough));\n"], ["jversion.h", "#define JVERSION \"6b  27-Mar-1998\"\n#define JCOPYRIGHT \"Copyright (C) 2023 The libjpeg-turbo Project and many others\"\n#define JCOPYRIGHT_SHORT JCOPYRIGHT\n"]]
+
+# the single-build file list from docs/INSTALL.ANY: one .c per
+# module, each including the rest of its module
+[[package]]
+name = "freetype"
+domain = "media"
+version = "2.14.1"
+url = "https://github.com/freetype/freetype/archive/refs/tags/VER-2-14-1.tar.gz"
+license = "FTL"
+sources = ["src/base/ftsystem.c", "src/base/ftinit.c", "src/base/ftdebug.c", "src/base/ftbase.c", "src/base/ftbbox.c", "src/base/ftglyph.c", "src/base/ftbdf.c", "src/base/ftbitmap.c", "src/base/ftcid.c", "src/base/ftfstype.c", "src/base/ftgasp.c", "src/base/ftgxval.c", "src/base/ftmm.c", "src/base/ftotval.c", "src/base/ftpatent.c", "src/base/ftpfr.c", "src/base/ftstroke.c", "src/base/ftsynth.c", "src/base/fttype1.c", "src/base/ftwinfnt.c", "src/bdf/bdf.c", "src/cff/cff.c", "src/cid/type1cid.c", "src/pcf/pcf.c", "src/pfr/pfr.c", "src/sfnt/sfnt.c", "src/truetype/truetype.c", "src/type1/type1.c", "src/type42/type42.c", "src/winfonts/winfnt.c", "src/smooth/smooth.c", "src/raster/raster.c", "src/sdf/sdf.c", "src/autofit/autofit.c", "src/cache/ftcache.c", "src/lzw/ftlzw.c", "src/gxvalid/gxvalid.c", "src/otvalid/otvalid.c", "src/psaux/psaux.c", "src/pshinter/pshinter.c", "src/psnames/psnames.c", "src/svg/svg.c", "src/gzip/ftgzip.c"]  # (~1516 at >= 2 levels, sandbox)
+include_dirs = ["include"]
+defines = ["FT2_BUILD_LIBRARY"]
+
+# the prebuilt pnglibconf.h, and zlib as a dependency - libpng cannot
+# be compiled without it
+[[package]]
+name = "libpng"
+domain = "media"
+version = "1.6.58"
+url = "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.58.tar.gz"
+license = "libpng-2.0"
+sources = ["*.c"]  # (~468 at >= 2 levels, sandbox)
+include_dirs = ["."]
+exclude = ["example.c", "pngtest.c"]
+copy = [["scripts/pnglibconf.h.prebuilt", "pnglibconf.h"]]
+
+[[package.depends]]
+name = "zlib"
+version = "1.3.1"
+url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz"
+license = "Zlib"
+sources = ["*.c"]
+include_dirs = ["."]
+exclude = ["example.c", "minigzip.c", "gz*.c"]
+
+# ogg as a dependency; misc.c is the debug allocator, which the
+# library's own Makefile does not compile either and which calls
+# pthreads
+[[package]]
+name = "vorbis"
+domain = "media"
+version = "1.3.7"
+url = "https://github.com/xiph/vorbis/archive/refs/tags/v1.3.7.tar.gz"
+license = "BSD-3-Clause"
+sources = ["lib/*.c"]  # (~237 at >= 2 levels, sandbox)
+include_dirs = ["include", "lib"]
+exclude = ["psytune.c", "tone.c", "barkmel.c", "misc.c"]
+
+[[package.depends]]
+name = "ogg"
+version = "1.3.6"
+url = "https://github.com/xiph/ogg/archive/refs/tags/v1.3.6.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c"]
+include_dirs = ["include"]
+create = [["include/ogg/config_types.h", "#ifndef __CONFIG_TYPES_H__\n#define __CONFIG_TYPES_H__\n#include <stdint.h>\ntypedef int16_t ogg_int16_t;\ntypedef uint16_t ogg_uint16_t;\ntypedef int32_t ogg_int32_t;\ntypedef uint32_t ogg_uint32_t;\ntypedef int64_t ogg_int64_t;\ntypedef uint64_t ogg_uint64_t;\n#endif\n"]]
+
+# OPJ_STATIC, or the definitions contradict the dllimport
+# declarations; the JPIP index writers need USE_JPIP and are left out
+[[package]]
+name = "openjpeg"
+domain = "media"
+version = "2.5.4"
+url = "https://github.com/uclouvain/openjpeg/archive/refs/tags/v2.5.4.tar.gz"
+license = "BSD-2-Clause"
+sources = ["src/lib/openjp2/*.c"]  # (~452 at >= 2 levels, sandbox)
+include_dirs = ["src/lib/openjp2"]
+defines = ["OPJ_STATIC"]
+exclude = ["test_sparse_array.c", "t1_generate_luts.c", "bench_dwt.c", "opj_decompress.c", "cidx_manager.c", "phix_manager.c", "thix_manager.c", "tpix_manager.c", "ppix_manager.c", "indexbox_manager.c"]
+create = [["src/lib/openjp2/opj_config.h", "#ifndef OPJ_CONFIG_H_INCLUDED\n#define OPJ_CONFIG_H_INCLUDED\n#define OPJ_VERSION_MAJOR 2\n#define OPJ_VERSION_MINOR 5\n#define OPJ_VERSION_BUILD 4\n#endif\n"], ["src/lib/openjp2/opj_config_private.h", "#define OPJ_PACKAGE_VERSION \"2.5.4\"\n#define OPJ_HAVE_MALLOC_H\n#define OPJ_HAVE__ALIGNED_MALLOC\n"]]
+
+# the reentrant library only: src/libqhull is the same algorithms
+# again under other names, and compiling both would fill the package
+# with near-copies of itself
+[[package]]
+name = "qhull"
+domain = "math"
+version = "8.0.2"
+url = "https://github.com/qhull/qhull/archive/refs/tags/v8.0.2.tar.gz"
+license = "Qhull"
+sources = ["src/libqhull_r/*.c"]  # (~439 at >= 2 levels, sandbox)
+include_dirs = ["src", "src/libqhull_r"]
+
+# version 3, which is C rather than C++
+[[package]]
+name = "box2d"
+domain = "math"
+version = "3.1.1"
+url = "https://github.com/erincatto/box2d/archive/refs/tags/v3.1.1.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]  # (~745 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+
+# five architectures rather than one: with x86 alone the package is
+# 209 identities. The modules are generated from LLVM and resemble
+# each other, which the cross-package dedup does not see - a
+# deliberate choice, and the reason this note is here
+[[package]]
+name = "capstone"
+domain = "binary-analysis"
+version = "5.0.9"
+url = "https://github.com/capstone-engine/capstone/archive/refs/tags/5.0.9.tar.gz"
+license = "BSD-3-Clause"
+sources = ["*.c", "arch/X86/*.c", "arch/AArch64/*.c", "arch/ARM/*.c", "arch/PowerPC/*.c", "arch/Mips/*.c"]  # (~800 at >= 2 levels, sandbox)
+include_dirs = [".", "include"]
+defines = ["CAPSTONE_HAS_X86", "CAPSTONE_HAS_ARM64", "CAPSTONE_HAS_ARM", "CAPSTONE_HAS_POWERPC", "CAPSTONE_HAS_MIPS", "CAPSTONE_USE_SYS_DYN_MEM"]
+
+# the modules that need no third-party library; tlsh needs its bucket
+# size chosen, USE_WINDOWS_PROC picks the Windows process backend
+[[package]]
+name = "yara"
+domain = "binary-analysis"
+version = "4.5.8"
+url = "https://github.com/VirusTotal/yara/archive/refs/tags/v4.5.8.tar.gz"
+license = "BSD-3-Clause"
+sources = ["libyara/*.c", "libyara/modules/tests/*.c", "libyara/modules/pe/*.c", "libyara/modules/elf/*.c", "libyara/modules/math/*.c", "libyara/modules/time/*.c", "libyara/modules/console/*.c", "libyara/modules/string/*.c", "libyara/proc/windows.c", "libyara/tlshc/*.c"]  # (~641 at >= 2 levels, sandbox)
+include_dirs = ["libyara/include", "libyara", ".", "libyara/modules"]
+defines = ["BUCKETS_128", "CHECKSUM_1B", "USE_WINDOWS_PROC"]
+libs = ["ws2_32"]
+
+# zycore as a dependency - it is a separate repository. Both are built
+# static, or the definitions contradict the dllimport declarations
+[[package]]
+name = "zydis"
+domain = "binary-analysis"
+version = "4.1.1"
+url = "https://github.com/zyantific/zydis/archive/refs/tags/v4.1.1.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]  # (~132 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+defines = ["ZYDIS_STATIC_BUILD", "ZYCORE_STATIC_BUILD"]
+
+[[package.depends]]
+name = "zycore"
+version = "1.5.2"
+url = "https://github.com/zyantific/zycore-c/archive/refs/tags/v1.5.2.tar.gz"
+license = "MIT"
+sources = ["src/*.c", "src/API/*.c"]
+include_dirs = ["include"]
+defines = ["ZYCORE_STATIC_BUILD"]
