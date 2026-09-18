@@ -176,3 +176,76 @@ def test_a_windows_style_unit_path_anchors_with_forward_slashes():
     unit = FakeUnit("data\\corpus\\duktape\\src\\duktape.c")
     assert _file_table(FakeDwarf(program), unit)[0] == (
         "data/corpus/duktape/src/duk_api_stack.c")
+
+
+# ------------------------------------------------- generated files, a directory
+#
+# yara's parsers and lexers come from bison and flex, which ran in the package
+# root and wrote "#line 1 \"libyara/lexer.c\"". GCC files those under a
+# relative directory entry of their own, so the name arrives with a directory
+# in front of it. Measured on yara 4.5.8 at all four levels: 437 rows in the
+# four generated units, every one of them landing in the build directory
+# before this, none after.
+
+YARA = "data/corpus/yara/src/yara-4.5.8/libyara"
+
+
+def yara_like(version=5):
+    if version >= 5:
+        directories = ["/home/someone/elenchus", YARA,
+                       "/usr/share/mingw-w64/include", "libyara"]
+        return FakeProgram(5, directories, [
+            FakeEntry("hex_lexer.c", 1), FakeEntry("stdio.h", 2),
+            FakeEntry("hex_lexer.c", 3), FakeEntry("hex_lexer.l", 3)])
+    return FakeProgram(4, [YARA, "/usr/share/mingw-w64/include", "libyara"], [
+        FakeEntry("hex_lexer.c", 1), FakeEntry("stdio.h", 2),
+        FakeEntry("hex_lexer.c", 3), FakeEntry("hex_lexer.l", 3)])
+
+
+def test_a_generated_units_own_directory_is_anchored_in_the_package():
+    table = _file_table(FakeDwarf(yara_like()), FakeUnit(f"{YARA}/hex_lexer.c"))
+
+    assert table[2] == f"{YARA}/hex_lexer.c"
+    assert table[3] == f"{YARA}/hex_lexer.l"
+    # The units and headers that carry an absolute directory are untouched.
+    assert table[0] == f"{YARA}/hex_lexer.c"
+    assert table[1] == "/usr/share/mingw-w64/include/stdio.h"
+
+
+def test_dwarf4_relative_directories_are_anchored_too():
+    table = _file_table(FakeDwarf(yara_like(4)), FakeUnit(f"{YARA}/hex_lexer.c"))
+    assert table[3] == f"{YARA}/hex_lexer.c"
+    assert table[4] == f"{YARA}/hex_lexer.l"
+
+
+def test_the_deepest_matching_ancestor_wins():
+    """A package whose own directory repeats the name: the generator ran in
+    the nearer one, not in the checkout above it."""
+    program = FakeProgram(5, ["/build", "src"], [FakeEntry("parser.c", 1)])
+    unit = FakeUnit("data/corpus/pkg/src/vendor/src/unit.c")
+    assert _file_table(FakeDwarf(program), unit)[0] == (
+        "data/corpus/pkg/src/vendor/src/parser.c")
+
+
+def test_a_relative_directory_no_ancestor_matches_is_left_alone():
+    program = FakeProgram(5, ["/build", "generated"], [FakeEntry("parser.c", 1)])
+    unit = FakeUnit("data/corpus/pkg/src/unit.c")
+    assert _file_table(FakeDwarf(program), unit)[0] == "generated/parser.c"
+
+
+def test_a_relative_directory_with_nothing_above_it_is_left_alone():
+    """Anchoring at the first component would leave no directory at all, and
+    a bare relative path is what the old resolution already gives."""
+    program = FakeProgram(5, ["/build", "data"], [FakeEntry("parser.c", 1)])
+    assert _file_table(FakeDwarf(program), FakeUnit("data/unit.c"))[0] == "data/parser.c"
+
+
+def test_a_relative_directory_without_a_unit_to_anchor_at_is_left_alone():
+    program = FakeProgram(5, ["/build", "libyara"], [FakeEntry("lexer.c", 1)])
+    assert _file_table(FakeDwarf(program), None)[0] == "libyara/lexer.c"
+
+
+def test_an_absolute_name_under_a_relative_directory_keeps_its_path():
+    program = FakeProgram(5, ["/build", "libyara"], [FakeEntry("/opt/crt/dtoa.c", 1)])
+    table = _file_table(FakeDwarf(program), FakeUnit(f"{YARA}/hex_lexer.c"))
+    assert table[0] == "/opt/crt/dtoa.c"

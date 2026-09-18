@@ -176,6 +176,10 @@ def _file_table(dwarf, cu):
     a #line "utf8.c" would look like one file shared between packages, and
     the dataset drops those. Anchored, such a name lives in its package. The
     path names where the directive points, not a file that exists on disk.
+
+    A name that carries a directory is anchored too, at the ancestor the
+    generator ran in; see _anchored. That covers bison and flex output, which
+    names its source relative to the package root rather than to the unit.
     """
     try:
         program = dwarf.line_program_for_CU(cu)
@@ -205,15 +209,61 @@ def _file_table(dwarf, cu):
             elif 1 <= dir_index <= len(directories):
                 directory = directories[dir_index - 1]
 
-        if (dir_index == 0 and anchor and not _is_absolute(name)
-                and "/" not in name and "\\" not in name):
-            table[index] = f"{anchor}/{name}"
+        anchored = None
+        if not _is_absolute(name):
+            if directory is not None and not _is_absolute(directory):
+                anchored = _anchored(anchor, f"{directory}/{name}")
+            elif dir_index == 0:
+                anchored = _anchored(anchor, name)
+
+        if anchored:
+            table[index] = anchored
         elif directory and not _is_absolute(name):
             table[index] = f"{directory}/{name}"
         else:
             table[index] = name
 
     return table
+
+
+def _anchored(anchor, name):
+    """Where a relative name filed under directory 0 points, or None.
+
+    A bare name belongs to the unit's own directory, as duktape's #line names
+    do. A name that carries a directory was written by a generator that ran
+    somewhere above the unit - bison and flex spell yara's lexers
+    "libyara/lexer.c", relative to the package root they ran in, not to
+    libyara/ where the unit sits. GCC files those under a relative directory
+    entry of their own ("libyara"), so the caller hands the two back joined.
+    Resolved against the compilation directory they land in the root of
+    whichever checkout built them, the same machine-dependent identity bare
+    duktape names once had.
+
+    The generator's directory is found by walking up from the unit: the
+    deepest ancestor whose name is the first component of the relative name.
+    Nothing in this corpus is compiled by a name relative to the build
+    directory - every source is passed as data/corpus/<package>/... - so a
+    relative name under directory 0 can only be a directive's. When no
+    ancestor matches, or the match is the path's first component and leaves
+    no directory to anchor at, the caller keeps its old resolution rather
+    than invent one.
+    """
+    if not anchor:
+        return None
+
+    name = name.replace("\\", "/")
+    head, slash, _rest = name.partition("/")
+    if not slash:
+        return f"{anchor}/{name}"
+
+    parts = anchor.split("/")
+    for depth in range(len(parts), 0, -1):
+        if parts[depth - 1] != head:
+            continue
+        base = "/".join(parts[:depth - 1])
+        return f"{base}/{name}" if base else None
+
+    return None
 
 
 def _is_absolute(name):
