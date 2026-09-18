@@ -8,6 +8,8 @@ diagnose - a pattern that matches nothing, and a file that another file
 #includes being compiled twice.
 """
 
+from pathlib import Path
+
 import pytest
 
 from elenchus.corpus.build import Package, _c_sources, load_manifest
@@ -172,3 +174,147 @@ def test_every_package_has_a_known_domain_and_every_domain_can_fill_three_splits
 
     counts = Counter(p.domain for p in packages)
     assert all(counts[d] >= 3 for d in DOMAINS), counts
+
+
+# ----------------------------------------------------------- exclude patterns
+
+
+def test_exclude_takes_a_glob(tree):
+    """nng keeps 52 tests beside the code they test, all of them *_test.c."""
+    (tree / "lib" / "core_test.c").write_text("int t(void) { return 0; }\n")
+    found = _c_sources(tree, package(sources=["lib/*.c"], exclude=["*_test.c"]))
+    assert names(found) == ["core.c", "frame.c"]
+
+
+def test_a_plain_exclude_name_is_still_one_file(tree):
+    """A name with no wildcard in it must not start matching neighbours."""
+    found = _c_sources(tree, package(sources=["*.c", "tests/*.c"],
+                                     exclude=["test.c"]))
+    assert names(found) == ["helper.c", "main.c", "test_parser.c"]
+
+
+def test_exclude_matching_is_case_sensitive(tree):
+    (tree / "Test.c").write_text("int f(void) { return 0; }\n")
+    found = _c_sources(tree, package(sources=["*.c"], exclude=["test.c"]))
+    assert "Test.c" in names(found)
+    assert "test.c" not in names(found)
+
+
+def test_the_matcher_does_not_follow_the_platforms_case_rules():
+    """fnmatch folds case on Windows and macOS and not on Linux, so the test
+    above cannot see the difference here - but which sources a package
+    compiles must not depend on where it is compiled, and CI is to grow a
+    Windows and a macOS runner."""
+    import fnmatch
+
+    from elenchus.corpus import build
+
+    assert build.fnmatchcase is fnmatch.fnmatchcase
+
+
+# ---------------------------------------------------------------- depends
+
+
+DEPENDENT = """
+[[package]]
+name = "zydis"
+version = "4.1.0"
+url = "https://example.invalid/zydis.tar.gz"
+license = "MIT"
+domain = "binary-analysis"
+sources = ["src/*.c"]
+include_dirs = ["include"]
+
+[[package.depends]]
+name = "zycore"
+version = "1.5.0"
+url = "https://example.invalid/zycore.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]
+include_dirs = ["include"]
+defines = ["ZYAN_NO_LIBC"]
+"""
+
+
+def test_a_dependency_is_loaded_as_a_package(tmp_path):
+    path = tmp_path / "m.toml"
+    path.write_text(DEPENDENT)
+
+    zydis = load_manifest(path)[0]
+
+    assert [d.name for d in zydis.depends] == ["zycore"]
+    assert isinstance(zydis.depends[0], Package)
+    assert zydis.depends[0].defines == ["ZYAN_NO_LIBC"]
+
+
+def test_the_shipped_packages_depend_on_nothing_yet():
+    assert all(p.depends == [] for p in load_manifest(MANIFEST))
+
+
+def test_a_dependency_is_compiled_with_the_package(tmp_path, monkeypatch):
+    """Its sources join the compile, its include dirs and macros come with
+    them, and it is extracted outside the package's own source tree so the
+    dataset can tell the two apart."""
+    from elenchus.corpus import build as module
+
+    def fake_download(url, dest_dir):
+        root = Path(dest_dir) / ("zycore-1.5.0" if "zycore" in url else "zydis-4.1.0")
+        (root / "src").mkdir(parents=True)
+        (root / "include").mkdir()
+        name = "zycore.c" if "zycore" in url else "zydis.c"
+        (root / "src" / name).write_text("int f(void) { return 0; }\n")
+        return root
+
+    recorded = {}
+
+    def fake_compile(sources, debug, stripped, opt, pkg=None, root=None, extra=()):
+        recorded.setdefault("sources", [str(s) for s in sources])
+        recorded.setdefault("extra", extra)
+        Path(debug).write_bytes(b"")
+        Path(stripped).write_bytes(b"")
+
+    monkeypatch.setattr(module, "_download", fake_download)
+    monkeypatch.setattr(module, "_compile_level", fake_compile)
+
+    path = tmp_path / "m.toml"
+    path.write_text(DEPENDENT)
+    result = module.build_package(load_manifest(path)[0], tmp_path / "work")
+
+    assert result.ok
+    assert [Path(s).name for s in recorded["sources"]] == ["zydis.c", "zycore.c"]
+    assert f"/{module.DEPENDENCY_DIR}/zycore/" in recorded["sources"][1]
+    assert f"/{module.DEPENDENCY_DIR}/" not in recorded["sources"][0]
+    assert [d.name for d, _root in recorded["extra"]] == ["zycore"]
+
+
+def test_a_dependencys_flags_follow_its_sources(tmp_path):
+    """-I and -D of both go on the command line, the package's first."""
+    (tmp_path / "a.c").write_text("int f(void) { return 0; }\n")
+    main = package(sources=["*.c"], include_dirs=["include"], defines=["MAIN=1"])
+    dep = package(name="dep", include_dirs=["inc"], defines=["DEP=1"], libs=["ws2_32"])
+
+    recorded = {}
+
+    def fake_run(cmd, **kwargs):
+        recorded.setdefault("cmd", cmd)
+        raise RuntimeError("stop before actually compiling")
+
+    import subprocess
+
+    from elenchus.corpus.build import _compile_level
+    original = subprocess.run
+    subprocess.run = fake_run
+    try:
+        _compile_level([tmp_path / "a.c"], tmp_path / "o.dll", tmp_path / "s.dll",
+                       "O0", main, tmp_path, [(dep, tmp_path / "dep")])
+    except RuntimeError:
+        pass
+    finally:
+        subprocess.run = original
+
+    cmd = recorded["cmd"]
+    assert f"-I{tmp_path / 'include'}" in cmd
+    assert f"-I{tmp_path / 'dep' / 'inc'}" in cmd
+    assert cmd.index("-DMAIN=1") < cmd.index("-DDEP=1")
+    assert cmd[-1] == "-lws2_32"
+    assert cmd.index("-lws2_32") > cmd.index(str(tmp_path / "a.c"))

@@ -32,9 +32,15 @@ import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 OPT_LEVELS = ("O0", "O1", "O2", "O3")
+
+# Where a package's dependencies are extracted, beside its own src/. The name
+# is deliberately not one a source tree would use: the dataset drops every
+# source file under it, and that rule matches on the directory name alone.
+DEPENDENCY_DIR = "_deps"
 
 # Flags that make a build reproducible and self-contained: emit DWARF, keep
 # frame pointers so structure is legible, and do not pull in stack protectors
@@ -66,6 +72,21 @@ class Package:
     a Windows API and must be linked against it, is not a hard package to
     build - but without these fields it is impossible to describe. Three of
     the first run's seven failures were a missing -l.
+
+    exclude drops sources by file name, and a name may be a glob: nng keeps
+    52 tests beside the code it tests, all of them *_test.c, and listing
+    them one by one says nothing a reader could check.
+
+    depends names libraries the package cannot compile without and that its
+    own tarball does not carry: zydis needs zycore, libpng needs zlib. Each
+    is a Package in its own right, written as a nested table in the manifest,
+    and is compiled into the same binary. Its sources are extracted under
+    DEPENDENCY_DIR rather than beside the package's own, and the dataset
+    drops every function declared there: a dependency is compiled to make the
+    package link, not to be learned from. Left in, a vendored zlib would
+    either collide with the zlib package - one source file in two packages,
+    which drops it from both - or, built with different macros, survive as a
+    near-copy of it in another split.
     """
 
     name: str
@@ -81,6 +102,7 @@ class Package:
     exclude: list[str] = field(default_factory=list)
     copy: list[list[str]] = field(default_factory=list)
     create: list[list[str]] = field(default_factory=list)
+    depends: list["Package"] = field(default_factory=list)
 
 
 @dataclass
@@ -94,10 +116,21 @@ class BuildResult:
 
 
 def load_manifest(path):
-    """Read the package manifest into a list of Package."""
+    """Read the package manifest into a list of Package.
+
+    A package's depends entries are nested tables with the same shape, so a
+    dependency is described exactly as a package is and prepared by the same
+    code.
+    """
     with open(path, "rb") as f:
         data = tomllib.load(f)
-    return [Package(**entry) for entry in data["package"]]
+    return [_package(entry) for entry in data["package"]]
+
+
+def _package(entry):
+    entry = dict(entry)
+    entry["depends"] = [_package(d) for d in entry.get("depends", [])]
+    return Package(**entry)
 
 
 def _download(url, dest_dir):
@@ -130,17 +163,20 @@ def _c_sources(root, package):
     Raises when a package matches nothing. That failure used to surface as a
     compiler error about missing input, one step removed from the cause; said
     plainly it points straight at the pattern that is wrong.
+
+    An exclude entry is matched against the file name as a glob, case
+    sensitively, so a name with no wildcard in it still means that one file.
     """
     patterns = package.sources or (
         ["src/*.c"] if package.style == "c_glob_src" else ["*.c"]
     )
 
-    excluded = set(package.exclude)
+    excluded = package.exclude
     found = {
         path
         for pattern in patterns
         for path in root.glob(pattern)
-        if path.name not in excluded
+        if not any(fnmatchcase(path.name, e) for e in excluded)
     }
 
     if not found:
@@ -152,7 +188,8 @@ def _c_sources(root, package):
     return sorted(found)
 
 
-def _compile_level(sources, out_debug, out_stripped, opt, package=None, root=None):
+def _compile_level(sources, out_debug, out_stripped, opt, package=None, root=None,
+                   extra=()):
     """Compile sources into a debug shared lib at opt, then strip a copy.
 
     --exclude-all-symbols is what makes the stripped twin actually stripped.
@@ -177,13 +214,14 @@ def _compile_level(sources, out_debug, out_stripped, opt, package=None, root=Non
     includes = []
     defines = []
     libs = []
-    if package is not None and root is not None:
-        includes = [f"-I{root / d}" for d in package.include_dirs]
-        defines = [f"-D{d}" for d in package.defines]
+    entries = [(package, root)] if package is not None and root is not None else []
+    for entry, entry_root in [*entries, *extra]:
+        includes += [f"-I{Path(entry_root) / d}" for d in entry.include_dirs]
+        defines += [f"-D{d}" for d in entry.defines]
         # Libraries go after the sources: the GNU linker resolves symbols in
         # command-line order and will not look back at an archive it has
         # already passed.
-        libs = [f"-l{name}" for name in package.libs]
+        libs += [f"-l{name}" for name in entry.libs]
 
     cmd = [
         _CC,
@@ -245,10 +283,18 @@ def build_package(package, work_dir):
             return BuildResult(package.name, ok=False,
                                error="no .c sources found")
 
+        extra = []
+        for dependency in package.depends:
+            dep_root = _download(dependency.url,
+                                 pkg_dir / DEPENDENCY_DIR / dependency.name)
+            _prepare(dep_root, dependency)
+            sources = sources + _c_sources(dep_root, dependency)
+            extra.append((dependency, dep_root))
+
         out_dir.mkdir(parents=True, exist_ok=True)
         produced = []
         for opt, debug, stripped in binary_paths(package, work_dir):
-            _compile_level(sources, debug, stripped, opt, package, src_root)
+            _compile_level(sources, debug, stripped, opt, package, src_root, extra)
             produced.extend([debug, stripped])
 
         return BuildResult(package.name, ok=True, binaries=produced)

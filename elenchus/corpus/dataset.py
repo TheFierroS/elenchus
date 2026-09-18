@@ -30,6 +30,7 @@ import functools
 import hashlib
 from collections import defaultdict
 
+from elenchus.corpus.build import DEPENDENCY_DIR
 from elenchus.encoder.normalise import normalise
 
 SPLITS = ("train", "val", "test")
@@ -70,26 +71,39 @@ def is_toolchain_path(path):
     return any(marker in path for marker in TOOLCHAIN_MARKERS)
 
 
+def is_dependency_path(path):
+    """True if a source file belongs to a package's dependency, not the package.
+
+    A dependency is compiled so the package links, and its functions are not
+    the package's to teach. zlib inside libpng is either the same code as the
+    zlib package - which the shared-file rule would drop from both, taking
+    zlib's own functions with it - or, built with other macros, a near-copy
+    of it that could land in a different split.
+    """
+    return f"/{DEPENDENCY_DIR}/" in path.replace("\\", "/")
+
+
 def excluded_files(conn):
     """Return {decl_file: reason} for source files that may not be trained on.
 
-    Both rules are applied and the reason is kept, so a file dropped by only
-    one of them is visible. If the two ever disagree badly that is worth
+    Every rule that fires is kept in the reason, so a file dropped by only
+    one of them is visible. If two ever disagree badly that is worth
     knowing: it means either the corpus grew a genuinely shared dependency,
     or the path markers have gone stale.
     """
     excluded = {}
     for row in source_files(conn):
         path = row["decl_file"]
-        shared = row["packages"] > 1
-        toolchain = is_toolchain_path(path)
+        reasons = []
+        if row["packages"] > 1:
+            reasons.append("shared")
+        if is_toolchain_path(path):
+            reasons.append("toolchain")
+        if is_dependency_path(path):
+            reasons.append("dependency")
 
-        if shared and toolchain:
-            excluded[path] = "shared+toolchain"
-        elif shared:
-            excluded[path] = "shared"
-        elif toolchain:
-            excluded[path] = "toolchain"
+        if reasons:
+            excluded[path] = "+".join(reasons)
 
     return excluded
 

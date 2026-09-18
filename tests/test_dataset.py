@@ -16,6 +16,7 @@ from elenchus.corpus.dataset import (
     cross_split_collisions,
     eligible_rows,
     excluded_files,
+    is_dependency_path,
     is_toolchain_path,
     leakage,
     load_splits,
@@ -258,3 +259,40 @@ def test_a_stratified_split_is_deterministic():
     domains = {f"p{i}": f"d{i % 4}" for i in range(20)}
     assert assign_splits(sizes, domains=domains) == assign_splits(dict(
         reversed(list(sizes.items()))), domains=domains)
+
+
+# ------------------------------------------------------ dependency sources
+#
+# A package with depends compiles a second library into its binary so it will
+# link. Those functions carry decl_files under the package's _deps directory,
+# and none of them is the package's to teach.
+
+
+DEP = "data/corpus-build/libpng/_deps/zlib/zlib-1.3.1/inflate.c"
+
+
+def test_dependency_paths_are_recognised():
+    assert is_dependency_path(DEP)
+    assert is_dependency_path(r"C:\corpus\libpng\_deps\zlib\inflate.c")
+    assert not is_dependency_path("data/corpus-build/zlib/src/zlib-1.3.1/inflate.c")
+    # A source directory of the package's own that merely mentions deps.
+    assert not is_dependency_path("data/corpus-build/pkg/src/pkg-1/deps/helper.c")
+
+
+def test_a_dependencys_functions_are_excluded(db):
+    binary_id = add_binary(db, "libpng")
+    own = "data/corpus-build/libpng/src/libpng-1.6.43/png.c"
+    add_function(db, binary_id, 0x1000, "png_read_info", own, listing(30))
+    add_function(db, binary_id, 0x2000, "inflate", DEP, listing(30, "xor"))
+
+    assert excluded_files(db) == {DEP: "dependency"}
+    assert {row["name"] for row in eligible_rows(db)} == {"png_read_info"}
+
+
+def test_a_dependency_seen_in_two_packages_keeps_both_reasons(db):
+    """The reason is every rule that fired, so a change in one stays visible."""
+    for package in ("libpng", "libzip"):
+        binary_id = add_binary(db, package)
+        add_function(db, binary_id, 0x1000, "inflate", DEP, listing(30, "xor"))
+
+    assert excluded_files(db) == {DEP: "shared+dependency"}
