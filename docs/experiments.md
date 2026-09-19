@@ -615,6 +615,35 @@ existed, it would have fired while the wave 3 entries were being written.
 
 ---
 
+### F13 — A rescan was reading the previous scan
+
+Fixing F12 meant rebuilding two packages, and the rebuild came back with
+tinyspline at 20 of 343 ground-truth functions matched and c-blosc at 152
+of 419. Both had been 100%.
+
+The addresses had not shifted and the binaries were fine. pyghidra's
+default is a project beside the binary, named after it
+(`tinyspline_O0_stripped.dll_ghidra/`), and those projects were still there
+from the wave 3 build. Opening the same path again found a program of that
+name already imported and returned **the old analysis** - so Ghidra's
+functions described the previous build's layout while ground truth was
+read from the new binary's DWARF. Only the three CRT stubs, which sit at
+the same address in both builds, lined up. Deleting the project
+directories and rescanning gave 2,335 of 2,335.
+
+Nothing in the corpus was wrong before this: every package until now was
+scanned once, on a path that had no project yet. It would have gone wrong
+the first time a package was rebuilt - a version bump, a corrected entry -
+and it would not have raised an error, only a lower match rate in a line
+of build output.
+
+Scans now open each binary in a temporary project of their own
+(`open_fresh`), so nothing persists to be reopened. The match rate printed
+per level is what caught this; it is worth keeping an eye on for exactly
+this reason.
+
+---
+
 ---
 
 ## Open questions (not experiments, but unexplained)

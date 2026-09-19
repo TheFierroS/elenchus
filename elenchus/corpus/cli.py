@@ -43,6 +43,7 @@ from elenchus.extract.ghidra import (
     extract_imports,
     file_sha256,
     ghidra_version,
+    open_fresh,
     pdata_entry_points,
     register_binary,
     seed_functions_from_pdata,
@@ -60,7 +61,7 @@ def _scan(conn, path, run_kind_params, with_code=True):
     """
     run_id = start_run(conn, "extract", tool="ghidra", params=run_kind_params)
     try:
-        with pyghidra.open_program(str(path)) as api:
+        with open_fresh(path) as api:
             program = api.getCurrentProgram()
             set_run_tool_version(conn, run_id, ghidra_version(program))
             seed_functions_from_pdata(program, pdata_entry_points(path))

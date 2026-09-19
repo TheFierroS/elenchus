@@ -43,6 +43,7 @@ from elenchus.extract.ghidra import (
     extract_imports,
     extract_strings,
     ghidra_version,
+    open_fresh,
     pdata_entry_points,
     register_binary,
     seed_functions_from_pdata,
@@ -158,7 +159,7 @@ def cmd_extract_code(args):
                                                     "stage": "instructions"}
         )
         try:
-            with pyghidra.open_program(str(path)) as api:
+            with open_fresh(path) as api:
                 program = api.getCurrentProgram()
                 set_run_tool_version(conn, run_id, ghidra_version(program))
                 count = extract_code(

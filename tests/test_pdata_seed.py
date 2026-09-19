@@ -11,6 +11,7 @@ No JVM is started; Ghidra's side is replaced by small fakes.
 import contextlib
 import sys
 import types
+from pathlib import Path
 
 import pefile
 
@@ -183,7 +184,7 @@ def test_the_corpus_scan_seeds_before_it_extracts(monkeypatch, db, tmp_path):
     def fake_open(_path):
         yield api
 
-    monkeypatch.setattr(corpus_cli.pyghidra, "open_program", fake_open, raising=False)
+    monkeypatch.setattr(corpus_cli, "open_fresh", fake_open)
     monkeypatch.setattr(corpus_cli, "ghidra_version", lambda _p: "test")
     monkeypatch.setattr(corpus_cli, "pdata_entry_points", lambda path: [0x1000])
     monkeypatch.setattr(corpus_cli, "seed_functions_from_pdata",
@@ -197,3 +198,34 @@ def test_the_corpus_scan_seeds_before_it_extracts(monkeypatch, db, tmp_path):
     corpus_cli._scan(db, tmp_path / "x.dll", {"package": "p"})
 
     assert order == [("seed", [0x1000]), ("functions",)]
+
+
+def test_a_scan_opens_a_project_of_its_own(monkeypatch, tmp_path):
+    """pyghidra's default project sits beside the binary and is named after
+    it, so a second scan of a rebuilt file reopens the old analysis instead
+    of importing the new one - silently. tinyspline came back 20 of 343
+    functions matched that way (docs/experiments.md, F13)."""
+    from elenchus.extract import ghidra as module
+
+    seen = {}
+    api = types.SimpleNamespace(getCurrentProgram=lambda: None)
+
+    @contextlib.contextmanager
+    def fake_open_program(path, **kwargs):
+        seen.update(kwargs, path=path)
+        seen["existing"] = sorted(p.name for p in
+                                  Path(kwargs["project_location"]).iterdir())
+        yield api
+
+    monkeypatch.setitem(sys.modules, "pyghidra",
+                        types.SimpleNamespace(open_program=fake_open_program))
+
+    binary = tmp_path / "pkg_O0.dll"
+    binary.write_bytes(b"MZ")
+    with module.open_fresh(binary) as opened:
+        assert opened is api
+
+    assert seen["nested_project_location"] is False
+    assert seen["existing"] == [], "the project must be empty before the import"
+    assert not (tmp_path / "pkg_O0.dll_ghidra").exists()
+    assert not Path(seen["project_location"]).exists(), "and cleaned up after"

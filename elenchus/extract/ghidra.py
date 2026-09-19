@@ -17,11 +17,39 @@ observation.
 """
 
 import hashlib
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pefile
 
 from elenchus.db import add_events
+
+
+@contextmanager
+def open_fresh(path):
+    """Open a binary in a Ghidra project of its own, made for this call.
+
+    pyghidra's default is a project beside the binary, named after it. Open
+    the same path twice and the second call finds a program of that name
+    already in the project and hands back the analysis of the file as it was
+    the first time - silently, since nothing failed.
+
+    That is only ever wrong. A rebuilt package keeps its path and changes
+    its contents, so a rescan read the old layout while ground truth was
+    read from the new one: tinyspline came back 20 of 343 functions matched,
+    c-blosc 152 of 419, and the only reason it was caught is that the build
+    prints the match rate. A fresh project each time costs one import and
+    leaves nothing behind to go stale.
+    """
+    import pyghidra
+
+    with tempfile.TemporaryDirectory(prefix="elenchus-ghidra-") as location:
+        with pyghidra.open_program(
+            str(path), project_location=location, project_name="scan",
+            nested_project_location=False,
+        ) as api:
+            yield api
 
 # UNWIND_INFO flag marking an entry that continues another function's unwind
 # data rather than starting a function of its own.
