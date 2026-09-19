@@ -7,9 +7,12 @@ builds a corpus containing exactly the mistake it is looking for and checks
 that it is caught.
 """
 
+from collections import Counter
+
 import pytest
 
 from elenchus.corpus.dataset import (
+    _quotas,
     assign_splits,
     candidate_rows,
     content_key,
@@ -296,3 +299,52 @@ def test_a_dependency_seen_in_two_packages_keeps_both_reasons(db):
         add_function(db, binary_id, 0x1000, "inflate", DEP, listing(30, "xor"))
 
     assert excluded_files(db) == {DEP: "shared+dependency"}
+
+
+# --------------------------------------------------- how few a split may get
+
+
+def test_a_domain_owes_val_and_test_a_share_of_its_packages():
+    """One package was enough to make a domain measurable and not enough to
+    measure it: with thirteen systems packages the greedy rule left val
+    holding one, so val's systems figure was whatever that package was."""
+    assert dict(_quotas(13)) == {"val": 2, "test": 2}
+    assert dict(_quotas(23)) == {"val": 3, "test": 3}
+
+
+def test_a_small_domain_still_splits_one_each():
+    assert dict(_quotas(3)) == {"val": 1, "test": 1}
+    assert dict(_quotas(9)) == {"val": 1, "test": 1}
+
+
+def test_a_domain_of_one_belongs_to_train():
+    """Train is never the split left short, so it is owed nothing - but it
+    keeps at least one package of every domain."""
+    assert dict(_quotas(1)) == {}
+
+
+def test_a_large_domain_reaches_its_quota_in_val_and_test():
+    sizes = {f"p{i}": 1000 - 10 * i for i in range(13)}
+    domains = dict.fromkeys(sizes, "systems")
+
+    counts = Counter(assign_splits(sizes, domains=domains).values())
+
+    assert counts["val"] >= 2 and counts["test"] >= 2, counts
+    assert counts["train"] == 13 - counts["val"] - counts["test"]
+
+
+def test_the_quota_does_not_wreck_the_size_balance():
+    """The packages forced into val and test are the domain's smallest, so
+    the shares move by little."""
+    sizes = {f"{d}{i}": 1000 - 10 * i for d in "abc" for i in range(13)}
+    domains = {name: name[0] for name in sizes}
+
+    assignment = assign_splits(sizes, domains=domains)
+    rows = Counter()
+    for package, split in assignment.items():
+        rows[split] += sizes[package]
+    total = sum(rows.values())
+
+    assert 0.62 <= rows["train"] / total <= 0.75, rows
+    for split in ("val", "test"):
+        assert 0.10 <= rows[split] / total <= 0.22, rows

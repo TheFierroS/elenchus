@@ -234,6 +234,33 @@ def assign_splits(sizes, shares=DEFAULT_SHARES, domains=None):
     return result
 
 
+def _quotas(count, shares=DEFAULT_SHARES):
+    """The fewest packages val and test may take from a domain of `count`.
+
+    The guarantee used to be one package each, which is enough to make a
+    domain measurable but not enough to measure it: with thirteen systems
+    packages the greedy rule left val holding one, so val's systems figure
+    was whatever that single package happened to be. The quota is the share
+    the split is owed, rounded, and never below one; train is not given one
+    because it is never the split left short.
+
+    val and test together never claim more than all but one of a domain's
+    packages, so a domain of three still splits one-one-one.
+    """
+    quotas = {name: max(1, round(count * share))
+              for name, share in zip(SPLITS, shares) if name != "train"}
+
+    # Train keeps at least one package of the domain, so a domain of one is
+    # train's and a domain of three is still one-one-one.
+    while quotas and sum(quotas.values()) > count - 1:
+        largest = max(quotas, key=lambda name: (quotas[name], name))
+        quotas[largest] -= 1
+        if quotas[largest] == 0:
+            del quotas[largest]
+
+    return quotas
+
+
 def _assign_by_size(sizes, shares=DEFAULT_SHARES, ledger=None):
     """Assign whole packages to train/val/test, balancing by row count.
 
@@ -243,35 +270,38 @@ def _assign_by_size(sizes, shares=DEFAULT_SHARES, ledger=None):
     target - the same greedy rule used for bin packing, and deterministic, so
     the split is a property of the corpus rather than of the day it was run.
 
-    Every split is guaranteed at least one package: an empty test set would
-    make the exit criterion unmeasurable rather than merely unbalanced.
+    Val and test are owed a minimum number of packages (see _quotas), and
+    once only as many packages remain as are owed, the rest go to fill those
+    quotas. An empty test set would make the exit criterion unmeasurable;
+    a test set of one package makes it unreliable, which is worse, because
+    it still produces a number.
     """
     total = sum(sizes.values())
     targets = {name: total * share for name, share in zip(SPLITS, shares)}
     assigned = {name: 0 for name in SPLITS}
+    counts = {name: 0 for name in SPLITS}
+    quotas = _quotas(len(sizes), shares)
     result = {}
 
     ordered = sorted(sizes.items(), key=lambda item: (-item[1], item[0]))
 
     for index, (package, size) in enumerate(ordered):
         remaining = len(ordered) - index
-        empty = [name for name in SPLITS if not any(
-            value == name for value in result.values()
-        )]
+        owed = {name: quota - counts[name]
+                for name, quota in quotas.items() if counts[name] < quota}
 
-        # Once only as many packages remain as there are empty splits, the
-        # rest are spoken for: fill the empty ones rather than keep balancing.
-        if empty and remaining <= len(empty):
-            if ledger is None:
-                choice = empty[0]
-            else:
-                choice = max(empty, key=lambda name: (
-                    ledger["targets"][name] - ledger["assigned"][name]))
+        # Once only as many packages remain as are still owed, the rest are
+        # spoken for: fill the quotas rather than keep balancing by size.
+        if owed and remaining <= sum(owed.values()):
+            choice = max(owed, key=lambda name: (
+                (ledger["targets"][name] - ledger["assigned"][name]) if ledger
+                else targets[name] - assigned[name], name))
         else:
             choice = max(SPLITS, key=lambda name: targets[name] - assigned[name])
 
         result[package] = choice
         assigned[choice] += size
+        counts[choice] += 1
         if ledger is not None:
             ledger["assigned"][choice] += size
 
