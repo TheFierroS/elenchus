@@ -336,3 +336,29 @@ def test_a_dependencys_flags_follow_its_sources(tmp_path):
     assert cmd.index("-DMAIN=1") < cmd.index("-DDEP=1")
     assert cmd[-1] == "-lws2_32"
     assert cmd.index("-lws2_32") > cmd.index(str(tmp_path / "a.c"))
+
+
+# ------------------------------------------------- copy and create make paths
+
+
+def test_create_builds_the_directories_its_path_needs(tmp_path):
+    """lwIP ships no configuration of its own and expects arch/cc.h from
+    whoever builds it - a directory its tarball does not have."""
+    from elenchus.corpus.build import _prepare
+
+    root = tmp_path / "src"
+    root.mkdir()
+    _prepare(root, package(create=[["arch/cc.h", "#define LWIP_NO_UNISTD_H 1\n"]]))
+
+    assert (root / "arch" / "cc.h").read_text() == "#define LWIP_NO_UNISTD_H 1\n"
+
+
+def test_copy_builds_the_directories_its_destination_needs(tmp_path):
+    from elenchus.corpus.build import _prepare
+
+    root = tmp_path / "src"
+    (root / "win").mkdir(parents=True)
+    (root / "win" / "config.h").write_text("#define HAVE_X 1\n")
+    _prepare(root, package(copy=[["win/config.h", "build/gen/config.h"]]))
+
+    assert (root / "build" / "gen" / "config.h").read_text() == "#define HAVE_X 1\n"

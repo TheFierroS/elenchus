@@ -151,9 +151,14 @@ def _download(url, dest_dir):
 def _prepare(root, package):
     """Apply copy and create steps so a plain compile can succeed."""
     for src_rel, dst_rel in package.copy:
+        (root / dst_rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / src_rel, root / dst_rel)
 
     for name, content in package.create:
+        # The path may name a directory the tarball does not have: lwIP has
+        # no configuration of its own and expects arch/cc.h from whoever
+        # builds it.
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(content)
 
 
