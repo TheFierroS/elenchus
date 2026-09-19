@@ -1262,27 +1262,48 @@ libs = ["ws2_32"]
 exclude = ["*_ossl.c", "*_mbedtls.c", "*_nss.c"]
 create = [["config.h", "#define PACKAGE_VERSION \"2.8.0\"\n#define PACKAGE_STRING \"libsrtp2 2.8.0\"\n#define CPU_CISC 1\n#define HAVE_X86 1\n#define HAVE_INTTYPES_H 1\n#define HAVE_STDINT_H 1\n#define HAVE_STDLIB_H 1\n#define HAVE_SYS_TYPES_H 1\n#define HAVE_WINDOWS_H 1\n#define HAVE_WINSOCK2_H 1\n#define HAVE_INT16_T 1\n#define HAVE_INT32_T 1\n#define HAVE_INT8_T 1\n#define HAVE_UINT16_T 1\n#define HAVE_UINT32_T 1\n#define HAVE_UINT64_T 1\n#define HAVE_UINT8_T 1\n#define SIZEOF_UNSIGNED_LONG 4\n#define SIZEOF_UNSIGNED_LONG_LONG 8\n"]]
 
+# parson is vendored in its source tree and is a package of its own, so it
+# is a dependency here (F12)
 [[package]]
 name = "tinyspline"
 domain = "math"
 version = "0.6.0"
 url = "https://github.com/msteinbeck/tinyspline/archive/refs/tags/v0.6.0.tar.gz"
 license = "MIT"
-sources = ["src/*.c"]  # (~195 at >= 2 levels, sandbox)
+sources = ["src/*.c"]  # (~90 at >= 2 levels, sandbox)
 include_dirs = ["src"]
+exclude = ["parson.c"]
+
+[[package.depends]]
+name = "parson"
+version = "master"
+url = "https://github.com/kgabis/parson/archive/refs/heads/master.tar.gz"
+license = "MIT"
+sources = ["parson.c"]
+include_dirs = ["."]
 
 # the AVX2 and SSE2 shuffles need instruction sets the corpus does not
-# build for; the generic ones remain
+# build for; the generic ones remain. The bundled lz4 is a copy of the lz4
+# package, so it is a dependency: vendored, the content dedup would drop
+# those functions from lz4 as well as from here (F12)
 [[package]]
 name = "c-blosc"
 domain = "compression"
 version = "1.21.6"
 url = "https://github.com/Blosc/c-blosc/archive/refs/tags/v1.21.6.tar.gz"
 license = "BSD-3-Clause"
-sources = ["blosc/*.c", "internal-complibs/lz4-1.9.4/*.c"]  # (~170 at >= 2 levels, sandbox)
-include_dirs = ["blosc", "internal-complibs/lz4-1.9.4"]
+sources = ["blosc/*.c"]  # (~73 at >= 2 levels, sandbox)
+include_dirs = ["blosc"]
 defines = ["HAVE_LZ4"]
 exclude = ["*-avx2.c", "*-sse2.c"]
+
+[[package.depends]]
+name = "lz4"
+version = "1.10.0"
+url = "https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz"
+license = "BSD-2-Clause"
+sources = ["lib/*.c"]
+include_dirs = ["lib"]
 
 # VERSION is normally set by autotools
 [[package]]

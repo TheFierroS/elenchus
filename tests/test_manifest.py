@@ -287,7 +287,11 @@ def test_the_packages_that_need_another_library_name_it():
         "minizip-ng": ["zlib"], "libpng": ["zlib"], "vorbis": ["ogg"],
         "zydis": ["zycore"], "libxlsxwriter": ["zlib"], "nats-c": ["protobuf-c"],
         "usockets": ["libuv"], "libcyaml": ["libyaml"], "speex": ["ogg"],
-        "libspng": ["zlib"], "opusfile": ["ogg", "opus"]}
+        "libspng": ["zlib"], "opusfile": ["ogg", "opus"],
+        # These two carry a copy of a package that is already in the corpus.
+        # Vendored, the content dedup drops those functions from the original
+        # as well: lz4 lost 45% of its rows to c-blosc's copy (F12).
+        "c-blosc": ["lz4"], "tinyspline": ["parson"]}
 
 
 def test_a_dependency_is_compiled_with_the_package(tmp_path, monkeypatch):

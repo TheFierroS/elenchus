@@ -570,6 +570,51 @@ so ground truth would need a second reader. The cheap version of the
 question comes first: build a handful of packages with MSVC and score the
 existing model on them.
 
+### F12 — Libraries carry copies of each other
+
+The wave 3 split was read before it was locked, and one thing in it was
+wrong: lz4, a test package, had lost 45% of its rows. c-blosc ships lz4's
+sources in `internal-complibs/`, and when both the copy and the original
+are packages, the content dedup drops those functions from **both**. Adding
+a package emptied out one that was already in the corpus.
+
+Measured on the 136-package corpus, pairs sharing the most normalised
+forms:
+
+| package | carries | splits | shared forms |
+|---|---|---|---|
+| plutovg | stb's image and truetype headers | test / test | 546 |
+| c-blosc | lz4 | val / test | 172 |
+| tinyspline | parson | val / test | 109 |
+| speex | shared ancestry with speexdsp | val / train | 93 |
+| lizard | zstd's FSE and Huffman coders | test / train | 82 |
+| hiredis | sds | val / val | 67 |
+| zstd | xxhash | train / val | 62 |
+
+The long tail is ordinary: 1,882 forms are shared by exactly two packages
+and one form by 54 of them - a one-line wrapper looks the same everywhere.
+Nothing leaked: the dedup drops both sides, so no function is in two
+splits. The damage is hollowing, not leakage.
+
+Two of these are separable and were fixed: c-blosc now takes lz4 and
+tinyspline takes parson as dependencies, so the copies land under `_deps/`
+and are dropped by the dependency rule before the content dedup sees them,
+and the originals keep their functions. c-blosc goes from 170 identities to
+73 and tinyspline from 195 to 90, which is what each contributes on its
+own.
+
+The rest cannot be separated without changing what the library is: plutovg
+includes stb as headers, with no translation unit to move; lizard is a fork
+of lz4 with the shared parts unmodified; speex and speexdsp were one
+project. Those stay, recorded here.
+
+`elenchus check` grew a **vendored copies** warning - package pairs sharing
+more than 50 normalised forms, counting only forms that appear in three
+packages or fewer so a generic wrapper does not implicate everyone. Had it
+existed, it would have fired while the wave 3 entries were being written.
+
+---
+
 ---
 
 ## Open questions (not experiments, but unexplained)
