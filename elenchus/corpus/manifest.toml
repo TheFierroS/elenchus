@@ -304,7 +304,7 @@ sources = ["tinyexpr.c"]
 
 [[package]]
 name = "mongoose"
-domain = "systems"
+domain = "networking"
 version = "7.14"
 url = "https://github.com/cesanta/mongoose/archive/refs/tags/7.14.tar.gz"
 license = "GPL-2.0"
@@ -313,7 +313,7 @@ libs = ["ws2_32"]
 
 [[package]]
 name = "civetweb"
-domain = "systems"
+domain = "networking"
 version = "1.16"
 url = "https://github.com/civetweb/civetweb/archive/refs/tags/v1.16.tar.gz"
 license = "MIT"
@@ -364,7 +364,7 @@ sources = ["sqlite3.c"]            # shell.c carries main()   (~1760)
 
 [[package]]
 name = "libuv"
-domain = "systems"
+domain = "networking"
 version = "1.52.1"
 url = "https://github.com/libuv/libuv/archive/refs/tags/v1.52.1.tar.gz"
 license = "MIT"
@@ -460,7 +460,7 @@ copy = [["src/config.h.generic", "src/config.h"],
 
 [[package]]
 name = "miniaudio"
-domain = "media"
+domain = "audio"
 version = "0.11.25"
 url = "https://github.com/mackron/miniaudio/archive/refs/tags/0.11.25.tar.gz"
 license = "MIT-0"
@@ -469,7 +469,7 @@ libs = ["ole32", "winmm", "avrt"]
 
 [[package]]
 name = "stb"
-domain = "media"
+domain = "image"
 version = "master"
 url = "https://github.com/nothings/stb/archive/refs/heads/master.tar.gz"
 license = "MIT"
@@ -480,7 +480,7 @@ create = [["elenchus_stb.c", "#define STB_IMAGE_IMPLEMENTATION\n#include \"stb_i
 
 [[package]]
 name = "lodepng"
-domain = "media"
+domain = "image"
 version = "master"
 url = "https://github.com/lvandeve/lodepng/archive/refs/heads/master.tar.gz"
 license = "Zlib"
@@ -720,7 +720,7 @@ create = [["config.h", "#ifndef MXML_CONFIG_H\n#define MXML_CONFIG_H\n#define MX
 
 [[package]]
 name = "libwebp"
-domain = "media"
+domain = "image"
 version = "1.6.0"
 url = "https://github.com/webmproject/libwebp/archive/refs/tags/v1.6.0.tar.gz"
 license = "BSD-3-Clause"
@@ -731,7 +731,7 @@ include_dirs = [".", "src"]
 
 [[package]]
 name = "flac"
-domain = "media"
+domain = "audio"
 version = "1.5.0"
 url = "https://github.com/xiph/flac/archive/refs/tags/1.5.0.tar.gz"
 license = "BSD-3-Clause"
@@ -745,7 +745,7 @@ exclude = ["ogg_decoder_aspect.c", "ogg_encoder_aspect.c", "ogg_helper.c", "ogg_
 
 [[package]]
 name = "opus"
-domain = "media"
+domain = "audio"
 version = "1.6.1"
 url = "https://github.com/xiph/opus/archive/refs/tags/v1.6.1.tar.gz"
 license = "BSD-3-Clause"
@@ -759,7 +759,7 @@ exclude = ["opus_demo.c", "opus_compare.c", "qext_compare.c", "repacketizer_demo
 
 [[package]]
 name = "c-ares"
-domain = "systems"
+domain = "networking"
 version = "1.34.8"
 url = "https://github.com/c-ares/c-ares/archive/refs/tags/v1.34.8.tar.gz"
 license = "MIT"
@@ -833,7 +833,7 @@ include_dirs = ["source"]
 
 [[package]]
 name = "speexdsp"
-domain = "media"
+domain = "audio"
 version = "1.2.1"
 url = "https://github.com/xiph/speexdsp/archive/refs/tags/SpeexDSP-1.2.1.tar.gz"
 license = "BSD-3-Clause"
@@ -849,7 +849,7 @@ create = [["include/speex/speexdsp_config_types.h", "#ifndef __SPEEX_TYPES_H__\n
 
 [[package]]
 name = "enet"
-domain = "systems"
+domain = "networking"
 version = "1.3.18"
 url = "https://github.com/lsalzman/enet/archive/refs/tags/v1.3.18.tar.gz"
 license = "MIT"
@@ -962,7 +962,7 @@ create = [["include/chibi/install.h", "#define sexp_so_extension \".dll\"\n#defi
 # against the system libraries
 [[package]]
 name = "curl"
-domain = "systems"
+domain = "networking"
 version = "8.19.0"
 url = "https://github.com/curl/curl/archive/refs/tags/curl-8_19_0.tar.gz"
 license = "curl"
@@ -989,7 +989,7 @@ libs = ["user32", "advapi32"]
 # and the image readers kept, since turbojpeg.c calls them
 [[package]]
 name = "libjpeg-turbo"
-domain = "media"
+domain = "image"
 version = "2.1.5.1"
 url = "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/2.1.5.1.tar.gz"
 license = "IJG"
@@ -1003,7 +1003,7 @@ create = [["jconfig.h", "#define JPEG_LIB_VERSION 62\n#define LIBJPEG_TURBO_VERS
 # module, each including the rest of its module
 [[package]]
 name = "freetype"
-domain = "media"
+domain = "image"
 version = "2.14.1"
 url = "https://github.com/freetype/freetype/archive/refs/tags/VER-2-14-1.tar.gz"
 license = "FTL"
@@ -1015,7 +1015,7 @@ defines = ["FT2_BUILD_LIBRARY"]
 # be compiled without it
 [[package]]
 name = "libpng"
-domain = "media"
+domain = "image"
 version = "1.6.58"
 url = "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.58.tar.gz"
 license = "libpng-2.0"
@@ -1038,7 +1038,7 @@ exclude = ["example.c", "minigzip.c", "gz*.c"]
 # pthreads
 [[package]]
 name = "vorbis"
-domain = "media"
+domain = "audio"
 version = "1.3.7"
 url = "https://github.com/xiph/vorbis/archive/refs/tags/v1.3.7.tar.gz"
 license = "BSD-3-Clause"
@@ -1059,7 +1059,7 @@ create = [["include/ogg/config_types.h", "#ifndef __CONFIG_TYPES_H__\n#define __
 # declarations; the JPIP index writers need USE_JPIP and are left out
 [[package]]
 name = "openjpeg"
-domain = "media"
+domain = "image"
 version = "2.5.4"
 url = "https://github.com/uclouvain/openjpeg/archive/refs/tags/v2.5.4.tar.gz"
 license = "BSD-2-Clause"
@@ -1138,3 +1138,618 @@ license = "MIT"
 sources = ["src/*.c", "src/API/*.c"]
 include_dirs = ["include"]
 defines = ["ZYCORE_STATIC_BUILD"]
+
+# the image codecs are optional and each is a package of its own, so
+# config_auto.h turns them all off; endianness.h is generated by its build
+[[package]]
+name = "leptonica"
+domain = "image"
+version = "1.74.3"
+url = "https://github.com/DanBloomberg/leptonica/archive/refs/tags/v1.74.3.tar.gz"
+license = "BSD-2-Clause"
+sources = ["src/*.c"]  # (~3055 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+defines = ["HAVE_CONFIG_H"]
+libs = ["gdi32", "user32"]
+create = [["src/endianness.h", "#ifndef ENDIANNESS_H\n#define ENDIANNESS_H\n#define L_LITTLE_ENDIAN\n#endif\n"], ["src/config_auto.h", "#ifndef CONFIG_AUTO_H\n#define CONFIG_AUTO_H\n/* Written by the corpus build in place of the autotools config: leptonica's\n   image codecs are optional and each of them is a package of its own. */\n#define HAVE_LIBJPEG 0\n#define HAVE_LIBTIFF 0\n#define HAVE_LIBPNG 0\n#define HAVE_LIBZ 0\n#define HAVE_LIBGIF 0\n#define HAVE_LIBUNGIF 0\n#define HAVE_LIBWEBP 0\n#define HAVE_LIBJP2K 0\n#define HAVE_FMEMOPEN 0\n#define HAVE_FSTATAT 0\n#endif\n"]]
+
+# jerry-core needs jerry-port beside it or the module loader does not link
+[[package]]
+name = "jerryscript"
+domain = "interpreter"
+version = "3.0.0"
+url = "https://github.com/jerryscript-project/jerryscript/archive/refs/tags/v3.0.0.tar.gz"
+license = "Apache-2.0"
+sources = ["jerry-core/**/*.c", "jerry-port/**/*.c"]  # (~1614 at >= 2 levels, sandbox)
+include_dirs = ["jerry-core", "jerry-core/parser", "jerry-core/parser/regexp", "jerry-core/parser/js", "jerry-core/debugger", "jerry-core/profiles", "jerry-core/jmem", "jerry-core/api", "jerry-core/lit", "jerry-core/ecma", "jerry-core/ecma/builtin-objects", "jerry-core/ecma/builtin-objects/typedarray", "jerry-core/ecma/operations", "jerry-core/ecma/base", "jerry-core/vm", "jerry-core/jrt", "jerry-core/jcontext", "jerry-core/include", "jerry-port", "jerry-port/common", "jerry-port/win", "jerry-port/unix"]
+defines = ["JERRY_GLOBAL_HEAP_SIZE=512"]
+
+# the Windows source list from its own nmake build, and the ready
+# evconfig-private.h under WIN32-Code/nmake; the integer-type macros are
+# set because that config is written for MSVC, which has no stdint
+[[package]]
+name = "libevent"
+domain = "systems"
+version = "2.1.13"
+url = "https://github.com/libevent/libevent/archive/refs/tags/release-2.1.13-stable.tar.gz"
+license = "BSD-3-Clause"
+sources = ["event.c", "evthread.c", "buffer.c", "bufferevent.c", "bufferevent_sock.c", "bufferevent_filter.c", "bufferevent_pair.c", "listener.c", "bufferevent_ratelim.c", "evmap.c", "log.c", "evutil.c", "evutil_rand.c", "evutil_time.c", "strlcpy.c", "signal.c", "win32select.c", "evthread_win32.c", "buffer_iocp.c", "event_iocp.c", "bufferevent_async.c", "http.c", "evdns.c", "evrpc.c", "event_tagging.c"]  # (~952 at >= 2 levels, sandbox)
+include_dirs = [".", "include", "WIN32-Code", "WIN32-Code/nmake", "compat"]
+defines = ["EVENT__HAVE_STDINT_H=1", "EVENT__HAVE_UINT8_T=1", "EVENT__HAVE_UINT16_T=1", "EVENT__HAVE_UINT32_T=1", "EVENT__HAVE_UINT64_T=1", "EVENT__HAVE_INT8_T=1", "EVENT__HAVE_INT16_T=1", "EVENT__HAVE_INT32_T=1", "EVENT__HAVE_INT64_T=1", "EVENT__HAVE_STRTOK_R=1"]
+libs = ["ws2_32", "advapi32", "bcrypt", "iphlpapi"]
+
+# zlib as a dependency; the bundled minizip and tmpfileplus come with it
+[[package]]
+name = "libxlsxwriter"
+domain = "data-format"
+version = "1.2.4"
+url = "https://github.com/jmcnamara/libxlsxwriter/archive/refs/tags/v1.2.4.tar.gz"
+license = "BSD-2-Clause"
+sources = ["src/*.c", "third_party/minizip/*.c", "third_party/tmpfileplus/*.c", "third_party/md5/*.c"]  # (~805 at >= 2 levels, sandbox)
+include_dirs = ["include", "third_party"]
+exclude = ["iowin32.c", "minizip.c", "miniunz.c"]
+
+[[package.depends]]
+name = "zlib"
+version = "1.3.1"
+url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz"
+license = "Zlib"
+sources = ["*.c"]
+include_dirs = ["."]
+exclude = ["example.c", "minigzip.c", "gz*.c"]
+
+# built without zlib and libpng: both paths are optional and both are
+# packages of their own
+[[package]]
+name = "libharu"
+domain = "image"
+version = "2.4.6"
+url = "https://github.com/libharu/libharu/archive/refs/tags/v2.4.6.tar.gz"
+license = "Zlib"
+sources = ["src/*.c"]  # (~791 at >= 2 levels, sandbox)
+include_dirs = ["include"]
+create = [["include/hpdf_config.h", "/* Built without zlib and libpng: Haru's PNG and Flate paths are optional and\n   both libraries are packages of their own. */\n"]]
+
+# its own bundled reference BLAS, or every factorisation is unresolved
+[[package]]
+name = "superlu"
+domain = "math"
+version = "7.0.1"
+url = "https://github.com/xiaoyeli/superlu/archive/refs/tags/v7.0.1.tar.gz"
+license = "BSD-3-Clause"
+sources = ["SRC/*.c", "CBLAS/*.c"]  # (~511 at >= 2 levels, sandbox)
+include_dirs = ["SRC", "CBLAS"]
+exclude = ["*_gpu*.c", "cublas*.c"]
+create = [["SRC/superlu_config.h", "\n#ifndef SUPERLU_CONFIG_H\n#define SUPERLU_CONFIG_H\n\n/* Enable metis */\n\n\n/* Enable colamd */\n\n\n/* enable 64bit index mode */\n\n\n/* Integer type for indexing sparse matrix meta structure */\n#if defined(XSDK_INDEX_SIZE) && (XSDK_INDEX_SIZE == 64)\n#include <stdint.h>\n#define _LONGINT 1\ntypedef int64_t int_t;\n#else\ntypedef int int_t; /* default */\n#endif\n\n#endif /* SUPERLU_CONFIG_H */\n\n"]]
+
+# _GLFW_WIN32 picks the Windows backend; the other platforms' sources
+# compile to nothing
+[[package]]
+name = "glfw"
+domain = "systems"
+version = "3.5.1"
+url = "https://github.com/glfw/glfw/archive/refs/tags/3.5.1.tar.gz"
+license = "Zlib"
+sources = ["src/*.c"]  # (~427 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+defines = ["_GLFW_WIN32", "UNICODE", "_UNICODE"]
+libs = ["gdi32", "user32", "shell32", "opengl32"]
+
+# UMKA_STATIC and UMKA_BUILD, or the definitions contradict the
+# dllimport declarations
+[[package]]
+name = "umka-lang"
+domain = "interpreter"
+version = "1.5.7"
+url = "https://github.com/vtereshkov/umka-lang/archive/refs/tags/v1.5.7.tar.gz"
+license = "BSD-2-Clause"
+sources = ["src/*.c"]  # (~399 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+defines = ["UMKA_STATIC", "UMKA_BUILD"]
+exclude = ["umka.c"]
+
+# config written by hand; GCM needs an external crypto backend and is off
+[[package]]
+name = "libsrtp"
+domain = "crypto"
+version = "2.8.0"
+url = "https://github.com/cisco/libsrtp/archive/refs/tags/v2.8.0.tar.gz"
+license = "BSD-3-Clause"
+sources = ["srtp/*.c", "crypto/cipher/*.c", "crypto/hash/*.c", "crypto/kernel/*.c", "crypto/math/*.c", "crypto/replay/*.c"]  # (~198 at >= 2 levels, sandbox)
+include_dirs = ["include", "crypto/include", "."]
+defines = ["HAVE_CONFIG_H"]
+libs = ["ws2_32"]
+exclude = ["*_ossl.c", "*_mbedtls.c", "*_nss.c"]
+create = [["config.h", "#define PACKAGE_VERSION \"2.8.0\"\n#define PACKAGE_STRING \"libsrtp2 2.8.0\"\n#define CPU_CISC 1\n#define HAVE_X86 1\n#define HAVE_INTTYPES_H 1\n#define HAVE_STDINT_H 1\n#define HAVE_STDLIB_H 1\n#define HAVE_SYS_TYPES_H 1\n#define HAVE_WINDOWS_H 1\n#define HAVE_WINSOCK2_H 1\n#define HAVE_INT16_T 1\n#define HAVE_INT32_T 1\n#define HAVE_INT8_T 1\n#define HAVE_UINT16_T 1\n#define HAVE_UINT32_T 1\n#define HAVE_UINT64_T 1\n#define HAVE_UINT8_T 1\n#define SIZEOF_UNSIGNED_LONG 4\n#define SIZEOF_UNSIGNED_LONG_LONG 8\n"]]
+
+[[package]]
+name = "tinyspline"
+domain = "math"
+version = "0.6.0"
+url = "https://github.com/msteinbeck/tinyspline/archive/refs/tags/v0.6.0.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]  # (~195 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+
+# the AVX2 and SSE2 shuffles need instruction sets the corpus does not
+# build for; the generic ones remain
+[[package]]
+name = "c-blosc"
+domain = "compression"
+version = "1.21.6"
+url = "https://github.com/Blosc/c-blosc/archive/refs/tags/v1.21.6.tar.gz"
+license = "BSD-3-Clause"
+sources = ["blosc/*.c", "internal-complibs/lz4-1.9.4/*.c"]  # (~170 at >= 2 levels, sandbox)
+include_dirs = ["blosc", "internal-complibs/lz4-1.9.4"]
+defines = ["HAVE_LZ4"]
+exclude = ["*-avx2.c", "*-sse2.c"]
+
+# VERSION is normally set by autotools
+[[package]]
+name = "libcpuid"
+domain = "systems"
+version = "0.8.2"
+url = "https://github.com/anrieff/libcpuid/archive/refs/tags/v0.8.2.tar.gz"
+license = "BSD-2-Clause"
+sources = ["libcpuid/*.c"]  # (~108 at >= 2 levels, sandbox)
+include_dirs = ["libcpuid"]
+defines = ["VERSION=\"0.8.2\""]
+
+[[package]]
+name = "argtable3"
+domain = "systems"
+version = "3.3.1"
+url = "https://github.com/argtable/argtable3/archive/refs/tags/v3.3.1.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c"]  # (~159 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+
+# protobuf-c as a dependency for the streaming protocol; the glib/
+# subdirectory is part of the library, not a dependency on GLib
+[[package]]
+name = "nats-c"
+domain = "networking"
+version = "3.14.0"
+url = "https://github.com/nats-io/nats.c/archive/refs/tags/v3.14.0.tar.gz"
+license = "Apache-2.0"
+sources = ["src/*.c", "src/win/*.c", "src/stan/*.c", "src/glib/*.c"]  # (~1127 at >= 2 levels, sandbox)
+include_dirs = ["src", "src/include", "src/stan", "src/glib", "."]
+defines = ["NATS_HAS_STREAMING=0", "_WIN32_WINNT=0x0600"]
+libs = ["ws2_32", "advapi32", "crypt32"]
+exclude = ["*_unix.c"]
+
+[[package.depends]]
+name = "protobuf-c"
+version = "1.5.2"
+url = "https://github.com/protobuf-c/protobuf-c/archive/refs/tags/v1.5.2.tar.gz"
+license = "BSD-2-Clause"
+sources = ["protobuf-c/*.c"]
+include_dirs = ["."]
+
+[[package]]
+name = "bstrlib"
+domain = "text"
+version = "1.0.0"
+url = "https://github.com/websnarf/bstrlib/archive/refs/tags/v1.0.0.tar.gz"
+license = "BSD-3-Clause"
+sources = ["*.c"]  # (~147 at >= 2 levels, sandbox)
+include_dirs = ["."]
+exclude = ["bstest.c", "test.c", "testaux.c"]
+
+# UriConfig.h written by hand; reallocarray is deliberately absent, since
+# MinGW has none and the library has its own fallback
+[[package]]
+name = "uriparser"
+domain = "text"
+version = "1.0.2"
+url = "https://github.com/uriparser/uriparser/archive/refs/tags/uriparser-1.0.2.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c"]  # (~149 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+defines = ["URI_STATIC_BUILD", "URI_NO_UNICODE"]
+create = [["src/UriConfig.h", "#ifndef URI_CONFIG_H\n#define URI_CONFIG_H\n#define PACKAGE_VERSION \"1.0.2\"\n#define URI_VER_MAJOR 1\n#define URI_VER_MINOR 0\n#define URI_VER_RELEASE 2\n#define URI_VER_SUFFIX_ANSI \"\"\n#define HAVE_WPRINTF 1\n#endif\n"]]
+
+# libuv as a dependency: on Windows it is the only event backend, and the
+# epoll and kqueue ones are left out
+[[package]]
+name = "usockets"
+domain = "networking"
+version = "0.8.8"
+url = "https://github.com/uNetworking/uSockets/archive/refs/tags/v0.8.8.tar.gz"
+license = "Apache-2.0"
+sources = ["src/*.c", "src/eventing/*.c", "src/crypto/*.c"]  # (~136 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+defines = ["LIBUS_NO_SSL", "LIBUS_USE_LIBUV"]
+libs = ["ws2_32"]
+exclude = ["epoll_kqueue.c", "gcd.c", "openssl.c", "wolfssl.c", "sni_tree.cpp"]
+
+[[package.depends]]
+name = "libuv"
+version = "1.52.1"
+url = "https://github.com/libuv/libuv/archive/refs/tags/v1.52.1.tar.gz"
+license = "MIT"
+sources = ["src/*.c", "src/win/*.c"]
+include_dirs = ["include", "src"]
+defines = ["WIN32_LEAN_AND_MEAN", "_WIN32_WINNT=0x0A00"]
+libs = ["ws2_32", "iphlpapi", "userenv", "psapi", "dbghelp", "ole32", "shell32", "advapi32"]
+
+# the amalgamated mdbx.c; the tools beside it each carry a main()
+[[package]]
+name = "libmdbx"
+domain = "data-format"
+version = "0.14.3"
+url = "https://github.com/erthink/libmdbx/archive/refs/tags/v0.14.3.tar.gz"
+license = "Apache-2.0"
+sources = ["mdbx.c"]  # (~637 at >= 2 levels, sandbox)
+include_dirs = ["."]
+libs = ["ntdll", "advapi32", "user32", "kernel32"]
+
+[[package]]
+name = "zopfli"
+domain = "compression"
+version = "1.0.3"
+url = "https://github.com/google/zopfli/archive/refs/tags/zopfli-1.0.3.tar.gz"
+license = "Apache-2.0"
+sources = ["src/zopfli/*.c"]  # (~67 at >= 2 levels, sandbox)
+include_dirs = ["src/zopfli"]
+exclude = ["zopfli_bin.c"]
+
+[[package]]
+name = "micro-ecc"
+domain = "crypto"
+version = "1.1"
+url = "https://github.com/kmackay/micro-ecc/archive/refs/tags/v1.1.tar.gz"
+license = "BSD-2-Clause"
+sources = ["*.c"]  # (~68 at >= 2 levels, sandbox)
+include_dirs = ["."]
+
+# libyaml as a dependency - it is the parser cyaml wraps
+[[package]]
+name = "libcyaml"
+domain = "data-format"
+version = "1.4.2"
+url = "https://github.com/tlsa/libcyaml/archive/refs/tags/v1.4.2.tar.gz"
+license = "ISC"
+sources = ["src/*.c"]  # (~55 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+defines = ["VERSION_DEVEL=0", "VERSION_MAJOR=1", "VERSION_MINOR=4", "VERSION_PATCH=2"]
+
+[[package.depends]]
+name = "libyaml"
+version = "0.2.5"
+url = "https://github.com/yaml/libyaml/archive/refs/tags/0.2.5.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]
+include_dirs = ["include"]
+defines = ["YAML_VERSION_STRING=\"0.2.5\"", "YAML_VERSION_MAJOR=0", "YAML_VERSION_MINOR=2", "YAML_VERSION_PATCH=5"]
+
+# ogg as a dependency; the float build, and EXPORT emptied because the
+# header expects the autotools substitution
+[[package]]
+name = "speex"
+domain = "audio"
+version = "1.2.1"
+url = "https://github.com/xiph/speex/archive/refs/tags/Speex-1.2.1.tar.gz"
+license = "BSD-3-Clause"
+sources = ["libspeex/*.c"]  # (~152 at >= 2 levels, sandbox)
+include_dirs = ["include", "libspeex", "."]
+defines = ["FLOATING_POINT", "USE_SMALLFT", "HAVE_STDINT_H", "EXPORT="]
+exclude = ["testenc*.c", "*_test.c"]
+
+[[package.depends]]
+name = "ogg"
+version = "1.3.6"
+url = "https://github.com/xiph/ogg/archive/refs/tags/v1.3.6.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c"]
+include_dirs = ["include"]
+create = [["include/ogg/config_types.h", "#ifndef __CONFIG_TYPES_H__\n#define __CONFIG_TYPES_H__\n#include <stdint.h>\ntypedef int16_t ogg_int16_t;\ntypedef uint16_t ogg_uint16_t;\ntypedef int32_t ogg_int32_t;\ntypedef uint32_t ogg_uint32_t;\ntypedef int64_t ogg_int64_t;\ntypedef uint64_t ogg_uint64_t;\n#endif\n"]]
+
+# zlib as a dependency
+[[package]]
+name = "libspng"
+domain = "image"
+version = "0.7.4"
+url = "https://github.com/randy408/libspng/archive/refs/tags/v0.7.4.tar.gz"
+license = "BSD-2-Clause"
+sources = ["spng/*.c"]  # (~113 at >= 2 levels, sandbox)
+include_dirs = ["spng"]
+defines = ["SPNG_STATIC"]
+
+[[package.depends]]
+name = "zlib"
+version = "1.3.1"
+url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz"
+license = "Zlib"
+sources = ["*.c"]
+include_dirs = ["."]
+exclude = ["example.c", "minigzip.c", "gz*.c"]
+
+# ogg and opus as dependencies, the first package to need two; HTTP off
+[[package]]
+name = "opusfile"
+domain = "audio"
+version = "0.12"
+url = "https://github.com/xiph/opusfile/archive/refs/tags/v0.12.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c"]  # (~102 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+defines = ["OP_DISABLE_HTTP", "OP_DISABLE_FLOAT_API=0"]
+exclude = ["wincerts.c", "http.c"]
+
+[[package.depends]]
+name = "ogg"
+version = "1.3.6"
+url = "https://github.com/xiph/ogg/archive/refs/tags/v1.3.6.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c"]
+include_dirs = ["include"]
+create = [["include/ogg/config_types.h", "#ifndef __CONFIG_TYPES_H__\n#define __CONFIG_TYPES_H__\n#include <stdint.h>\ntypedef int16_t ogg_int16_t;\ntypedef uint16_t ogg_uint16_t;\ntypedef int32_t ogg_int32_t;\ntypedef uint32_t ogg_uint32_t;\ntypedef int64_t ogg_int64_t;\ntypedef uint64_t ogg_uint64_t;\n#endif\n"]]
+
+[[package.depends]]
+name = "opus"
+version = "1.5.2"
+url = "https://github.com/xiph/opus/archive/refs/tags/v1.5.2.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c", "celt/*.c", "silk/*.c", "silk/float/*.c"]
+include_dirs = ["include", "celt", "silk", "silk/float", "."]
+defines = ["OPUS_BUILD", "USE_ALLOCA", "HAVE_LRINTF"]
+exclude = ["opus_demo.c", "repacketizer_demo.c", "opus_compare.c", "*_demo.c", "tests/*.c"]
+
+# the Windows backend; the descriptor reconstructor is included by hid.c
+# rather than compiled on its own
+[[package]]
+name = "hidapi"
+domain = "systems"
+version = "0.15.0"
+url = "https://github.com/libusb/hidapi/archive/refs/tags/hidapi-0.15.0.tar.gz"
+license = "BSD-3-Clause"
+sources = ["windows/*.c"]  # (~45 at >= 2 levels, sandbox)
+include_dirs = ["hidapi", "windows"]
+libs = ["setupapi", "advapi32"]
+exclude = ["hidapi_descriptor_reconstruct.c", "hidtest.c"]
+
+[[package]]
+name = "imath"
+domain = "math"
+version = "1.35"
+url = "https://github.com/creachadair/imath/archive/refs/tags/v1.35.tar.gz"
+license = "MIT"
+sources = ["*.c"]  # (~190 at >= 2 levels, sandbox)
+include_dirs = ["."]
+exclude = ["imtest.c", "imdrover.c", "rsamath.c", "pi.c", "bench.c", "*test*.c"]
+
+# its bundled entropy coder and xxhash, which the compressor calls
+[[package]]
+name = "lizard"
+domain = "compression"
+version = "2.1"
+url = "https://github.com/inikep/lizard/archive/refs/tags/v2.1.tar.gz"
+license = "BSD-2-Clause"
+sources = ["lib/*.c", "lib/entropy/*.c", "lib/xxhash/*.c"]  # (~195 at >= 2 levels, sandbox)
+include_dirs = ["lib", "lib/entropy", "lib/xxhash"]
+
+[[package]]
+name = "mathc"
+domain = "math"
+version = "2019.02.16"
+url = "https://github.com/ferreiradaselva/mathc/archive/refs/tags/v2019.02.16.0.tar.gz"
+license = "Zlib"
+sources = ["mathc.c"]  # (~796 at >= 2 levels, sandbox)
+include_dirs = ["."]
+
+[[package]]
+name = "plutovg"
+domain = "image"
+version = "1.3.3"
+url = "https://github.com/sammycage/plutovg/archive/refs/tags/v1.3.3.tar.gz"
+license = "MIT"
+sources = ["source/*.c"]  # (~452 at >= 2 levels, sandbox)
+include_dirs = ["include", "source"]
+defines = ["PLUTOVG_BUILD_STATIC"]
+
+[[package]]
+name = "binn"
+domain = "data-format"
+version = "3.0"
+url = "https://github.com/liteserver/binn/archive/refs/tags/v3.0.tar.gz"
+license = "Apache-2.0"
+sources = ["src/*.c"]  # (~147 at >= 2 levels, sandbox)
+include_dirs = ["src", "."]
+
+# RHASH_XVERSION is normally set by the build system
+[[package]]
+name = "rhash"
+domain = "crypto"
+version = "1.4.6"
+url = "https://github.com/rhash/RHash/archive/refs/tags/v1.4.6.tar.gz"
+license = "MIT"
+sources = ["librhash/*.c"]  # (~206 at >= 2 levels, sandbox)
+include_dirs = ["librhash", "."]
+defines = ["NO_IMPORT_EXPORT", "RHASH_XVERSION=0x01040600"]
+
+[[package]]
+name = "wepoll"
+domain = "systems"
+version = "1.5.8"
+url = "https://github.com/piscisaureus/wepoll/archive/refs/tags/v1.5.8.tar.gz"
+license = "BSD-2-Clause"
+sources = ["wepoll.c"]  # (~27 at >= 2 levels, sandbox)
+include_dirs = ["."]
+libs = ["ws2_32"]
+
+[[package]]
+name = "tinycthread"
+domain = "systems"
+version = "1.1"
+url = "https://github.com/tinycthread/tinycthread/archive/refs/tags/v1.1.tar.gz"
+license = "Zlib"
+sources = ["source/*.c"]  # (~27 at >= 2 levels, sandbox)
+include_dirs = ["source"]
+
+# the winsock backend; poller.c is the POSIX poll loop and Windows uses
+# IOCP instead, which is why its own build leaves that file out
+[[package]]
+name = "nanomsg"
+domain = "networking"
+version = "1.2.5"
+url = "https://github.com/nanomsg/nanomsg/archive/refs/tags/1.2.5.tar.gz"
+license = "MIT"
+sources = ["src/*.c", "src/core/*.c", "src/aio/*.c", "src/utils/*.c", "src/devices/*.c", "src/protocols/**/*.c", "src/transports/**/*.c"]  # (~695 at >= 2 levels, sandbox)
+include_dirs = ["src", "."]
+defines = ["NN_HAVE_WINDOWS", "NN_USE_WINSOCK", "NN_USE_LITERAL_IFADDR", "NN_STATIC_LIB", "_WIN32_WINNT=0x0600"]
+libs = ["ws2_32", "mswsock", "advapi32"]
+exclude = ["poller.c", "efd_eventfd.c", "efd_pipe.c", "efd_socketpair.c"]
+
+# the WMME and WASAPI host APIs, which need no SDK beyond the Windows one
+[[package]]
+name = "portaudio"
+domain = "audio"
+version = "19.7.0"
+url = "https://github.com/PortAudio/portaudio/archive/refs/tags/v19.7.0.tar.gz"
+license = "MIT"
+sources = ["src/common/*.c", "src/os/win/*.c", "src/hostapi/wmme/*.c", "src/hostapi/wasapi/*.c", "src/hostapi/wdmks/*.c"]  # (~397 at >= 2 levels, sandbox)
+include_dirs = ["include", "src/common", "src/os/win"]
+defines = ["PA_USE_WMME=1", "PA_USE_WASAPI=1", "PA_USE_WDMKS=0", "PA_USE_DS=0", "PA_USE_ASIO=0"]
+libs = ["winmm", "ole32", "uuid", "setupapi", "advapi32"]
+
+[[package]]
+name = "wavpack"
+domain = "audio"
+version = "5.9.0"
+url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c"]  # (~195 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+
+[[package]]
+name = "sgscript"
+domain = "interpreter"
+version = "1.4.1"
+url = "https://github.com/snake5/sgscript/archive/refs/tags/1.4.1.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]  # (~776 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+exclude = ["sgs_main.c", "sgsapitest.c", "sgstest.c", "*_test.c"]
+
+[[package]]
+name = "toy"
+domain = "interpreter"
+version = "1.3.2"
+url = "https://github.com/Ratstail91/Toy/archive/refs/tags/v1.3.2.tar.gz"
+license = "Zlib"
+sources = ["source/*.c"]  # (~189 at >= 2 levels, sandbox)
+include_dirs = ["source"]
+
+# version.h is generated by its build
+[[package]]
+name = "iniparser"
+domain = "data-format"
+version = "4.3.0"
+url = "https://github.com/ndevilla/iniparser/archive/refs/tags/v4.3.0.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]  # (~33 at >= 2 levels, sandbox)
+include_dirs = ["src"]
+create = [["src/version.h", "#ifndef INIPARSER_VERSION_H\n#define INIPARSER_VERSION_H\n#define INIPARSER_VERSION \"4.3.0\"\n#define INIPARSER_MAJOR 4\n#define INIPARSER_MINOR 3\n#define INIPARSER_PATCH 0\n#endif\n"]]
+
+[[package]]
+name = "mqtt-c"
+domain = "networking"
+version = "1.1.6"
+url = "https://github.com/LiamBindle/MQTT-C/archive/refs/tags/v1.1.6.tar.gz"
+license = "MIT"
+sources = ["src/*.c"]  # (~44 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+libs = ["ws2_32"]
+
+# the AES-NI variants need an instruction set the corpus does not build for
+[[package]]
+name = "t1ha"
+domain = "crypto"
+version = "2.1.4"
+url = "https://github.com/leo-yuriev/t1ha/archive/refs/tags/v2.1.4.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c"]  # (~25 at >= 2 levels, sandbox)
+include_dirs = [".", "src"]
+defines = ["T1HA0_AESNI_AVAILABLE=0", "T1HA_USE_FAST_ONESHOT_READ=0"]
+exclude = ["*aes*.c", "*_test.c", "test*.c"]
+
+[[package]]
+name = "kdtree"
+domain = "math"
+version = "0.5.7"
+url = "https://github.com/jtsiomb/kdtree/archive/refs/tags/v0.5.7.tar.gz"
+license = "BSD-3-Clause"
+sources = ["*.c"]  # (~30 at >= 2 levels, sandbox)
+include_dirs = ["."]
+exclude = ["examples/*.c", "test*.c"]
+
+# TPL_EXPORTS, or the definitions contradict the dllimport declarations
+[[package]]
+name = "tpl"
+domain = "data-format"
+version = "1.6.1"
+url = "https://github.com/troydhanson/tpl/archive/refs/tags/v1.6.1.tar.gz"
+license = "MIT"
+sources = ["src/*.c", "src/win/*.c"]  # (~32 at >= 2 levels, sandbox)
+include_dirs = ["src", "src/win"]
+defines = ["TPL_EXPORTS"]
+
+# pthread carries clock_gettime on MinGW; without it the library does not
+# link, which is not the same as the function being unavailable
+[[package]]
+name = "hiredis"
+domain = "networking"
+version = "1.4.1"
+url = "https://github.com/redis/hiredis/archive/refs/tags/v1.4.1.tar.gz"
+license = "BSD-3-Clause"
+sources = ["*.c"]  # (~201 at >= 2 levels, sandbox)
+include_dirs = ["."]
+libs = ["ws2_32", "pthread"]
+exclude = ["test.c", "ssl.c", "*_test.c"]
+
+# a one-line Shlwapi.h forwards to windows' shlwapi.h: the same header,
+# spelled with the case a case-insensitive filesystem would accept
+[[package]]
+name = "gravity"
+domain = "interpreter"
+version = "0.9.8"
+url = "https://github.com/marcobambini/gravity/archive/refs/tags/0.9.8.tar.gz"
+license = "MIT"
+sources = ["src/compiler/*.c", "src/runtime/*.c", "src/shared/*.c", "src/utils/*.c", "src/optionals/*.c"]  # (~837 at >= 2 levels, sandbox)
+include_dirs = ["src/compiler", "src/runtime", "src/shared", "src/utils", "src/optionals", "compat"]
+libs = ["shlwapi"]
+create = [["compat/Shlwapi.h", "#include <shlwapi.h>\n"]]
+
+# CMINPACK_DLL_EXPORTS, or the declarations default to dllimport
+[[package]]
+name = "cminpack"
+domain = "math"
+version = "1.3.14"
+url = "https://github.com/devernay/cminpack/archive/refs/tags/v1.3.14.tar.gz"
+license = "BSD-3-Clause"
+sources = ["src/*.c"]  # (~25 at >= 2 levels, sandbox)
+include_dirs = ["include", "src"]
+defines = ["CMINPACK_DLL_EXPORTS"]
+exclude = ["*_test.c", "tc*.c"]
+
+[[package]]
+name = "protobuf-c"
+domain = "data-format"
+version = "1.5.2"
+url = "https://github.com/protobuf-c/protobuf-c/archive/refs/tags/v1.5.2.tar.gz"
+license = "BSD-2-Clause"
+sources = ["protobuf-c/*.c"]  # (~30 at >= 2 levels, sandbox)
+include_dirs = ["."]
+
+# the generators each carry a main()
+[[package]]
+name = "tomsfastmath"
+domain = "math"
+version = "0.13.1"
+url = "https://github.com/libtom/tomsfastmath/archive/refs/tags/v0.13.1.tar.gz"
+license = "Unlicense"
+sources = ["src/**/*.c"]  # (~69 at >= 2 levels, sandbox)
+include_dirs = ["src/headers"]
+defines = ["TFM_DESC"]
+exclude = ["*_gen.c", "*gen.c"]

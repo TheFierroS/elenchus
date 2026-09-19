@@ -486,6 +486,90 @@ the split of F10).**
   measured 38.3 minutes for 5,160 steps), so ~87 minutes a run and ~7.3
   hours for five.
 
+**Result (runs 863-868, 18-19 September, code `7c959f1`, corpus
+`ad45cb78e6f1135a`). Still climbing, and packages pay most.**
+`experiments/curve2_results.py` applied the rule unchanged:
+`verdict: more packages still help: wave 3, the thinnest domains first`.
+
+| run | seed | functions | packages | val MRR | best at | last 25% |
+|---|---|---|---|---|---|---|
+| 100% | 0 | 35,510 | 38 | **0.5942** | 8,470 | 0.0000 |
+| 100% | 1 | 35,510 | 38 | **0.5926** | 10,395 | 0.0017 |
+| identity 50% | 0 | 17,755 | 38 | 0.5530 | 6,545 | 0.0000 |
+| package 50% | 0 | 16,724 | 19 | 0.5343 | 6,160 | 0.0000 |
+| package 50% | 1 | 16,674 | 19 | 0.5350 | 6,160 | 0.0000 |
+
+- identity gain **+0.0412** (4.1 T), package gain **+0.0587** (5.9 T; seeds
+  +0.0599 and +0.0575). The package unit pays **42% more** than the identity
+  unit, the same ordering L found and by a wider margin.
+- The verdict is **not provisional**. The two full runs differ by 0.0016,
+  a sixth of T, which is also the first measurement of seed noise on this
+  corpus and close to L's 0.0014 on the old one - so T = 0.01 is still a
+  floor well above the noise. Both full runs' late gains (0.0000, 0.0017)
+  are under T / 2, so the budget held; 30 epochs was the right call, and
+  20 would not have been: run 863's best sits at 8,470 steps, above the
+  7,700 a twenty-epoch budget would have allowed.
+- Doubling the corpus did not flatten the curve. L measured an identity gain
+  of +0.0413 on 16,651 train identities; L2 measures +0.0412 on 35,510. The
+  gain per doubling is not shrinking, so "train until the curve flattens" is
+  not a stopping rule that terminates - a wave has to be sized by what the
+  ecosystem holds, not by the curve.
+- One run was lost: the machine restarted overnight and cut run 866
+  (package 50%, seed 1) part way. It was closed as `failed` and repeated
+  from the start as run 867; nothing resumed from a half-finished state.
+
+### F11 — Wave 3: what the ecosystem actually holds
+
+L2 said variety, so wave 3 was chosen by package count rather than size, and
+the acceptance threshold dropped from ~80 identities to 25 - decided before
+the scan resumed, on the grounds that the unit the curve rewards is the
+package and that below ~25 a package lands in one split and measures
+nothing. 48 packages were added, ~17,800 identities: 88 packages to **136**
+(1.55x). `media` and `systems` were split into image/audio and
+systems/networking, which adds no packages but makes the stratified split
+keep unlike code apart.
+
+About 120 candidates were tried. What stopped the rest, in order of
+frequency: **POSIX headers** MinGW does not have (`termios.h`,
+`sys/select.h`, `poll.h`, `regex.h`, `dlfcn.h`, `sys/wait.h`) - 17
+packages; **generated sources or absent submodules** (bison and flex output,
+`qdldl`, AMD, snowball's stemmer compiler) - 9; **too small** for even the
+lowered threshold - 9; **licence** - 4; **header case** on a case-sensitive
+filesystem - 5, of which several were recovered.
+
+Two of those recoveries were corrections of our own mistakes, recorded
+because both were wrong for the same reason - treating a build-environment
+gap as a property of the library:
+
+- hiredis was rejected as needing `clock_gettime`, which msvcrt lacks. MinGW
+  has it in winpthreads: the entry needed `pthread` in `libs`, nothing more.
+- Libraries that write `#include <Windows.h>` were rejected as unbuildable.
+  A one-line forwarding header with the capitalisation a case-insensitive
+  filesystem would accept is the same header, not a substitute. This is not
+  the same as the `regex.h` bridge that was refused for `file`: that one
+  would have given the library a different regular-expression engine, which
+  changes what the binary does.
+
+The two together were 1,038 identities, including gravity at 837.
+
+**binary-analysis stays at three.** capstone, yara and zydis are the only
+disassemblers or scanners in C under a permissive licence with a release
+tag; everything else is C++ (LIEF, pe-parse, Detours, keystone), GPL
+(radare2, binutils, elfutils), or generates its tables at build time
+(udis86, XED). Three is the least a stratified split can place in all three
+parts, so the domain holds, but it will not grow without changing one of
+those constraints.
+
+**What is missing, and it is not size.** Every binary in this corpus is
+built by MinGW GCC. Most Windows executables an analyst meets are built by
+MSVC, which writes recognisably different code - `/GS` stack cookies,
+different prologue idioms, SEH tables, its own runtime calls. A model
+trained only on GCC output may transfer poorly to them, and no amount of
+extra GCC-built packages tests that. MSVC also writes PDB rather than DWARF,
+so ground truth would need a second reader. The cheap version of the
+question comes first: build a handful of packages with MSVC and score the
+existing model on them.
+
 ---
 
 ## Open questions (not experiments, but unexplained)

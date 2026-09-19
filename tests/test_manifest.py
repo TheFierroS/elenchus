@@ -162,17 +162,35 @@ def test_the_shipped_manifest_stays_varied():
         assert expected in names_, f"{expected} was added in wave 2"
 
 
+def test_the_wave_3_packages_that_carry_a_domain_are_there():
+    """Wave 3 was chosen for variety, not size (docs/experiments.md, L2): the
+    package unit paid 5.9 T where the identity unit paid 4.1 T. These carry
+    the domains that were thinnest, so losing one silently would undo it."""
+    names_ = {p.name for p in load_manifest(MANIFEST)}
+
+    for expected in ("leptonica", "jerryscript", "nats-c", "libevent", "gravity",
+                     "mathc", "sgscript", "nanomsg", "libmdbx", "superlu",
+                     "portaudio", "speex", "plutovg", "rhash", "imath", "toy",
+                     "umka-lang", "hiredis", "glfw", "libharu", "libxlsxwriter"):
+        assert expected in names_, f"{expected} was added in wave 3"
+
+
 def test_wave_2_did_not_leave_any_domain_thin():
     """After wave 2 the two thinnest domains in train had at least 15 packages."""
     from collections import Counter
 
     counts = Counter(p.domain for p in load_manifest(MANIFEST))
     assert counts["text"] >= 15 and counts["data-format"] >= 15, counts
-    assert counts["media"] >= 6 and counts["math"] >= 3, counts
+    assert counts["math"] >= 3, counts
     # binary-analysis is the corpus's own subject matter: disassemblers and
     # scanners. It opened with exactly three, which is the least a stratified
-    # split can place in all three parts.
+    # split can place in all three parts, and three is where it stayed: every
+    # other such library in C is either GPL or C++ (docs/experiments.md, F11).
     assert counts["binary-analysis"] >= 3, counts
+    # Wave 3 split media and systems, which had grown to hold unlike things.
+    # Each half has to stand on its own.
+    for half in ("image", "audio", "networking", "systems"):
+        assert counts[half] >= 6, counts
 
 
 def test_every_package_has_a_known_domain_and_every_domain_can_fill_three_splits():
@@ -265,8 +283,11 @@ def test_the_packages_that_need_another_library_name_it():
     depends = {p.name: [d.name for d in p.depends] for p in load_manifest(MANIFEST)
                if p.depends}
 
-    assert depends == {"minizip-ng": ["zlib"], "libpng": ["zlib"],
-                       "vorbis": ["ogg"], "zydis": ["zycore"]}
+    assert depends == {
+        "minizip-ng": ["zlib"], "libpng": ["zlib"], "vorbis": ["ogg"],
+        "zydis": ["zycore"], "libxlsxwriter": ["zlib"], "nats-c": ["protobuf-c"],
+        "usockets": ["libuv"], "libcyaml": ["libyaml"], "speex": ["ogg"],
+        "libspng": ["zlib"], "opusfile": ["ogg", "opus"]}
 
 
 def test_a_dependency_is_compiled_with_the_package(tmp_path, monkeypatch):
