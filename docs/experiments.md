@@ -980,17 +980,85 @@ its own domain - and an exception written by hand would end that.
   between epochs: run 509 (42 steps, P = 0.5, 25% of train) scored 0.097
   over queries and 0.127 over packages; run 501 had 0.131 over queries.
 
+### L3 — not run, and why
+
+L2's rule said a gain above 2 T means wave 3 before full training. Wave 3
+was built. Nothing in the rule asks for an L3 after it, and one was not
+run. The reason is written here rather than left as a silence:
+
+Every branch of an L3 leads to the same action. The gain per doubling has
+not shrunk across two measurements (+0.0413 in L, +0.0412 in L2), so "still
+climbing" is the expected verdict and wave 3 is not even a doubling - 1.41x
+in pairable train identities. And "still climbing" would call for a wave 4,
+which F11 measured to be out of reach: about 120 candidates were tried and
+what remains is POSIX-only, C++, GPL, or generated at build time. A wave 4
+needs a different target (MSVC, ELF), which is v2's question, not v1's.
+
+An experiment whose branches all end in the same action is a record, not a
+decision, and this one costs ten to twelve hours of GPU time. The same time
+answers a question that is open: whether 3.6M parameters is the limit.
+
+**The last measurement of the data curve is therefore L2**, taken on an
+88-package corpus. The corpus trained on below is 136 packages, and no
+curve was measured on it.
+
 ## Full training (B2-B6) - protocol
 
-Written 16 September, before any full run. Run by `experiments/run_full.sh`
-(which refuses to start with uncommitted changes, with another training run
-on the GPU, if `elenchus check` fails, or without the level-pair setting
-given explicitly), read by `experiments/full_results.py`.
+Written 16 September, before any full run, and **rewritten 20 September**,
+before any full run, for the wave 3 corpus: the budget the open note below
+asked for, two seeds instead of three, and the size comparison staged so
+each stage decides whether the next is worth its hours. Run by
+`experiments/run_full.sh` (which refuses to start with uncommitted changes,
+with another training run on the GPU, if `elenchus check` fails, or without
+the level-pair setting given explicitly), read by
+`experiments/full_results.py`.
 
-- **B2:** MLM, seed 0, `--epochs 20 --patience 3`, kept at `best.pt`.
-- **B3:** contrastive from B2's `best.pt`, seeds 0, 1, 2, same limits, with
-  the level-pair sampling E3 chose.
-- **B4:** the same from random weights, seeds 0, 1, 2.
+**The budget, one for every run being compared:** 16,290 steps - 30 epochs
+of 543 on this corpus - the learning rate decaying over all of it,
+validation every 543 steps, **no early stopping**, read at `best.pt`. L
+found that a run stopped on patience measures the stopping rule rather than
+the thing under test, and L2's full runs peaked at 73% and 90% of a 30-epoch
+budget with 0.0000 and 0.0017 gained in the last quarter - so 30 epochs
+holds, and it is 41% more steps than L2 had because the corpus is larger.
+Extending it is not a free improvement: `best.pt` already discards the
+epochs after the peak, and a different budget is a different learning-rate
+schedule, so a longer run is not a shorter run continued.
+
+**Stage 1 - is MLM worth an hour a run? (3.6M, ~11 hours)**
+
+- **B2:** MLM, seed 0, the budget above, kept at `best.pt`.
+- **B3:** contrastive from B2's `best.pt`, seeds 0 and 1, with the
+  level-pair sampling E3 chose (uniform).
+- **B4:** the same from random weights, seeds 0 and 1.
+
+Two seeds, not three: L2 measured the seed spread at 0.0016 on this
+architecture, a sixth of the threshold it was read against, and the third
+seed costs two hours to narrow an interval that is already narrow. The
+spread the two seeds do show is what the margin is built from, so a wide
+spread still widens the margin and still refuses a close call.
+
+**Stage 2 - does size help? (~14 hours)**
+
+The winning recipe from stage 1, at 11M (d_model 384, 6 layers, 6 heads,
+d_ff 1536) and 15M (the same, 8 layers), both with
+`--checkpoint-activations`, which B5 measured to fit and to change no loss.
+Seed 0 only, compared against stage 1's seed 0: same corpus, same budget,
+same recipe, one variable.
+
+- Larger size ahead by more than the margin: it is the candidate for v1.
+- Within the margin: **3.6M is v1.** A model three times the size that
+  cannot be told apart is a worse thing to ship - slower, and needing
+  activation checkpointing to fit at all.
+- 15M is run only if 11M is ahead of 3.6M. If the first step up does
+  nothing, the second is not worth eight hours.
+
+**Stage 3 - only if a size wins (~6-8 hours)**
+
+A second seed at the winning size, to show the win is larger than that
+size's own seed spread. If it is not, v1 is 3.6M.
+
+**Sizes are not mixed into the MLM decision.** Stage 1 is read at 3.6M
+alone; stage 2 asks a different question and is read on its own.
 - **Seed noise at full scale:** S = the larger of B3's and B4's max-min val
   MRR over seeds. This replaces F5's 50-step floor as the noise later
   experiments are read against.
@@ -1000,16 +1068,20 @@ given explicitly), read by `experiments/full_results.py`.
   - Mean B4 − mean B3 > margin: **MLM hurts:** drop it, and E1/E2 with it.
   - Otherwise, **no measured difference:** drop it too - an hour of
     pre-training per iteration is kept only for a measured gain.
-- **Also reported, not decided on:** runs whose best epoch was the last
-  (still improving when stopped: if most are, 20 epochs is too few, and the
-  runs are extended before B5); runs where the package mean would have kept
-  another epoch; runs above the val bar (MRR 0.124, recall@10 0.189).
+- **Budget check**, as in L: if any run's best beats its own best up to 75%
+  of the budget by more than margin / 2, it was still climbing when the
+  budget ended, and a "no measured difference" read off such runs is the
+  budget talking - the verdict is provisional and the pair repeats at twice
+  the budget. A difference wider than the margin stands either way.
+- **Also reported, not decided on:** runs whose best epoch was the last;
+  runs where the package mean would have kept another epoch; runs above the
+  val bar, which on this corpus is import-jaccard at **MRR 0.076** and
+  bm25-mnemonic at **recall@10 0.115** (4,748 queries, 4,959 pool).
 - **B6:** `elenchus baselines --split val --encoder <best of B3/B4>`, both
   means, recorded.
-- *Open (17 September), before any full run:* the same early-stopping fault
-  found in L applies here (`--epochs 20 --patience 3` stops while the rate
-  is still high). The B budget is rewritten, before B2, from the 100% runs'
-  validation curves in L.
+- *Closed (20 September):* the open note asked for the budget to be
+  rewritten from L's validation curves before B2. It was, above, from L2's:
+  16,290 steps, no early stopping.
 
 ### B5 - model size, memory first
 

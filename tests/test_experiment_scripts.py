@@ -117,12 +117,33 @@ def test_full_runs_every_step_in_order_on_a_clean_tree(repo, fakes):
     assert calls[0] == "check"
     assert [out_of(c) for c in trained] == (
         ["models/b2-mlm"]
-        + [f"models/b3-con-mlm-seed-{s}" for s in (0, 1, 2)]
-        + [f"models/b4-con-random-seed-{s}" for s in (0, 1, 2)])
+        + [f"models/b3-con-mlm-seed-{s}" for s in (0, 1)]
+        + [f"models/b4-con-random-seed-{s}" for s in (0, 1)])
     assert trained[0].startswith("train mlm ")
     assert all("--eval-pair-share" not in c for c in trained)
-    assert all("--init models/b2-mlm/best.pt" in c for c in trained[1:4])
-    assert all("--init" not in c for c in trained[4:])
+    assert all("--init models/b2-mlm/best.pt" in c for c in trained[1:3])
+    assert all("--init" not in c for c in trained[3:])
+    # One fixed budget, no early stopping: a run stopped on patience measures
+    # the stopping rule (docs/experiments.md, L amendment).
+    assert all("--max-steps 16290 --eval-every 543" in c for c in trained)
+    assert all("--patience 100000" in c for c in trained)
+
+
+def test_full_keeps_the_sizes_apart_and_shapes_the_model(repo, fakes):
+    """Stage 2 trains the same recipe at another size; the runs must not
+    overwrite stage 1's, and the shape flags go to every run including MLM."""
+    done, _, trained = run_script(repo, fakes, "run_full.sh", SHARE="none",
+                                  SEEDS="0", SIZE="11m", D_MODEL="384",
+                                  LAYERS="6", HEADS="6", D_FF="1536",
+                                  CHECKPOINT="1")
+    assert done.returncode == 0, done.stdout
+    assert [out_of(c) for c in trained] == [
+        "models/b2-mlm-11m", "models/b3-con-mlm-11m-seed-0",
+        "models/b4-con-random-11m-seed-0"]
+    assert all("--d-model 384 --layers 6 --heads 6 --d-ff 1536" in c
+               for c in trained)
+    assert all("--checkpoint-activations" in c for c in trained)
+    assert "--init models/b2-mlm-11m/best.pt" in trained[1]
 
 
 @pytest.mark.parametrize("share", [None, "", "0.3", "uniform"])
@@ -259,7 +280,7 @@ def test_refuses_a_repository_with_no_commit(repo, fakes, script, env):
 
 
 FIRST_RUNS = [
-    ("run_full.sh", {"SHARE": "none"}, "models/b2-mlm", 6),
+    ("run_full.sh", {"SHARE": "none"}, "models/b2-mlm", 4),
     ("run_e3.sh", {}, "models/e3-share-none-seed-0", 7),
     ("run_curve.sh", {"SHARE": "none"}, "models/curve-full-seed-0", 7),
     ("b5_memory.sh", {}, "models/b5-ref", 7),   # b5 measures again, skips nothing

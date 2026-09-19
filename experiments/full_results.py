@@ -25,8 +25,10 @@ import sys
 from pathlib import Path
 from statistics import fmean
 
-SEEDS = (0, 1, 2)
-BAR = {"mrr": 0.124, "recall@10": 0.189}   # val baselines: import-jaccard, bm25
+SEEDS = (0, 1)
+BAR = {"mrr": 0.076, "recall@10": 0.115}   # val baselines on the wave 3 corpus
+STEPS = 16290                              # the budget every run is given
+LATE = 0.75                                # the budget check reads the last 25%
 
 
 def load(path):
@@ -44,6 +46,11 @@ def contrastive_row(summary):
         "best_epoch": summary["best_epoch"], "epochs": len(trained),
         "by_package_epoch": summary.get("best_epoch_by_package_mrr"),
         "improving_at_end": summary["best_epoch"] == trained[-1]["epoch"],
+        "best_step": next(h["step"] for h in trained
+                          if h["epoch"] == summary["best_epoch"]),
+        "late_gain": (max(h["mrr"] for h in trained)
+                      - max(h["mrr"] for h in trained
+                            if h["step"] <= LATE * STEPS)),
         "peak_gib": summary.get("peak_reserved_gib"),
     }
 
@@ -75,8 +82,15 @@ def verdict(groups):
     else:
         result = "no measured difference: drop MLM, and E1/E2 with it"
     complete = len(b3) == len(b4) == len(SEEDS)
+    # The budget check from L: a run whose best beats its best by three
+    # quarters of the budget by more than margin / 2 was still climbing, and
+    # a "no measured difference" read off runs like that is the budget
+    # talking. A difference larger than the margin stands either way.
+    climbing = [r for r in b3 + b4 if r["late_gain"] > margin / 2]
+    provisional = not complete or (bool(climbing) and abs(gain) <= margin)
     return {"spread": spread, "margin": margin, "gain": gain,
-            "package_gain": package_gain, "result": result, "complete": complete}
+            "package_gain": package_gain, "result": result, "complete": complete,
+            "climbing": len(climbing), "provisional": provisional}
 
 
 def show(mlm, groups):
@@ -119,8 +133,9 @@ def show(mlm, groups):
         return
     print(f"\nseed spread S = {v['spread']:.4f}   margin = {v['margin']:.4f}")
     print(f"B3 - B4: MRR {v['gain']:+.4f}   package MRR {v['package_gain']:+.4f}")
+    print(f"still climbing at the end of the budget: {v['climbing']} run(s)")
     print(f"verdict: {v['result']}"
-          f"{'' if v['complete'] else '   (PROVISIONAL: not all seeds finished)'}")
+          f"{'   (PROVISIONAL)' if v['provisional'] else ''}")
 
 
 def main():

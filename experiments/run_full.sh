@@ -1,9 +1,20 @@
 #!/bin/sh
 # Full training, B2-B4. Protocol in docs/experiments.md ("Full training").
 #
-#   B2  MLM pre-training, seed 0, early stopping          models/b2-mlm
-#   B3  contrastive from B2's best.pt, seeds 0 1 2        models/b3-con-mlm-seed-N
-#   B4  contrastive from random weights, seeds 0 1 2      models/b4-con-random-seed-N
+#   B2  MLM pre-training, seed 0                          models/b2-mlm
+#   B3  contrastive from B2's best.pt, seeds 0 1           models/b3-con-mlm-seed-N
+#   B4  contrastive from random weights, seeds 0 1         models/b4-con-random-seed-N
+#
+# One fixed budget for every run, no early stopping, read at best.pt: L2
+# showed a run stopped on patience is measuring the stopping rule, not the
+# thing under test. STEPS and EVERY come from the corpus (30 epochs of the
+# train split); they must be the same for every run being compared.
+#
+# SIZE names a model size for stage 2 and is part of the output directory,
+# so 3.6M and 11M runs do not overwrite each other:
+#
+#   SIZE=11m  D_MODEL=384 LAYERS=6 HEADS=6 D_FF=1536 CHECKPOINT=1
+#   SIZE=15m  D_MODEL=384 LAYERS=8 HEADS=6 D_FF=1536 CHECKPOINT=1
 #
 # SHARE must be given: the eval-pair-share E3 chose ("none" for uniform).
 # Runs whose summary.json exists are skipped, so the script can be started
@@ -17,9 +28,25 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTHONUNBUFFERED=1
 ELENCHUS="${ELENCHUS:-elenchus}"
-SEEDS="${SEEDS:-0 1 2}"
-EPOCHS="${EPOCHS:-20}"
-PATIENCE="${PATIENCE:-3}"
+SEEDS="${SEEDS:-0 1}"
+STEPS="${STEPS:-16290}"          # 30 epochs of 543 steps on the wave 3 corpus
+EVERY="${EVERY:-543}"            # one validation an epoch
+SIZE="${SIZE:-}"                 # "" is the 3.6M default; else part of the name
+D_MODEL="${D_MODEL:-}"
+LAYERS="${LAYERS:-}"
+HEADS="${HEADS:-}"
+D_FF="${D_FF:-}"
+CHECKPOINT="${CHECKPOINT:-}"
+
+budget="--max-steps $STEPS --eval-every $EVERY --epochs 100000 --patience 100000"
+shape=""
+[ -n "$D_MODEL" ] && shape="$shape --d-model $D_MODEL"
+[ -n "$LAYERS" ] && shape="$shape --layers $LAYERS"
+[ -n "$HEADS" ] && shape="$shape --heads $HEADS"
+[ -n "$D_FF" ] && shape="$shape --d-ff $D_FF"
+[ -n "$CHECKPOINT" ] && shape="$shape --checkpoint-activations"
+suffix=""
+[ -n "$SIZE" ] && suffix="-$SIZE"
 
 . experiments/guard.sh     # refuse, guard_start, guard_before_run
 
@@ -51,24 +78,25 @@ run() {  # run <out> <log> <args...>
   return $code
 }
 
-echo "=== full training: SHARE=$SHARE SEEDS='$SEEDS' EPOCHS=$EPOCHS PATIENCE=$PATIENCE"
+echo "=== full training: SHARE=$SHARE SEEDS='$SEEDS' STEPS=$STEPS EVERY=$EVERY SIZE='${SIZE:-3.6m}'"
 echo "=== commit $(git rev-parse --short HEAD)"
 
-run models/b2-mlm data/full-b2-mlm.log mlm \
-    --seed 0 --epochs "$EPOCHS" --patience "$PATIENCE" \
+# shellcheck disable=SC2086
+run "models/b2-mlm$suffix" "data/full-b2-mlm$suffix.log" mlm \
+    --seed 0 $budget $shape \
   || refuse "B2 (MLM) failed; B3 needs its checkpoint"
 
 for seed in $SEEDS; do
   # shellcheck disable=SC2086
-  run "models/b3-con-mlm-seed-$seed" "data/full-b3-seed-$seed.log" contrastive \
-      --init models/b2-mlm/best.pt --seed "$seed" \
-      --epochs "$EPOCHS" --patience "$PATIENCE" $share_flag
+  run "models/b3-con-mlm$suffix-seed-$seed" "data/full-b3$suffix-seed-$seed.log" \
+      contrastive --init "models/b2-mlm$suffix/best.pt" --seed "$seed" \
+      $budget $shape $share_flag
 done
 
 for seed in $SEEDS; do
   # shellcheck disable=SC2086
-  run "models/b4-con-random-seed-$seed" "data/full-b4-seed-$seed.log" contrastive \
-      --seed "$seed" --epochs "$EPOCHS" --patience "$PATIENCE" $share_flag
+  run "models/b4-con-random$suffix-seed-$seed" "data/full-b4$suffix-seed-$seed.log" \
+      contrastive --seed "$seed" $budget $shape $share_flag
 done
 
 echo "=== all done $(date '+%H:%M:%S')"
