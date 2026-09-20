@@ -1083,6 +1083,59 @@ alone; stage 2 asks a different question and is read on its own.
   rewritten from L's validation curves before B2. It was, above, from L2's:
   16,290 steps, no early stopping.
 
+**Result, stage 1 (runs 1287-1291, 20 September, code `a0a562b`, corpus
+`69b6d888c94c2175`). MLM helps: keep it.** `experiments/full_results.py`
+applied the rule unchanged: `verdict: MLM helps: keep it`.
+
+| group | seed | start MRR | val MRR | package MRR | recall@10 | best epoch |
+|---|---|---|---|---|---|---|
+| B3, from MLM | 0 | 0.043 | **0.659** | 0.651 | 0.799 | 20 / 30 |
+| B3, from MLM | 1 | 0.043 | **0.658** | 0.644 | 0.796 | 20 / 30 |
+| B4, from random | 0 | 0.011 | 0.533 | 0.521 | 0.681 | 27 / 30 |
+| B4, from random | 1 | 0.015 | 0.520 | 0.497 | 0.676 | 21 / 30 |
+
+- Gain **+0.1320** on the query mean and **+0.1385** on the package mean,
+  against a margin of 0.0125 - **ten times the margin**, and the two means
+  agree. All four runs are above the val bar; recall@10 goes from 0.681 to
+  0.799, so the share of queries whose answer reaches the verifier's list of
+  ten rises from about two thirds to four fifths.
+- **The budget held.** No run's best beat its own best by three quarters of
+  the budget by more than margin / 2, and the latest peak was epoch 27 of
+  30. Thirty epochs was enough for all four; the 41% more steps than L2 had
+  were not needed but cost nothing, since `best.pt` discards what comes
+  after the peak.
+- **MLM also makes the result repeatable, which was not the question.** The
+  two runs started from MLM differ by 0.001; the two started from random
+  weights differ by 0.0125, ten times as much. The margin is built from the
+  wider of the two, so this is where 0.0125 came from. A second, smaller
+  benefit than the gain itself, and the reason the earlier reading of "the
+  seeds agree to 0.001" was too generous: it was true of B3 only.
+- **Reported, not decided on:** B2's MLM loss was still falling at the last
+  epoch (6.1333 to 0.3919), so a longer pre-training budget might hand
+  contrastive a better starting point - open for v2. The package mean would
+  have kept a later epoch in three of the four runs.
+
+### Q3 — the third axis was never measured
+
+L and L2 measured two ways of growing the corpus: more **functions**
+(identity) and more **packages**. There is a third, and it was not in
+either design: **more views of the same function.** Every identity has at
+most four here (`-O0` to `-O3`). Adding `-Os`, `-Og` or LTO would make six
+or seven, and training pairs grow with the square of the views - four give
+six pairs, six give fifteen.
+
+Its cost is not a candidate hunt but a rebuild: the manifest already holds
+136 packages. Wave 3 spent three days finding 48 new ones because L2 said
+packages pay more than identities; it never asked what views pay, because
+the experiment had two arms and both were mine to choose. The design that
+would have answered it is L2 with a third arm: identity 50%, package 50%,
+**levels 50%** - half of each identity's views dropped.
+
+A cheap first reading is available on this corpus: restrict training to
+`-O0` and `-O3` and run once (~2 hours). If the slope is steep, wave 4 is a
+night of recompiling rather than a week of searching - and MSVC is the same
+axis, at its expensive end.
+
 ### B5 - model size, memory first
 
 The ~11M configuration (d_model 384, 6 layers, 6 heads, d_ff 1536) reserved

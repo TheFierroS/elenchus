@@ -24,7 +24,9 @@ from elenchus.corpus.dataset import (
     leakage,
     load_splits,
     package_sizes,
+    report,
     store_splits,
+    vendored_copies,
 )
 
 CRT = "/usr/src/mingw-w64-13.0.0/mingw-w64-crt/crt/pesect.c"
@@ -357,8 +359,6 @@ def test_a_package_carrying_a_copy_of_another_is_reported(db):
     """c-blosc shipped lz4's sources, and the dedup then dropped those
     functions from the lz4 package too. The check exists so the next one
     is noticed while the manifest entry is being written."""
-    from elenchus.check import check_vendored_copies
-
     blosc = add_binary(db, "c-blosc")
     lz4 = add_binary(db, "lz4")
     for i in range(60):
@@ -366,13 +366,11 @@ def test_a_package_carrying_a_copy_of_another_is_reported(db):
         add_function(db, blosc, 0x1000 + i, f"LZ4_f{i}", "/blosc/lz4.c", code)
         add_function(db, lz4, 0x2000 + i, f"LZ4_f{i}", "/lz4/lz4.c", code)
 
-    assert check_vendored_copies(db) == [("c-blosc", "lz4", 60)]
+    assert vendored_copies(candidate_rows(db)) == [("c-blosc", "lz4", 60)]
 
 
 def test_a_few_shared_forms_are_not_a_copy(db):
     """Every library has a one-line wrapper, and they all look alike."""
-    from elenchus.check import check_vendored_copies
-
     one = add_binary(db, "cjson")
     two = add_binary(db, "parson")
     for i in range(6):
@@ -380,18 +378,33 @@ def test_a_few_shared_forms_are_not_a_copy(db):
         add_function(db, one, 0x1000 + i, f"a{i}", "/cjson/cjson.c", code)
         add_function(db, two, 0x2000 + i, f"b{i}", "/parson/parson.c", code)
 
-    assert check_vendored_copies(db) == []
+    assert vendored_copies(candidate_rows(db)) == []
 
 
 def test_a_form_shared_by_many_packages_is_generic(db):
     """The widest form in the corpus is in 54 packages; that is a pattern,
     not a copy, and it must not make every pair of them look vendored."""
-    from elenchus.check import check_vendored_copies
-
     binaries = [add_binary(db, f"p{p}") for p in range(4)]
     for i in range(60):
         code = listing(12 + i)
         for p, binary in enumerate(binaries):
             add_function(db, binary, 0x1000 * (p + 1) + i, f"f{i}", f"/p{p}/x.c", code)
 
-    assert check_vendored_copies(db) == []
+    assert vendored_copies(candidate_rows(db)) == []
+
+
+def test_the_report_names_the_vendored_copies_it_found(db):
+    """It belongs in the dataset report, not in elenchus check: it hashes
+    every listing, which takes minutes, and only changes when packages are
+    added."""
+    blosc = add_binary(db, "c-blosc")
+    lz4 = add_binary(db, "lz4")
+    for i in range(60):
+        code = listing(12 + i)
+        add_function(db, blosc, 0x1000 + i, f"LZ4_f{i}", "/blosc/lz4.c", code)
+        add_function(db, lz4, 0x2000 + i, f"LZ4_f{i}", "/lz4/lz4.c", code)
+
+    lines = report(db, {"c-blosc": "train", "lz4": "test"})
+
+    assert any("vendored copy: c-blosc and lz4 share 60" in line for line in lines)
+    assert any("(train/test)" in line for line in lines)

@@ -28,7 +28,8 @@ more than one split, and reports what it finds.
 
 import functools
 import hashlib
-from collections import defaultdict
+from collections import Counter, defaultdict
+from itertools import combinations
 
 from elenchus.corpus.build import DEPENDENCY_DIR
 from elenchus.encoder.normalise import normalise
@@ -423,6 +424,38 @@ def leakage(conn, assignment=None, rows=None):
     return cross_split_collisions(eligible_rows(conn, rows), assignment)
 
 
+def vendored_copies(rows, floor=50):
+    """Return package pairs that share more than `floor` normalised forms.
+
+    C libraries carry copies of each other: c-blosc shipped lz4, tinyspline
+    shipped parson, plutovg ships stb's headers. When both the copy and the
+    original are packages here, the content dedup drops those functions from
+    both - so adding a package can empty out one that was already in the
+    corpus. lz4 lost 45% of its rows that way, and it is a test package.
+
+    A handful of shared forms is ordinary: a one-line wrapper looks the same
+    everywhere, and the widest form in this corpus is shared by 54 packages,
+    which is why only forms in three packages or fewer are counted. Hundreds
+    between two packages is a copy.
+
+    Reported by the dataset command rather than by `elenchus check`: it
+    hashes every listing, which takes minutes on this corpus, and the answer
+    only changes when packages are added.
+    """
+    packages = defaultdict(set)
+    for row in rows:
+        packages[content_key(row["listing"])].add(row["package"])
+
+    shared = Counter()
+    for seen in packages.values():
+        if 1 < len(seen) <= 3:
+            for pair in combinations(sorted(seen), 2):
+                shared[pair] += 1
+
+    return [(a, b, n) for (a, b), n in sorted(shared.items(), key=lambda kv: -kv[1])
+            if n > floor]
+
+
 def report(conn, assignment, rows=None):
     """Return the lines summarising a dataset: what was dropped and why."""
     all_rows = conn.execute(
@@ -463,6 +496,12 @@ def report(conn, assignment, rows=None):
         f"  collisions prevented by dedup: {len(prevented)} "
         f"normalised forms spanning splits"
     )
+
+    for a, b, shared in vendored_copies(candidates):
+        lines.append(
+            f"  vendored copy: {a} and {b} share {shared} normalised forms "
+            f"({assignment.get(a, '-')}/{assignment.get(b, '-')})"
+        )
 
     lines.append("")
     for name in SPLITS:

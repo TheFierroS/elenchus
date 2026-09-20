@@ -16,11 +16,7 @@ Every one of them below was added because it could have caught something
 that actually happened.
 """
 
-from collections import Counter, defaultdict
-from itertools import combinations
-
 from elenchus.corpus.build import OPT_LEVELS
-from elenchus.corpus.dataset import candidate_rows, content_key
 from elenchus.corpus.gaps import known_gaps
 from elenchus.entities import ENTITY_TABLES
 
@@ -280,37 +276,6 @@ def _stored_levels_by_package(conn):
     return levels
 
 
-def check_vendored_copies(conn, floor=50):
-    """Return package pairs that share more than `floor` normalised forms.
-
-    C libraries carry copies of each other: c-blosc shipped lz4, tinyspline
-    shipped parson, plutovg ships stb's headers. When both the copy and the
-    original are packages here, the content dedup drops those functions from
-    both - so adding a package can empty out one that was already in the
-    corpus. lz4 lost 45% of its rows that way, and it is a test package.
-
-    A handful of shared forms is ordinary: a one-line wrapper looks the same
-    everywhere, and the widest form here is shared by 54 packages. Hundreds
-    between two packages is a copy. The floor sits between the two.
-
-    A warning, not a failure: sometimes the copy cannot be separated
-    (plutovg includes stb as headers, lizard is a fork of lz4), and then the
-    right answer is to record it, not to stop.
-    """
-    packages = defaultdict(set)
-    for row in candidate_rows(conn):
-        packages[content_key(row["listing"])].add(row["package"])
-
-    shared = Counter()
-    for seen in packages.values():
-        if 1 < len(seen) <= 3:          # a form in many packages is generic
-            for pair in combinations(sorted(seen), 2):
-                shared[pair] += 1
-
-    return [(a, b, n) for (a, b), n in sorted(shared.items(), key=lambda kv: -kv[1])
-            if n > floor]
-
-
 def check_corpus_completeness(conn):
     """Return (package, missing levels) for packages missing a level.
 
@@ -360,8 +325,7 @@ def check_stale_gaps(conn):
 # means a process died; that is worth seeing, but it is not a broken
 # database, and failing the command over it would teach everyone to ignore
 # a red result - which would cost more than the warning is worth.
-WARNINGS = {"unfinished runs", "corpus completeness", "stale gaps",
-            "vendored copies"}
+WARNINGS = {"unfinished runs", "corpus completeness", "stale gaps"}
 
 
 def close_stale_runs(conn, older_than_minutes=60):
@@ -397,7 +361,6 @@ CHECKS = [
     ("split packages", check_split_packages),
     ("measurement runs", check_measurement_runs),
     ("corpus duplicates", check_corpus_duplicates),
-    ("vendored copies", check_vendored_copies),
     ("corpus completeness", check_corpus_completeness),
     ("stale gaps", check_stale_gaps),
 ]
