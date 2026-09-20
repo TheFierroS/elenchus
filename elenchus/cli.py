@@ -50,6 +50,7 @@ from elenchus.extract.ghidra import (
 )
 from elenchus.extract.instructions import extract_code, function_index
 from elenchus.inspect import find_functions, render, sample_functions, summarise
+from elenchus.transfer import cmd_export_training, cmd_import_runs
 
 
 def cmd_scan(args):
@@ -608,6 +609,29 @@ def build_parser():
         help="actually unregister them (otherwise only report)",
     )
     prune.set_defaults(func=cmd_prune_corpus)
+
+    export = sub.add_parser(
+        "export-training",
+        help="write a small database holding only what training reads",
+    )
+    export.add_argument(
+        "--out",
+        required=True,
+        help="path for the new database (refuses to overwrite)",
+    )
+    export.set_defaults(func=cmd_export_training)
+
+    bring = sub.add_parser(
+        "import-runs",
+        help="record the runs an exported database collected elsewhere",
+    )
+    bring.add_argument("path", help="the exported database, after it came back")
+    bring.add_argument(
+        "--apply",
+        action="store_true",
+        help="actually record them (otherwise only report)",
+    )
+    bring.set_defaults(func=cmd_import_runs)
 
     gap = sub.add_parser(
         "corpus-gap",
