@@ -124,7 +124,8 @@ def import_runs(conn, path, apply=False):
         conn.execute("DETACH DATABASE remote")
 
 
-def cmd_export_training(conn, args):
+def cmd_export_training(args):
+    conn = connect(args.db)
     counts = export_training(conn, args.out)
     size = Path(args.out).stat().st_size / (1024 ** 3)
     for table, n in counts.items():
@@ -134,7 +135,8 @@ def cmd_export_training(conn, args):
     return 0
 
 
-def cmd_import_runs(conn, args):
+def cmd_import_runs(args):
+    conn = connect(args.db)
     try:
         found = import_runs(conn, args.path, apply=args.apply)
     except (FileNotFoundError, sqlite3.Error) as exc:

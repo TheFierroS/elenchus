@@ -6,6 +6,7 @@ runs that came back. These tests build a small database, export it, write
 a run into the copy as a remote machine would, and bring it home.
 """
 
+import argparse
 import sqlite3
 
 import pytest
@@ -226,3 +227,27 @@ def test_the_schema_the_export_writes_is_the_current_one(tmp_path):
     tables = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert set(EXPORTED) <= tables
+
+
+def test_every_command_takes_the_arguments_the_cli_hands_it():
+    """main() calls args.func(args), one argument. A command written as
+    func(conn, args) parses fine, registers fine, and fails only when
+    someone runs it - which is how export-training first failed."""
+    import inspect
+
+    from elenchus import cli
+
+    parser = cli.build_parser()
+    actions = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    commands = {name: sub.get_default("func")
+                for action in actions for name, sub in action.choices.items()}
+
+    assert commands, "no subcommands found"
+    for name, func in commands.items():
+        assert func is not None, f"{name} has no func"
+        positional = [
+            p for p in inspect.signature(func).parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            and p.default is p.empty
+        ]
+        assert len(positional) == 1, f"{name}: {func.__name__}{inspect.signature(func)}"
