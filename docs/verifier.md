@@ -269,21 +269,137 @@ A smoke test on three hand-written functions says the engine runs this
 code; it says nothing about how much of a real library will run. That is
 V0.
 
+## V0 - feasibility protocol
+
+Written 22 September, before any harness code. V0 answers one question with
+a number the project does not have: **how much of a real library can the
+verifier run at all?** Everything after it - the instruction budget, which
+stubs to write first, whether the whole approach is worth building - is set
+by what V0 measures, so its protocol is fixed here before it is run.
+
+**The sample.** 3,000 true pairs drawn from the **train** split, by a seed
+recorded with the result. A true pair is one identity at -O0 and -O3, known
+the same from debug information. 3,000 is deliberately more than a quick
+look needs: it is enough that each of the eleven domains lands a few hundred,
+so the result is a map of *where* the verifier runs - crypto, strings,
+parsing - not a single average that hides it. Train, not val or test, because
+V0 shapes the harness and the harness must not be tuned on the split it will
+be judged on.
+
+**Two layers, run on the same sample.** The gap between them is the
+measurement that matters.
+
+- **Layer A - bare.** No stubs at all. A call to any import stops that pair.
+  The most honest floor: how many functions run start to finish touching
+  nothing outside this binary.
+- **Layer B - with the base stubs.** The handful below implemented. How far
+  that floor rises when the commonest imports are served.
+
+If A says 40% and B says 75%, that 35 points is the value of eight stubs,
+and it tells us the approach is worth building and where the next effort
+goes. If B is barely above A, the imports are long-tailed and the plan
+changes. Either way it is a measured number, not a guess.
+
+**The instruction budget starts at 5,000,000** and V0 measures whether that
+is right. A function that has not returned in five million instructions is
+either genuinely non-terminating on this input or stuck in garbage we set
+up wrong; either way its pair is counted **budget-exhausted**, and V0
+reports, for the pairs that did finish, the distribution of how many
+instructions they took. If every real function finishes under 200,000, the
+budget comes down to fit; the starting value is a ceiling to measure under,
+not a decision.
+
+**Every pair falls in exactly one bucket:**
+
+| bucket | meaning |
+|---|---|
+| completed | both versions returned within budget |
+| unsupported instruction | the engine refused an instruction one version contains |
+| import without a stub | a version called an import not served in this layer |
+| budget exhausted | a version ran past the instruction budget |
+| signature declined | the reference signature has a form the harness declines (a by-value struct, a vararg, long double) |
+| load failed | the binary or the function could not be set up at all |
+
+**And, among the completed pairs, the first false-refutation count.** Every
+completed true pair *should* agree - it is the same function. Any that
+disagree are the harness's own errors surfacing, and each is read and its
+cause written down (the way F1-F14 were), because these are exactly the
+false refutations the whole design exists to drive to zero. V0 does not
+have to reach zero; it has to find and name every cause, so the calibration
+that follows knows what it is fixing.
+
+**What V0 decides:** the real instruction budget; the first stub list, in
+the order their absence costs the most coverage; whether by-value structs
+and the rest are rare enough to leave declined for v1; and the number the
+project has never had - the verifier's reachable coverage. Recorded as a
+measurement run, with the sample seed and the code version, like every
+other.
+
+## Stubs - how each one is trusted
+
+A stub stands in for an imported function the emulator has no code for: the
+emulator stops at the call, the stub performs the function's effect on
+emulated memory and registers, and the caller continues as if the real one
+had run. Stubs are what make a string or buffer function testable at all,
+and a **wrong stub is the worst thing in the system** - it changes what a
+version computes, so it can make one true function disagree with itself and
+refute a claim that is true. The requirement that the verifier never refute
+a true claim rests on every stub being exactly right.
+
+So each stub is held to three rules, and none is admitted otherwise:
+
+1. **It implements the C standard behaviour of the function it replaces,
+   nothing more.** `memcpy` copies n bytes; it does not decide the copy
+   looks wrong. Its only job is to leave memory and registers as the real
+   function would.
+2. **It is tested on its own, against that behaviour, before it is used** -
+   including the corners that break naive versions: `memcpy` of zero bytes,
+   `memmove` of overlapping regions (where `memcpy` may not be used),
+   `strlen` on an empty string, `malloc(0)`, alignment of returned pointers.
+   The test is the C semantics, not what happens to pass.
+3. **It is deterministic and self-contained.** The allocator hands out
+   addresses from a fixed arena in a fixed order, so a run replays exactly;
+   `malloc` never fails except where the design says it may, and the same
+   inputs always give the same addresses.
+
+Anything a stub cannot honour makes the input **inconclusive**, never
+refuted. If `realloc` would have to move a block and the arena cannot, that
+input is inconclusive. Silence is always safer than a wrong answer.
+
+**The base stubs (layer B, and the first written), each with what its test
+must cover:**
+
+| stub | behaviour | the test's corners |
+|---|---|---|
+| `memcpy` | copy n bytes, no overlap promised | n = 0; exact byte range; caller gets dest back in RAX |
+| `memmove` | copy n bytes, overlap safe | forward and backward overlap; n = 0 |
+| `memset` | write a byte n times | n = 0; the byte is truncated to 8 bits |
+| `memcmp` | compare n bytes | equal; first-byte and last-byte difference; sign of result |
+| `strlen` | bytes before the first NUL | empty string; the NUL is not counted |
+| `strcmp` | compare until NUL or difference | equal; prefix; sign of result |
+| `malloc` | n bytes from the arena, aligned | n = 0; 16-byte alignment; two calls do not overlap |
+| `calloc` | like malloc, zeroed | the memory is zero; count × size overflow is refused (returns null) |
+| `realloc` | resize, preserving contents | grow copies the old bytes; realloc(null, n) is malloc; shrink in place |
+| `free` | return a block to the arena | free(null) does nothing; a freed block is not handed out corrupt |
+
+The list is the starting set, not the final one: V0's import histogram says
+which imports beyond these are worth a stub, and each new one enters by the
+same three rules and its own test. A stub is never widened to make a
+particular pair pass; it is widened to match the standard, and the pairs
+follow.
+
 ## Order of work
 
-1. **V0 - feasibility, before any design is built on it.** Take a sample
-   of true pairs from train. Load each binary, set up the call from the
-   reference signature with no stubs at all, and run both versions. Count:
-   how many run to completion, how many hit an instruction the engine does
-   not support, how many call an import, how many touch memory outside
-   their arguments. And the first false-refutation count: among pairs that
-   ran, how many disagreed, and why. Protocol written first.
-2. Resolved signatures in `dwarf.py`, and a migration for the corpus.
-3. The harness: loader, calling convention, memory on first touch, fill
-   patterns, instruction budget, masked return.
-4. Stubs, one import at a time, each tested on its own.
-5. Calibration on train true pairs until zero refutations - and every
-   cause found written down, the way F1-F14 were.
+1. [done] Resolved signatures in `dwarf.py` and migration 010.
+2. **V0 layer A** - the harness far enough to run a function with no stubs:
+   loader, Win64 call, memory on first touch, fill patterns, budget, masked
+   return. Measured on the 3,000-pair sample.
+3. **The base stubs**, each by its three rules and its own test; then
+   **V0 layer B** on the same sample.
+4. Read V0: set the real budget, the stub order, what stays declined, and
+   the coverage number. Written down like a finding.
+5. Calibration on train true pairs until zero refutations - every cause
+   found written down, the way F1-F14 were.
 6. Tier 1 static rules, each admitted only at zero false refutations.
 7. Claims and verdicts as events; `elenchus verify` and `--replay`.
 8. Measurement on val; then the end-to-end protocol; then test, once.
