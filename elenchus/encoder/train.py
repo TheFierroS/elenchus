@@ -189,6 +189,47 @@ def load_checkpoint(path, device="cpu", vocab=None):
     return model, stored, data["meta"]
 
 
+def local_run(conn, path, model, vocab, meta):
+    """Return this database's id for the training run that made a checkpoint.
+
+    A checkpoint records the run number of the database it was trained in,
+    and a run number means nothing anywhere else: the checkpoints trained on
+    rented hardware carry 2, 4 and 5, which here are extract runs from
+    14 September. The run is found by what it was instead - code version,
+    seed, stage, model shape, vocabulary and the directory it wrote to -
+    and None is returned unless exactly one training run fits.
+    """
+    config = model.config.to_dict()
+    vocabulary = vocab_hash(vocab)
+    directory = Path(path).parent.name
+
+    found = []
+    for row in conn.execute(
+            "SELECT id, code_version, seed, params FROM runs WHERE kind = 'train'"):
+        params = json.loads(row["params"] or "{}")
+        if (row["code_version"] == meta.get("code_version")
+                and row["seed"] == meta.get("seed")
+                and params.get("stage") == meta.get("stage")
+                and params.get("config") == config
+                and params.get("vocab") == vocabulary
+                and Path(params.get("settings", {}).get("out", "")).name == directory):
+            found.append(row["id"])
+    return found[0] if len(found) == 1 else None
+
+
+def encoder_label(conn, path, model, vocab, meta):
+    """The name a checkpoint's scores are recorded under.
+
+    encoder (run N) only when N is this database's run; otherwise the
+    number it came with is kept but marked as belonging elsewhere, so that
+    nobody follows it to the wrong run.
+    """
+    run = local_run(conn, path, model, vocab, meta)
+    if run is not None:
+        return f"encoder (run {run})"
+    return f"encoder (run {meta.get('run_id')} elsewhere)"
+
+
 def measure_checkpoint(path, vocab, queries, pool, gold, device="cpu"):
     """Evaluate a checkpoint read back from disk.
 

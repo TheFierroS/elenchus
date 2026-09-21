@@ -346,11 +346,12 @@ def cmd_baselines(args):
         scorers = list(all_baselines(args.seed))
         for path in getattr(args, "encoder", None) or []:
             from elenchus.encoder.scorer import EncoderScorer
-            from elenchus.encoder.train import load_checkpoint
+            from elenchus.encoder.train import encoder_label, load_checkpoint
 
             model, vocab, meta = load_checkpoint(path)
-            scorers.append(EncoderScorer(model, vocab, max_len=model.config.max_len,
-                                         name=f"encoder (run {meta.get('run_id')})"))
+            scorers.append(EncoderScorer(
+                model, vocab, max_len=model.config.max_len,
+                name=encoder_label(conn, path, model, vocab, meta)))
 
         results = {}
         for scorer in scorers:

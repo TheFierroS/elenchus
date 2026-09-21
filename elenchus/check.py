@@ -249,13 +249,24 @@ def check_measurement_names(conn):
     name that says one run while run_id says another sends anyone searching
     by name to the wrong run - which is what importing remote runs did before
     it renumbered the names too: encoder-2 ended up belonging to run 1293.
+
+    Scores taken later by baselines are named encoder (run N) after the
+    checkpoint's training run, which is a different run from the one that
+    recorded them; N has to be a training run here. The test-split look named
+    three checkpoints by the numbers they were trained under elsewhere, and
+    here those were extract runs from 14 September.
     """
+    training = {row["id"] for row in conn.execute(
+        "SELECT id FROM runs WHERE kind = 'train'")}
     wrong = []
     for row in conn.execute(
             "SELECT id, run_id, method FROM measurements "
-            "WHERE method LIKE 'encoder-%'"):
-        match = re.match(r"^encoder-(\d+)(-start)?$", row["method"])
-        if match and int(match.group(1)) != row["run_id"]:
+            "WHERE method LIKE 'encoder%'"):
+        own = re.match(r"^encoder-(\d+)(-start)?$", row["method"])
+        named = re.match(r"^encoder \(run (\d+)\)$", row["method"])
+        if own and int(own.group(1)) != row["run_id"]:
+            wrong.append((row["id"], row["run_id"], row["method"]))
+        elif named and int(named.group(1)) not in training:
             wrong.append((row["id"], row["run_id"], row["method"]))
     return wrong
 
