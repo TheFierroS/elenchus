@@ -29,6 +29,8 @@ Win64 return conventions this family uses:
 
 from __future__ import annotations
 
+from elenchus.emulation.harness import StubDeclined
+
 
 def memcpy(m) -> None:
     """void *memcpy(void *dest, const void *src, size_t n).
@@ -173,6 +175,158 @@ ALLOCATION = {
 }
 
 
+# --- C string: strlen, strcmp, strchr, ... over a NUL-terminated read -------
+
+# The one operation the family shares: read a NUL-terminated byte string from
+# emulated memory, without knowing its length in advance. A cap stops a
+# missing terminator - a caller that passed a non-string, or memory the fill
+# pattern never zeroed - from reading forever; over the cap the input is
+# declined rather than guessed at.
+CSTRING_CAP = 1 << 20            # 1 MiB: longer than any real C string here
+
+
+def _cstring(m, address):
+    """The bytes before the first NUL at `address` (the NUL not included)."""
+    out = bytearray()
+    while len(out) < CSTRING_CAP:
+        byte = m.read(address + len(out), 1)[0]
+        if byte == 0:
+            return bytes(out)
+        out.append(byte)
+    raise StubDeclined("string longer than the cap, or unterminated")
+
+
+def strlen(m) -> None:
+    """size_t strlen(const char *s). Bytes before the NUL."""
+    m.set_return(len(_cstring(m, m.arg(0))))
+
+
+def strcmp(m) -> None:
+    """int strcmp(const char *a, const char *b). Sign of the first difference,
+    as unsigned chars; the NUL terminators take part, so a prefix is less."""
+    a, b = _cstring(m, m.arg(0)), _cstring(m, m.arg(1))
+    m.set_return(_sign(a, b))
+
+
+def strncmp(m) -> None:
+    """int strncmp(const char *a, const char *b, size_t n). strcmp over at
+    most n bytes; comparison also stops at a NUL in either string."""
+    n = m.arg(2)
+    a = _cstring_capped(m, m.arg(0), n)
+    b = _cstring_capped(m, m.arg(1), n)
+    m.set_return(_sign(a, b))
+
+
+def strchr(m) -> None:
+    """char *strchr(const char *s, int c). Address of the first c, or NULL;
+    c == 0 finds the terminator, which strchr includes."""
+    base = m.arg(0)
+    target = m.arg(1) & 0xFF
+    s = _cstring(m, base)
+    if target == 0:
+        m.set_return(base + len(s))              # the NUL itself
+        return
+    index = s.find(target)
+    m.set_return(base + index if index >= 0 else 0)
+
+
+def strrchr(m) -> None:
+    """char *strrchr(const char *s, int c). The last c, or NULL."""
+    base = m.arg(0)
+    target = m.arg(1) & 0xFF
+    s = _cstring(m, base)
+    if target == 0:
+        m.set_return(base + len(s))
+        return
+    index = s.rfind(target)
+    m.set_return(base + index if index >= 0 else 0)
+
+
+def strstr(m) -> None:
+    """char *strstr(const char *hay, const char *needle). First occurrence of
+    needle, or NULL; an empty needle matches at the start."""
+    base = m.arg(0)
+    hay = _cstring(m, base)
+    needle = _cstring(m, m.arg(1))
+    index = hay.find(needle)
+    m.set_return(base + index if index >= 0 else 0)
+
+
+def strcpy(m) -> None:
+    """char *strcpy(char *d, const char *s). Copy s and its NUL to d; return d."""
+    dest, src = m.arg(0), m.arg(1)
+    s = _cstring(m, src)
+    m.write(dest, s + b"\x00")
+    m.set_return(dest)
+
+
+def strncpy(m) -> None:
+    """char *strncpy(char *d, const char *s, size_t n). Copy up to n bytes of
+    s; if s is shorter, pad the rest with NUL to exactly n bytes. Return d."""
+    dest, src, n = m.arg(0), m.arg(1), m.arg(2)
+    s = _cstring_capped(m, src, n)
+    padded = (s + b"\x00" * n)[:n]
+    if n:
+        m.write(dest, padded)
+    m.set_return(dest)
+
+
+def strcat(m) -> None:
+    """char *strcat(char *d, const char *s). Append s and a NUL at d's
+    terminator; return d."""
+    dest, src = m.arg(0), m.arg(1)
+    end = dest + len(_cstring(m, dest))
+    s = _cstring(m, src)
+    m.write(end, s + b"\x00")
+    m.set_return(dest)
+
+
+def strdup(m) -> None:
+    """char *strdup(const char *s). A malloc'd copy of s, NUL included, or
+    NULL if the arena declines."""
+    s = _cstring(m, m.arg(0))
+    address = m.arena.allocate(len(s) + 1)
+    m.write(address, s + b"\x00")
+    m.set_return(address)
+
+
+def _cstring_capped(m, address, limit):
+    """The bytes before the first NUL at `address`, but at most `limit`."""
+    out = bytearray()
+    while len(out) < limit:
+        byte = m.read(address + len(out), 1)[0]
+        if byte == 0:
+            break
+        out.append(byte)
+    return bytes(out)
+
+
+def _sign(a: bytes, b: bytes) -> int:
+    """The strcmp sign of two byte strings, as -1, 0 or 1. The comparison is
+    over the strings with their terminators, so a prefix compares less."""
+    a_term, b_term = a + b"\x00", b + b"\x00"
+    for x, y in zip(a_term, b_term):
+        if x != y:
+            return 1 if x > y else (1 << 64) - 1
+    return 0
+
+
+CSTRING = {
+    "strlen": strlen,
+    "strcmp": strcmp,
+    "strncmp": strncmp,
+    "strchr": strchr,
+    "strrchr": strrchr,
+    "strstr": strstr,
+    "strcpy": strcpy,
+    "strncpy": strncpy,
+    "strcat": strcat,
+    "strdup": strdup,
+    "__builtin_strlen": strlen,
+    "__builtin_strcpy": strcpy,
+}
+
+
 # Every stub family, merged into one table. A new family is added here and
 # nowhere else: the resolver, the harness and compare all read this, so
 # coverage grows in one place. A later family must not silently reuse a name
@@ -187,7 +341,7 @@ def _merge(*families):
     return merged
 
 
-STUBS = _merge(BLOCK_MEMORY, ALLOCATION)
+STUBS = _merge(BLOCK_MEMORY, ALLOCATION, CSTRING)
 
 
 def resolver(name):

@@ -90,6 +90,22 @@ char *duplicate(const char *s) {
     return d;
 }
 
+/* Wrappers that each lean on one string function, to exercise its stub. */
+
+size_t length_of(const char *s) { return strlen(s); }
+
+int compare_strings(const char *a, const char *b) { return strcmp(a, b); }
+
+int compare_n(const char *a, const char *b, size_t n) { return strncmp(a, b, n); }
+
+char *find_char(const char *s, int c) { return strchr(s, c); }
+
+char *find_sub(const char *s, const char *needle) { return strstr(s, needle); }
+
+void copy_string(char *d, const char *s) { strcpy(d, s); }
+
+size_t concat_len(char *d, const char *s) { strcat(d, s); return strlen(d); }
+
 /* --- risk 7: running out of time -------------------------------------- */
 
 int spin(int n) {

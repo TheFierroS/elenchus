@@ -336,12 +336,223 @@ def test_the_allocation_family_is_in_the_resolver():
     assert resolver("realloc") is realloc
 
 
-def test_duplicate_still_needs_strlen(fixture):
-    """duplicate calls strlen then malloc then memcpy; with allocation and
-    block-memory stubs but no string family yet, it stops at strlen -
-    inconclusive, not a fault, and not a wrong completion."""
+def test_duplicate_stops_at_an_unstubbed_import_cleanly():
+    """With only the block-memory family, duplicate stops at strlen - named,
+    not a fault. (It completes once the string family is present; see
+    test_duplicate_completes_with_all_its_stubs.)"""
+    loader = Loader(FIXTURES / "cases_O3.dll")
+    sigs = {f.name: f for f in ground_truth(FIXTURES / "cases_O3.dll")}
+    f = sigs["duplicate"]
+    out = run(loader, f.address, placement(f.abi), [BUF],
+              stub_resolver=BLOCK_MEMORY.get)
+    assert out.status is Status.IMPORT_WITHOUT_STUB
+    assert out.detail in {"strlen", "malloc"}
+
+
+# --------------------------------------------------------- C string
+
+from elenchus.emulation.stubs import (  # noqa: E402
+    _cstring,
+    strcat,
+    strchr,
+    strcmp,
+    strcpy,
+    strdup,
+    strlen,
+    strncmp,
+    strncpy,
+    strrchr,
+    strstr,
+)
+
+
+class StrMachine:
+    """A sparse-memory Machine with a real Arena, for the string stubs."""
+
+    def __init__(self, args):
+        self._args = list(args)
+        self.arena = Arena()
+        self.byte = {}
+        self.returned = None
+
+    def place(self, address, data):
+        """Write bytes at an address and return it, for building inputs."""
+        for i, v in enumerate(data):
+            self.byte[address + i] = v
+        return address
+
+    def arg(self, index):
+        return self._args[index]
+
+    def read(self, address, size):
+        return bytes(self.byte.get(address + i, 0) for i in range(size))
+
+    def write(self, address, data):
+        for i, v in enumerate(data):
+            self.byte[address + i] = v
+
+    def set_return(self, value):
+        self.returned = value
+
+
+A, B, C = 0x1000, 0x2000, 0x3000
+
+
+def test_strlen_counts_to_the_nul():
+    m = StrMachine([A])
+    m.place(A, b"hello\x00")
+    strlen(m)
+    assert m.returned == 5
+
+
+def test_strlen_of_empty_is_zero():
+    m = StrMachine([A])
+    m.place(A, b"\x00")
+    strlen(m)
+    assert m.returned == 0
+
+
+def test_cstring_reads_up_to_the_nul():
+    m = StrMachine([])
+    m.place(A, b"abc\x00defgh")
+    assert _cstring(m, A) == b"abc"
+
+
+def test_strcmp_orders_like_c():
+    m = StrMachine([A, B])
+    m.place(A, b"abc\x00")
+    m.place(B, b"abc\x00")
+    strcmp(m)
+    assert m.returned == 0
+
+    m = StrMachine([A, B])
+    m.place(A, b"abc\x00")
+    m.place(B, b"abd\x00")
+    strcmp(m)
+    assert (m.returned & 0xFFFFFFFF) == 0xFFFFFFFF          # abc < abd
+
+    m = StrMachine([A, B])
+    m.place(A, b"abc\x00")               # prefix compares less
+    m.place(B, b"abcd\x00")
+    strcmp(m)
+    assert (m.returned & 0xFFFFFFFF) == 0xFFFFFFFF
+
+
+def test_strncmp_stops_at_n():
+    m = StrMachine([A, B, 3])
+    m.place(A, b"abcX\x00")
+    m.place(B, b"abcY\x00")
+    strncmp(m)
+    assert m.returned == 0               # first 3 bytes equal
+
+
+def test_strchr_finds_and_misses():
+    m = StrMachine([A, ord("c")])
+    m.place(A, b"abcde\x00")
+    strchr(m)
+    assert m.returned == A + 2
+
+    m = StrMachine([A, ord("z")])
+    m.place(A, b"abcde\x00")
+    strchr(m)
+    assert m.returned == 0
+
+    m = StrMachine([A, 0])               # searching for the NUL finds it
+    m.place(A, b"abc\x00")
+    strchr(m)
+    assert m.returned == A + 3
+
+
+def test_strrchr_finds_the_last():
+    m = StrMachine([A, ord("a")])
+    m.place(A, b"banana\x00")
+    strrchr(m)
+    assert m.returned == A + 5
+
+
+def test_strstr_finds_a_substring():
+    m = StrMachine([A, B])
+    m.place(A, b"hello world\x00")
+    m.place(B, b"wor\x00")
+    strstr(m)
+    assert m.returned == A + 6
+
+    m = StrMachine([A, B])
+    m.place(A, b"hello\x00")
+    m.place(B, b"xyz\x00")
+    strstr(m)
+    assert m.returned == 0
+
+
+def test_strcpy_copies_including_the_nul():
+    m = StrMachine([B, A])
+    m.place(A, b"copy me\x00")
+    strcpy(m)
+    assert m.read(B, 8) == b"copy me\x00"
+    assert m.returned == B
+
+
+def test_strncpy_pads_with_nul():
+    m = StrMachine([B, A, 6])
+    m.place(A, b"ab\x00")
+    strncpy(m)
+    assert m.read(B, 6) == b"ab\x00\x00\x00\x00"
+
+
+def test_strncpy_truncates_and_does_not_terminate():
+    m = StrMachine([B, A, 3])
+    m.place(A, b"abcdef\x00")
+    strncpy(m)
+    assert m.read(B, 3) == b"abc"        # no NUL when the source is longer
+
+
+def test_strcat_appends_at_the_terminator():
+    m = StrMachine([A, B])
+    m.place(A, b"foo\x00")
+    m.place(B, b"bar\x00")
+    strcat(m)
+    assert m.read(A, 7) == b"foobar\x00"
+
+
+def test_strdup_makes_a_freeable_copy():
+    m = StrMachine([A])
+    m.place(A, b"dup\x00")
+    strdup(m)
+    assert m.read(m.returned, 4) == b"dup\x00"
+    m.arena.free(m.returned)             # it is a real arena block
+
+
+def test_the_string_family_is_in_the_resolver():
+    assert resolver("strlen") is strlen
+    assert resolver("strstr") is strstr
+    assert resolver("__builtin_strcpy") is strcpy
+
+
+# --------------------------------------------------------- end to end
+
+
+def test_duplicate_completes_with_all_its_stubs(fixture):
+    """duplicate calls strlen, malloc and memcpy. With every family it runs to
+    completion - the first real copy-and-allocate function fully served."""
     loader, sigs = fixture
     f = sigs["duplicate"]
     out = run(loader, f.address, placement(f.abi), [BUF], stub_resolver=resolver)
-    assert out.status is Status.IMPORT_WITHOUT_STUB
-    assert out.detail == "strlen"
+    assert out.status is Status.COMPLETED
+
+
+def test_string_wrappers_survive_their_own_twins():
+    """Each wrapper leans on one string stub; -O0 against -O3, served by the
+    same stubs, agrees."""
+    o0 = Loader(FIXTURES / "cases_O0.dll")
+    o3 = Loader(FIXTURES / "cases_O3.dll")
+    s0 = {f.name: f for f in ground_truth(FIXTURES / "cases_O0.dll")}
+    s3 = {f.name: f for f in ground_truth(FIXTURES / "cases_O3.dll")}
+    for name, inputs in [
+        ("length_of", [[BUF]]),
+        ("compare_strings", [[BUF, BUF + 0x1000]]),
+        ("find_char", [[BUF, ord("A")]]),
+        ("duplicate", [[BUF]]),
+    ]:
+        result = compare(o0, s0[name].address, o3, s3[name].address,
+                         placement(s3[name].abi), inputs, stub_resolver=resolver)
+        assert result.verdict in {Verdict.SURVIVED, Verdict.INCONCLUSIVE}, name
