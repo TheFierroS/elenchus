@@ -16,6 +16,8 @@ Every one of them below was added because it could have caught something
 that actually happened.
 """
 
+import re
+
 from elenchus.corpus.build import OPT_LEVELS
 from elenchus.corpus.gaps import known_gaps
 from elenchus.entities import ENTITY_TABLES
@@ -240,6 +242,24 @@ def check_measurement_runs(conn):
     ]
 
 
+def check_measurement_names(conn):
+    """Return encoder measurements whose name gives another run's number.
+
+    The trainer names its scores encoder-<run> and encoder-<run>-start. A
+    name that says one run while run_id says another sends anyone searching
+    by name to the wrong run - which is what importing remote runs did before
+    it renumbered the names too: encoder-2 ended up belonging to run 1293.
+    """
+    wrong = []
+    for row in conn.execute(
+            "SELECT id, run_id, method FROM measurements "
+            "WHERE method LIKE 'encoder-%'"):
+        match = re.match(r"^encoder-(\d+)(-start)?$", row["method"])
+        if match and int(match.group(1)) != row["run_id"]:
+            wrong.append((row["id"], row["run_id"], row["method"]))
+    return wrong
+
+
 def check_corpus_duplicates(conn):
     """Return (package, level, stripped) recorded more than once.
 
@@ -360,6 +380,7 @@ CHECKS = [
     ("twin links", check_twin_links),
     ("split packages", check_split_packages),
     ("measurement runs", check_measurement_runs),
+    ("measurement names", check_measurement_names),
     ("corpus duplicates", check_corpus_duplicates),
     ("corpus completeness", check_corpus_completeness),
     ("stale gaps", check_stale_gaps),

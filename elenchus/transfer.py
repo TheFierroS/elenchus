@@ -9,11 +9,15 @@ read.
 
 The exported database carries the same row ids as this one, so anything
 the remote writes that refers to a binary or a function still refers to
-the same thing when it comes back. Only `runs` and `measurements` are
-written remotely, and only their own ids have to be renumbered on the way
-in.
+the same thing when it comes back. A training run writes its `runs` row
+and, for a contrastive run, two `measurements` - the score before training
+and the best one - named after the run: encoder-<run>-start and
+encoder-<run>. On the way in the run is renumbered, and so is the number
+in those names; renumbering the run_id alone left encoder-2 pointing at
+run 1293.
 """
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -61,6 +65,22 @@ def export_training(conn, out):
     return counts
 
 
+# What the trainer calls its measurements (encoder/train.py).
+_MEASUREMENT_NAME = re.compile(r"^encoder-(\d+)(-start)?$")
+
+
+def renamed(method, old_run, new_run):
+    """The measurement name a run would have given it under its new number.
+
+    Only a name that carries this run's own number is changed; anything
+    else - a baseline, a name some later code chooses - is left as it is.
+    """
+    match = _MEASUREMENT_NAME.match(method)
+    if not match or int(match.group(1)) != old_run:
+        return method
+    return f"encoder-{new_run}{match.group(2) or ''}"
+
+
 def _rows(conn, table, source="remote"):
     return conn.execute(f"SELECT * FROM {source}.{table}").fetchall()
 
@@ -69,10 +89,8 @@ def import_runs(conn, path, apply=False):
     """Copy the runs (and their measurements) from an exported database.
 
     Renumbered onto the end of this database's runs, because both sides
-    started counting from whatever they inherited. Nothing else is copied:
-    a remote training run writes a runs row and nothing more, and if it
-    measured baselines those rows point at the run by id, which is the one
-    thing that has to be rewritten.
+    started counting from whatever they inherited. A measurement follows its
+    run: its run_id is rewritten, and so is the run number in its name.
     """
     path = Path(path)
     if not path.exists():
@@ -108,9 +126,17 @@ def import_runs(conn, path, apply=False):
             columns = [c[1] for c in conn.execute("PRAGMA table_info(measurements)")]
             placeholders = ", ".join("?" * len(columns))
             for row in moved:
-                values = [None if c == "id" else
-                          (mapping[row["run_id"]] if c == "run_id" else row[c])
-                          for c in columns]
+                new_run = mapping[row["run_id"]]
+                values = []
+                for c in columns:
+                    if c == "id":
+                        values.append(None)
+                    elif c == "run_id":
+                        values.append(new_run)
+                    elif c == "method":
+                        values.append(renamed(row[c], row["run_id"], new_run))
+                    else:
+                        values.append(row[c])
                 conn.execute(
                     f"INSERT INTO main.measurements ({', '.join(columns)}) "
                     f"VALUES ({placeholders})", values)

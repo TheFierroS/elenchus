@@ -131,12 +131,13 @@ def remote_run(path, kind="train", started="2026-09-21 03:00:00"):
         "INSERT INTO runs (kind, code_version, params, seed, started_at, status) "
         "VALUES (?, 'abc1234', '{}', 0, ?, 'ok') RETURNING id", (kind, started),
     ).fetchone()["id"]
-    conn.execute(
-        "INSERT INTO measurements (run_id, method, split, query_opt, pool_opt, "
-        "n_queries, n_pool, metrics, created_at) "
-        "VALUES (?, 'encoder', 'val', 'O0', 'O3', 10, 10, '{}', ?)",
-        (run, started),
-    )
+    for method in (f"encoder-{run}-start", f"encoder-{run}"):
+        conn.execute(
+            "INSERT INTO measurements (run_id, method, split, query_opt, pool_opt, "
+            "n_queries, n_pool, metrics, created_at) "
+            "VALUES (?, ?, 'val', 'O0', 'O3', 10, 10, '{}', ?)",
+            (run, method, started),
+        )
     conn.commit()
     return run
 
@@ -165,8 +166,8 @@ def test_its_measurements_follow_it_to_the_new_id(source, tmp_path):
     new_id = found["runs"][0][1]
 
     rows = source.execute(
-        "SELECT run_id, method FROM measurements").fetchall()
-    assert [(r["run_id"], r["method"]) for r in rows] == [(new_id, "encoder")]
+        "SELECT run_id, method FROM measurements ORDER BY id").fetchall()
+    assert [r["run_id"] for r in rows] == [new_id, new_id]
 
 
 def test_reporting_changes_nothing(source, tmp_path):
@@ -251,3 +252,50 @@ def test_every_command_takes_the_arguments_the_cli_hands_it():
             and p.default is p.empty
         ]
         assert len(positional) == 1, f"{name}: {func.__name__}{inspect.signature(func)}"
+
+
+def test_the_run_number_in_a_measurement_name_is_renumbered_too(source, tmp_path):
+    """The trainer names its scores encoder-<run>. Renumbering only run_id
+    left encoder-2 belonging to run 1293 - found on the first real import."""
+    out = tmp_path / "train.db"
+    export_training(source, out)
+    remote_id = remote_run(out)
+
+    new_id = import_runs(source, out, apply=True)["runs"][0][1]
+
+    names = [r["method"] for r in source.execute(
+        "SELECT method FROM measurements ORDER BY id")]
+    assert names == [f"encoder-{new_id}-start", f"encoder-{new_id}"]
+    assert f"encoder-{remote_id}" not in names
+
+
+def test_a_name_that_is_not_the_runs_own_is_left_alone():
+    from elenchus.transfer import renamed
+
+    assert renamed("encoder-2", 2, 1293) == "encoder-1293"
+    assert renamed("encoder-2-start", 2, 1293) == "encoder-1293-start"
+    assert renamed("encoder-7", 2, 1293) == "encoder-7"     # another run's
+    assert renamed("bm25-mnemonic", 2, 1293) == "bm25-mnemonic"
+    assert renamed("encoder-2-extra", 2, 1293) == "encoder-2-extra"
+
+
+def test_check_catches_a_measurement_named_for_another_run(source, tmp_path):
+    """What the database looked like after the first import, before the fix."""
+    from elenchus.check import check_measurement_names
+
+    run = start_run(source, "train", params={})
+    source.execute(
+        "INSERT INTO measurements (run_id, method, split, query_opt, pool_opt, "
+        "n_queries, n_pool, metrics, created_at) "
+        "VALUES (?, 'encoder-99999', 'val', 'O0', 'O3', 1, 1, '{}', 'now')", (run,))
+    source.execute(
+        "INSERT INTO measurements (run_id, method, split, query_opt, pool_opt, "
+        "n_queries, n_pool, metrics, created_at) "
+        "VALUES (?, ?, 'val', 'O0', 'O3', 1, 1, '{}', 'now')",
+        (run, f"encoder-{run}"))
+    source.commit()
+
+    wrong = check_measurement_names(source)
+
+    assert run != 99999
+    assert [(w[1], w[2]) for w in wrong] == [(run, "encoder-99999")]
