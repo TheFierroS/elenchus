@@ -1115,6 +1115,98 @@ applied the rule unchanged: `verdict: MLM helps: keep it`.
   contrastive a better starting point - open for v2. The package mean would
   have kept a later epoch in three of the four runs.
 
+**Result, stages 2 and 3 (runs 1292-1296, 21 September, code `22239c5`,
+corpus `69b6d888c94c2175`). Size helps: v1 is 11M.** Trained on a rented
+RTX PRO 4500 (32 GB, Blackwell) - see F14 for how, and for the night that
+was lost first.
+
+| run | size | seed | val MRR | package MRR | recall@1 | recall@10 | best epoch |
+|---|---|---|---|---|---|---|---|
+| 1295 | 3.6M | 0 | 0.6525 | 0.6490 | 0.577 | 0.794 | 27 / 30 |
+| 1293 | **11M** | 0 | **0.6833** | 0.6901 | 0.605 | 0.820 | 21 / 30 |
+| 1296 | **11M** | 1 | **0.6833** | 0.6810 | 0.604 | 0.818 | 19 / 30 |
+
+MLM pre-training: 3.6M reached 0.3866 (run 1294), 11M 0.3236 (run 1292),
+both still falling at the last epoch. Seed 1 started from the same MLM
+checkpoint as seed 0, as B3's two seeds did in stage 1.
+
+- **Stage 2, one seed each:** 11M ahead by **+0.0308** on the query mean and
+  **+0.0411** on the package mean, against a margin of 0.0125 - two and a
+  half times the margin, the two means agreeing.
+- **Stage 3, the rule written before the run:** v1 is 11M if the mean of two
+  11M seeds beats 3.6M by more than max(0.0125, S), S being the two 11M
+  seeds' spread. The seeds agree to four decimals, S = 0.0000; the gain is
+  **+0.0308**. **v1 is 11M.**
+- **Budget:** no run's best beat its best by 75% of the budget by more than
+  margin / 2 (0.0004, 0.0000, 0.0000). Thirty epochs held for both sizes.
+- **The reference was measured again on the same card, and it mattered.**
+  The protocol compared against stage 1's 3.6M seed 0, trained on the
+  laptop. Run on the rented card, the same model, seed and data scored
+  **0.6525 against the laptop's 0.659** (MLM 0.3866 against 0.3919). A 0.0065
+  difference from hardware alone is half the margin; read against the
+  laptop's number the size gain would have been 0.024 rather than 0.031.
+- **The package mean is the noisier of the two.** The seeds agree exactly on
+  the query mean and differ by 0.009 on the package mean, which weights a
+  six-query package the same as a five-hundred-query one. This is why the
+  decision is read off queries.
+- **11M overfits after its peak.** Train loss kept falling (0.37 at the
+  best epoch, 0.28 at the last) while val MRR held between 0.677 and 0.683.
+  With a third of the parameters, 3.6M peaked at 0.6525 with train loss
+  still at 0.44. The larger model uses the data up.
+- **Which checkpoint is v1:** the two seeds tie on the decision metric;
+  seed 0 (run 1293) is taken, being higher on the package mean and on
+  recall@10. The file is
+  `data/cloud-2026-09-21/elenchus/models/b3-con-mlm-11m-seed-0/best.pt`.
+
+**15M was not run.** The protocol ran 15M only if 11M was ahead, and it
+was. It was skipped on a reading, not a measurement: tripling the model
+paid 0.031 - a quarter of what MLM paid (0.132) - and 11M was overfitting
+past epoch 21, which points at the data as the limit rather than the size.
+A further 1.4x was not expected to clear the margin, and the size question
+is better asked again on a larger corpus (Q3). Recorded as a decision so
+that it is not read as an omission.
+
+**What the two levers were worth:** MLM pre-training +0.132, three times the
+parameters +0.031. The larger lever was the recipe, and the next one is
+probably the data.
+
+### F14 — Training elsewhere, and the night that was lost first
+
+The laptop ran at 82-87 C for eleven hours a night, and stage 2 would have
+needed two nights more. Training moved to a rented GPU. Two things about
+doing that are worth keeping.
+
+**The database did not have to move.** Of its 14 GB, 11.7 GB is events and
+their links, which training never opens. `elenchus export-training` writes
+the seven tables it does read - 1.02 GiB - carrying row ids across
+unchanged, and the export reproduced the corpus exactly: the same split,
+the same 187,403 eligible rows, and the vocabulary fingerprint
+`69b6d888c94c2175` on both machines. `elenchus import-runs` brings the runs
+back renumbered. Its first real use found that it renumbered a
+measurement's run_id but not the run number in its name, leaving
+encoder-2 against run 1293; that was fixed (`197b87f`), the four affected
+rows renamed in place, and `elenchus check` now fails on the mismatch.
+
+**The first night's results were lost, and the cause was a platform detail
+stated as fact without being checked.** The script trained both sizes and
+then stopped the pod to stop the billing. Everything had been written to
+the pod's container disk, which RunPod erases on stop; only a volume
+survives. The deploy screen said so ("Nothing mounted at the template's
+path") and the warning was dismissed. The GPU was then taken by another
+user, so the pod could not even be restarted to look. Cost: one night and
+about $4.
+
+The second attempt did what the first should have: RunPod's storage
+documentation read before anything was built on it; a network volume,
+which outlives any pod and can be opened from a CPU-only one; `df` to see
+that `/workspace` really was that volume; and a file written, the pod
+terminated, a new pod started, and the file read back - five minutes and a
+few cents, before the long run began. Results were then brought home and
+compared by sha256 before anything was deleted.
+
+Cost of stages 2 and 3 together, including the volume and the CPU pods
+used to fetch results: about $4.50.
+
 ### Q3 — the third axis was never measured
 
 L and L2 measured two ways of growing the corpus: more **functions**
