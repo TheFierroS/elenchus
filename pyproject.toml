@@ -47,6 +47,14 @@ ml = [
     "numpy>=2.5",
 ]
 
+# The verifier side: emulating a function to test a proposed identity. Unicorn
+# is a CPU emulator built on QEMU that runs x86-64 with no operating system
+# and lets memory and calls be intercepted, which is what the harness needs.
+# Kept separate like the model side, so scanning does not pull it in.
+verify = [
+    "unicorn>=2.1",
+]
+
 [project.scripts]
 # Makes `elenchus ...` work as a command once the package is installed,
 # instead of only `python -m elenchus`.
