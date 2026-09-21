@@ -1302,7 +1302,51 @@ GiB throughout; "epoch s" is the 50 steps with their validation.
 - **The measurement repeats:** the 11M rows match the earlier run to within
   0.16 GiB of card peak, idle this time steady at 0.38-0.52 GiB.
 
-## Before full training - checklist
+## The test split - protocol
+
+Written 21 September, before the test split was opened. Every decision so
+far - the corpus waves, the split rule, MLM, the size - was made on val.
+Test has been held back for this: one look, at a model already chosen.
+
+**What is measured, once:**
+
+```
+elenchus baselines --split test \
+  --encoder data/cloud-2026-09-21/elenchus/models/b3-con-mlm-11m-seed-0/best.pt \
+  --encoder data/cloud-2026-09-21-stage3/elenchus/models/b3-con-mlm-11m-seed-1/best.pt \
+  --encoder data/cloud-2026-09-21/elenchus/models/b3-con-mlm-seed-0/best.pt
+```
+
+v1 (run 1293), the second 11M seed (run 1296) and the 3.6M reference (run
+1295), with the four baselines, on the task every decision was made on:
+-O0 queries against an -O3 pool, 39 packages none of which appeared in
+training or validation. Recorded in `measurements` with split `test`.
+
+**What is decided by it: nothing.**
+
+- v1 is run 1293 whatever this shows. No training, tuning, checkpoint
+  choice or threshold is revisited after it; a test split consulted twice
+  is a second validation split.
+- The headline is v1's query-mean MRR and recall@10, next to the best test
+  baseline. The package mean is reported beside it, as on val.
+- The other two checkpoints are there to answer questions that no longer
+  change anything: whether the size gain seen on val holds on packages the
+  choice never saw, and whether the two 11M seeds still agree.
+- **The val-to-test gap is itself a result.** The split balances domains and
+  sizes but cannot make two sets of packages equally hard. A test score
+  below val is expected; one far below - more than 0.05 - would say the
+  val packages were easier than the corpus, and would be reported as that,
+  not corrected.
+
+**Checked before the command runs:** the vocabulary fingerprint is
+`69b6d888c94c2175`, the one all three were trained with (the checkpoint
+refuses any other); and `measurements` holds no `test` rows for this
+corpus, so this is the first look.
+
+## v1 checklist
+
+Kept as it was written, ticked as it was done; the items after the first
+block were added as the work reached them.
 
 - [x] F1-F9 above, each committed and measured
 - [x] E3 and learning-curve options (dcf29a1), checked on real data (run 509)
@@ -1318,8 +1362,18 @@ GiB throughout; "epoch s" is the 50 steps with their validation.
 - [x] B5 memory measurement (`experiments/b5_memory.sh`): 11M fits with
       `--checkpoint-activations`
 - [x] Corpus decision: wave 2 (L, Result)
-- [ ] Wave 2: manifest, build, `check`, split preview, `dataset --assign
+- [x] Wave 2: manifest, build, `check`, split preview, `dataset --assign
       --force`, `vocab`, baselines again
-- [ ] Short learning-curve repeat on the new corpus (protocol first); sets
-      the full-training budget
-- [ ] B1 vocabulary fingerprint check, then B2 onwards
+- [x] Short learning-curve repeat on the new corpus (protocol first): L2,
+      runs 863-868 - more packages still help, wave 3
+- [x] B1 vocabulary fingerprint check, then B2 onwards
+- [x] Wave 3: 48 packages, 136 in all (F11); vendored copies taken as
+      dependencies (F12); stale Ghidra projects fixed (F13)
+- [x] Split quotas: val and test owed a share of each domain, not one package
+- [x] L3 not run, the reason written down
+- [x] Full training protocol rewritten for the wave 3 corpus
+- [x] Stage 1, runs 1287-1291: MLM helps, keep it
+- [x] Stages 2 and 3, runs 1292-1296: v1 is 11M; 15M not run, the reason
+      written down (F14 for the move to rented hardware)
+- [ ] Test split, one look (protocol above)
+- [ ] Verifier: how many claims survive verification, end to end
