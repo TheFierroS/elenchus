@@ -24,6 +24,9 @@ from elenchus.emulation.compare import (
 )
 from elenchus.emulation.harness import Loader, Outcome, Status
 
+# The verifier needs unicorn, an optional dependency; skip if it is absent.
+pytest.importorskip("unicorn")
+
 FIXTURES = Path(__file__).parent / "fixtures" / "emulation"
 BUF = 0x0000_2000_0000_0000
 

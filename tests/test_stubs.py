@@ -18,6 +18,9 @@ from elenchus.emulation.compare import Verdict, compare
 from elenchus.emulation.harness import Loader, Status, run
 from elenchus.emulation.stubs import BLOCK_MEMORY, memcmp, memcpy, memmove, memset
 
+# The verifier needs unicorn, an optional dependency; skip if it is absent.
+pytest.importorskip("unicorn")
+
 FIXTURES = Path(__file__).parent / "fixtures" / "emulation"
 BUF = 0x0000_2000_0000_0000
 

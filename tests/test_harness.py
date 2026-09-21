@@ -16,6 +16,9 @@ from elenchus.corpus.dwarf import ground_truth
 from elenchus.emulation.abi import placement
 from elenchus.emulation.harness import PAGE, Loader, Status, _fill, run
 
+# The verifier needs unicorn, an optional dependency; skip if it is absent.
+pytest.importorskip("unicorn")
+
 FIXTURES = Path(__file__).parent / "fixtures" / "emulation"
 # A region for argument buffers, far from the image base and the stack.
 BUF = 0x0000_2000_0000_0000
