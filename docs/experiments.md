@@ -1431,5 +1431,9 @@ block were added as the work reached them.
 - [x] Stages 2 and 3, runs 1292-1296: v1 is 11M; 15M not run, the reason
       written down (F14 for the move to rented hardware)
 - [x] Test split, one look: run 1297, v1 at 0.735 MRR and 0.859 recall@10
+- [x] Release 0.6.0: the trained encoder. `pyproject.toml` and an annotated
+      tag move together at every milestone from here - 0.7.0 verifier,
+      0.8.0 agent core, 0.9.0 end to end, 1.0.0 v1 - after 0.2.0 to 0.5.0
+      were tagged while the package still said 0.1.0
 - [ ] Verifier: how many claims survive verification, end to end
       (design, before any code: `docs/verifier.md`)

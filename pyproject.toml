@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elenchus"
-version = "0.1.0"
+version = "0.6.0"
 description = "A refutation-driven agent for reverse engineering: it proposes claims about a binary and keeps only the ones it cannot refute."
 readme = "README.md"
 requires-python = ">=3.11"
