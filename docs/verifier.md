@@ -175,12 +175,12 @@ effects compared.
   versions and a pointer argument's buffer exists without its size being
   known. Only the stack and allocator memory take the seed-dependent fill
   (item 2 above).
-- **Calls within the binary** are followed. **Calls to imports** are
-  served by stubs: memory and string functions (`memcpy`, `memset`,
-  `memcmp`, `strlen`, ...) and allocation (`malloc`, `calloc`, `realloc`,
-  `free`, from a deterministic heap) are implemented; any import without a
-  stub makes that input **inconclusive**. Which stubs exist is a list in
-  the code, and each is tested against its C semantics on its own.
+- **Calls are handled in three tiers, widest first** (see "Coverage" below).
+  A call **within the binary** is followed into the real code and emulated -
+  no stub, and the coverage is free: a statically-linked zlib's `deflate`
+  runs as itself. A call to an **import the harness has a stub for** is
+  served by the stub. A call to **any other import** makes that input
+  **inconclusive** - never refuted.
 - **Observed:** the masked return value, and the final contents of every
   page the function wrote outside its own stack - argument-reachable
   memory and the heap, compared by content.
@@ -199,6 +199,58 @@ seeded random values, kept away from values that overflow common
 arithmetic; pointers to distinct regions far apart; floating point from
 ordinary values and exact small integers. Testing stops at the first input
 that refutes.
+
+## Coverage - three tiers, widest first
+
+The verifier's reach is not the number of stubs. Most of what a library
+function calls is other code in the same binary, and most of the rest falls
+into a few families that share one tested core. The design widens coverage
+by these, in order, and only the last tier narrows it.
+
+**Tier 1 - calls within the binary, followed for free.** Libraries are
+usually linked statically, so when a function calls another function that is
+*in this binary*, the emulator does not stub it: it follows the call into
+the real code and runs it, exactly as it ran the function under test. zlib's
+`deflate` calling `deflate_stored` calling `longest_match` needs no stubs at
+all, because all three are present and all three are emulated. This is where
+most calls go, and it costs nothing but letting the emulator continue. The
+budget covers the whole call tree, so a genuinely huge computation is
+budget-exhausted (inconclusive), not refuted.
+
+**Tier 2 - imports, served by stub families.** A call that leaves the binary
+- to the C runtime - is an import, and these cluster into a few behaviour
+families, each built on one tested core rather than one stub per name:
+
+| family | members | shared core |
+|---|---|---|
+| block memory | memcpy, memmove, memset, memcmp, and the `__builtin_` and bcopy/bzero spellings | copy / fill / compare a byte range |
+| C string | strlen, strcpy, strncpy, strcat, strcmp, strncmp, strchr, strrchr, strstr, strdup | a NUL-terminated byte range |
+| character | toupper, tolower, isdigit, isalpha, isspace, ... | a one-byte table |
+| number/text | atoi, atol, strtol, strtoul | parse an integer from text |
+| allocation | malloc, calloc, realloc, free, aligned variants | a deterministic arena |
+
+A family's core is written and tested once against the C standard; each
+member is a few lines on top, and each member still gets its own test. This
+is how coverage is wide without being a pile of hand-written stubs: forty
+string functions are one tested string core and forty short, tested wrappers.
+A member the core cannot honour exactly (a `realloc` that would have to move
+a block the arena cannot) makes the input inconclusive, never refuted.
+
+**Tier 3 - an import in no family: inconclusive.** A call to something
+genuinely outside these - `deflate` as an *import* because zlib was linked
+dynamically, `getaddrinfo`, a callback into code the harness does not have -
+makes the input inconclusive. It is not stubbed, because a hand-written
+`deflate` would be unverified code in the heart of the verifier, and a wrong
+stub refutes true claims. Silence is safer than a guess.
+
+**Widening is measured, not guessed.** V0's import histogram counts, across
+the sample, which imports reach tier 3 and how often. A family or a member
+is added when the histogram shows it would move real coverage, and it enters
+by the stub rules - the C standard, its own test, deterministic - never to
+make one pair pass. So coverage grows toward where the functions actually
+are, and a bigger binary that leans on an unhandled family shows up as a
+spike in that histogram, to be answered by adding the family, not by
+loosening anything.
 
 ## Every verdict can be replayed
 
@@ -366,8 +418,9 @@ Anything a stub cannot honour makes the input **inconclusive**, never
 refuted. If `realloc` would have to move a block and the arena cannot, that
 input is inconclusive. Silence is always safer than a wrong answer.
 
-**The base stubs (layer B, and the first written), each with what its test
-must cover:**
+**The base stubs (layer B, and the first written) - the block-memory and
+allocation cores, plus the first string members - each with what its test
+must cover. The families above say how the rest follow from these:**
 
 | stub | behaviour | the test's corners |
 |---|---|---|
