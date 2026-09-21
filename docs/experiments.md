@@ -1432,3 +1432,4 @@ block were added as the work reached them.
       written down (F14 for the move to rented hardware)
 - [x] Test split, one look: run 1297, v1 at 0.735 MRR and 0.859 recall@10
 - [ ] Verifier: how many claims survive verification, end to end
+      (design, before any code: `docs/verifier.md`)
