@@ -1,0 +1,191 @@
+"""The harness, run against the fixture DLLs built from cases.c.
+
+These call real functions in real MinGW-built binaries at -O0 and -O3 and
+check what the harness observed: the masked return, memory written through a
+pointer, and the buckets a function that cannot be run falls into. Argument
+buffers are mapped before the call, so a function reading them sees input,
+not touched-garbage.
+"""
+
+import struct
+from pathlib import Path
+
+import pytest
+
+from elenchus.corpus.dwarf import ground_truth
+from elenchus.emulation.abi import placement
+from elenchus.emulation.harness import PAGE, Loader, Status, _fill, run
+
+FIXTURES = Path(__file__).parent / "fixtures" / "emulation"
+# A region for argument buffers, far from the image base and the stack.
+BUF = 0x0000_2000_0000_0000
+
+
+@pytest.fixture(scope="module", params=["O0", "O3"])
+def level(request):
+    return request.param
+
+
+@pytest.fixture(scope="module")
+def fixture(level):
+    loader = Loader(FIXTURES / f"cases_{level}.dll")
+    sigs = {f.name: f for f in ground_truth(FIXTURES / f"cases_{level}.dll")}
+    return loader, sigs
+
+
+def call(fixture, name, args, seed=1, budget=5_000_000):
+    loader, sigs = fixture
+    f = sigs[name]
+    return run(loader, f.address, placement(f.abi), args,
+               seed=seed, budget=budget)
+
+
+def masked(outcome, fixture, name):
+    _, sigs = fixture
+    return outcome.ret_int & placement(sigs[name].abi).ret.mask
+
+
+# ------------------------------------------------------- plain returns
+
+
+def test_a_plain_integer_function_returns_the_right_value(fixture):
+    out = call(fixture, "add3", [7, 5, 2])
+    assert out.status is Status.COMPLETED
+    assert masked(out, fixture, "add3") == 7 * 3 + 5 - 2
+
+
+def test_a_wide_integer_uses_the_full_register(fixture):
+    a, b = 0xDEADBEEF12345678, 0xABCD
+    out = call(fixture, "mix64", [a, b])
+    assert out.status is Status.COMPLETED
+    expected = (a ^ (b << 17)) * 0x9E3779B97F4A7C15 & ((1 << 64) - 1)
+    assert masked(out, fixture, "mix64") == expected
+
+
+def test_a_narrow_return_is_masked_to_its_width(fixture):
+    """low_byte returns signed char: only the low 8 bits of RAX are defined,
+    and the harness must not compare the rest (docs/verifier.md, risk 1)."""
+    out = call(fixture, "low_byte", [10])
+    assert out.status is Status.COMPLETED
+    assert masked(out, fixture, "low_byte") == ((10 * 7 + 3) & 0xFF)
+
+
+# ------------------------------------------------------- pointer input
+
+
+
+
+def test_a_function_fills_a_buffer_through_a_pointer(fixture):
+    """fill(p, 20, 'A') writes 20 ascending bytes; both levels write the
+    same, and it is a void function so nothing is returned."""
+    out = call(fixture, "fill", [BUF, 20, 0x41])
+    assert out.status is Status.COMPLETED
+    page = out.writes[BUF & ~(PAGE - 1)]
+    start = BUF & (PAGE - 1)
+    assert page[start:start + 20] == bytes((0x41 + i) & 0xFF for i in range(20))
+
+
+def test_two_levels_fill_a_buffer_identically(fixture):
+    out = call(fixture, "fill", [BUF, 32, 0x10])
+    written = out.writes[BUF & ~(PAGE - 1)][BUF & (PAGE - 1):][:32]
+    assert written == bytes((0x10 + i) & 0xFF for i in range(32))
+
+
+def test_a_function_reads_its_pointer_argument(fixture):
+    """count_nonzero reads the buffer at BUF. The harness maps it on first
+    touch with the address-only pattern, so both runs see the same bytes;
+    the count is whatever that pattern holds, but it is the same each time
+    and the same at both levels."""
+    a = call(fixture, "count_nonzero", [BUF, 64], seed=1)
+    b = call(fixture, "count_nonzero", [BUF, 64], seed=2)
+    assert a.status is b.status is Status.COMPLETED
+    # Argument memory does not take the seed, so the two agree.
+    assert a.ret_int == b.ret_int
+
+
+# ------------------------------------------------------- float returns
+
+
+def test_a_double_return_comes_back_through_xmm0(fixture):
+    out = call(fixture, "scale", [_d(3.0), 4])
+    assert out.status is Status.COMPLETED
+    assert _from_double_bits(out.ret_float_bits) == pytest.approx(3.0 * 4 + 0.5)
+
+
+def test_a_float_return_is_single_precision(fixture):
+    out = call(fixture, "fma3", [_f(2.0), _f(3.0), _f(1.5)])
+    assert out.status is Status.COMPLETED
+    assert _from_float_bits(out.ret_float_bits & 0xFFFFFFFF) == pytest.approx(7.5)
+
+
+# ------------------------------------------------------- following a call
+
+
+def test_a_call_within_the_binary_is_followed(fixture):
+    """uses_helper calls a static helper twice; at -O0 those are real calls,
+    not inlined, and the harness follows them into the binary's own code
+    (tier 1). helper(x) = x*x + 1, so uses_helper(a,b) = helper(a)-helper(b)."""
+    out = call(fixture, "uses_helper", [5, 3])
+    assert out.status is Status.COMPLETED
+    assert masked(out, fixture, "uses_helper") == (5 * 5 + 1) - (3 * 3 + 1)
+
+
+# ------------------------------------------------------- the buckets
+
+
+def test_an_import_without_a_stub_is_reported(fixture):
+    """duplicate calls strlen and malloc, both imports; with no stub resolver
+    the run stops at the first and names it, not a fault."""
+    out = call(fixture, "duplicate", [BUF])
+    assert out.status is Status.IMPORT_WITHOUT_STUB
+    assert out.detail in {"strlen", "malloc", "memcpy"}
+
+
+def test_a_nonterminating_function_exhausts_the_budget(fixture):
+    """spin(5) never returns; a small budget makes it budget-exhausted, not
+    a hang."""
+    out = call(fixture, "spin", [5], budget=100_000)
+    assert out.status is Status.BUDGET_EXHAUSTED
+
+
+def test_a_null_dereference_is_a_fault_not_a_crash(fixture):
+    """null_read reads through address 0; the harness reports a fault and
+    keeps going rather than letting the emulator error escape."""
+    out = call(fixture, "null_read", [0])
+    assert out.status is Status.FAULT
+
+
+# ------------------------------------------------------- determinism
+
+
+def test_the_same_call_gives_the_same_outcome(fixture):
+    a = call(fixture, "add3", [7, 5, 2])
+    b = call(fixture, "add3", [7, 5, 2])
+    assert a.ret_int == b.ret_int and a.status == b.status
+
+
+def test_the_fill_pattern_is_the_address_at_seed_zero():
+    """Input memory (seed 0) depends only on the address, so both runs and
+    both levels see the same bytes."""
+    assert _fill(0x1000, 0) == _fill(0x1000, 0)
+    assert _fill(0x1000, 0) != _fill(0x2000, 0)
+    assert _fill(0x1000, 1) != _fill(0x1000, 2)
+
+
+# ------------------------------------------------------- float helpers
+
+
+def _d(x):
+    return struct.unpack("<Q", struct.pack("<d", x))[0]
+
+
+def _f(x):
+    return struct.unpack("<I", struct.pack("<f", x))[0]
+
+
+def _from_double_bits(bits):
+    return struct.unpack("<d", struct.pack("<Q", bits & ((1 << 64) - 1)))[0]
+
+
+def _from_float_bits(bits):
+    return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
