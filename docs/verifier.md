@@ -94,10 +94,21 @@ trusted, and each answer is tested on true pairs.
 2. **Reads of uninitialised memory.** C allows reading uninitialised
    locals only as undefined behaviour, but real code does it, and -O0 and
    -O3 read different garbage. Answer: every execution is run **twice per
-   version, with different fill patterns** for all memory the verifier did
-   not set on purpose. An observable that changes with the fill pattern
-   *within one version* depends on garbage and is excluded from the
-   comparison for that input.
+   version, with different fill patterns for uninitialised memory** - the
+   stack below the entry stack pointer, and memory the allocator stubs hand
+   out. An observable that changes with that fill pattern *within one
+   version* depends on garbage and is excluded from the comparison for that
+   input.
+
+   Memory reached through arguments is **not** uninitialised: it is the
+   input. It is filled with a pattern of its address alone, the same in
+   both runs and both versions. *(Corrected 21 September by the first smoke
+   test, before any verifier code: the first draft filled all unset memory
+   from the seed, and `sum(const int *p, int n)` then returned a different
+   value for each seed - correctly, since it reads its input. The rule as
+   drafted would have called every function that reads its argument
+   garbage-dependent and excluded it, so the verifier could have tested
+   almost nothing.)*
 3. **Other undefined behaviour in the inputs.** Signed overflow, shifts by
    the width, out-of-bounds indexing: the compiler may assume they never
    happen, and -O3 exploits the assumption. Generated inputs favour values
@@ -160,8 +171,10 @@ effects compared.
 - **Memory:** the binary's own sections mapped at its image base.
   Everything the function reaches that the verifier did not map is mapped
   **on first touch**, filled with a pattern that is a function of the
-  address, so the same address holds the same bytes for both versions and
-  a pointer argument's buffer exists without its size being known.
+  address alone, so the same address holds the same bytes for both
+  versions and a pointer argument's buffer exists without its size being
+  known. Only the stack and allocator memory take the seed-dependent fill
+  (item 2 above).
 - **Calls within the binary** are followed. **Calls to imports** are
   served by stubs: memory and string functions (`memcpy`, `memset`,
   `memcmp`, `strlen`, ...) and allocation (`malloc`, `calloc`, `realloc`,
@@ -236,6 +249,25 @@ On pairs where the truth is known, from the corpus:
 The splits keep their roles: rules and harness are calibrated on
 **train**, measured on **val**, and the end-to-end number is taken once on
 **test**, with its protocol written first, as the encoder's was.
+
+## The first smoke test (21 September)
+
+Before V0's protocol, one question: does the candidate engine run a
+MinGW DLL's code at all? A three-function C file was built with the corpus
+toolchain (GCC 13, MinGW-w64) at -O0 and -O3 and each function run under
+Unicorn 2.1.4 with the Win64 convention, memory mapped on first touch.
+
+- `add3(7, 5, 2)`: 24 from both versions, the right answer.
+- `fill(buf, 20, 'A')`, a `void` function: the buffer written identically
+  by both, and RAX left at **20 by -O0 and 16 by -O3**. Item 1 above, seen
+  in the first function tried: comparing RAX here would have refuted a
+  pair known to be the same function.
+- `sum(buf, 9)`: the same value from both versions, but a different value
+  for each fill seed, which is what corrected item 2.
+
+A smoke test on three hand-written functions says the engine runs this
+code; it says nothing about how much of a real library will run. That is
+V0.
 
 ## Order of work
 
