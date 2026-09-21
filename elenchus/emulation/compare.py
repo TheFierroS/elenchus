@@ -145,7 +145,7 @@ class Comparison:
 def compare(q_loader: Loader, q_address: int,
             k_loader: Loader, k_address: int,
             placement: Placement, input_vectors,
-            budget: int = 5_000_000) -> Comparison:
+            budget: int = 5_000_000, stub_resolver=None) -> Comparison:
     """Test whether Q behaves as K across the given inputs.
 
     Each side is run twice per input, at SEED_A and SEED_B, so a
@@ -153,14 +153,22 @@ def compare(q_loader: Loader, q_address: int,
     input that refutes ends the comparison (there is no stronger evidence
     than one counterexample); with no refutation, the verdict is SURVIVED if
     at least one input was judged and INCONCLUSIVE if none could be.
+
+    stub_resolver serves the two sides' import calls; both sides get the same
+    resolver, so a claim is judged against one set of stubs. Passed None -
+    the default - every import is inconclusive, which is layer A of V0.
     """
     results = []
     judged_any = False
     for index, args in enumerate(input_vectors):
-        q_a = run(q_loader, q_address, placement, args, seed=SEED_A, budget=budget)
-        q_b = run(q_loader, q_address, placement, args, seed=SEED_B, budget=budget)
-        k_a = run(k_loader, k_address, placement, args, seed=SEED_A, budget=budget)
-        k_b = run(k_loader, k_address, placement, args, seed=SEED_B, budget=budget)
+        q_a = run(q_loader, q_address, placement, args, seed=SEED_A,
+                  budget=budget, stub_resolver=stub_resolver)
+        q_b = run(q_loader, q_address, placement, args, seed=SEED_B,
+                  budget=budget, stub_resolver=stub_resolver)
+        k_a = run(k_loader, k_address, placement, args, seed=SEED_A,
+                  budget=budget, stub_resolver=stub_resolver)
+        k_b = run(k_loader, k_address, placement, args, seed=SEED_B,
+                  budget=budget, stub_resolver=stub_resolver)
 
         result = _judge(q_a, q_b, k_a, k_b, placement)
         results.append(result)

@@ -111,3 +111,30 @@ BLOCK_MEMORY = {
     "__builtin_memset": memset,
     "__builtin_memcmp": memcmp,
 }
+
+
+# Every stub family, merged into one table. A new family is added here and
+# nowhere else: the resolver, the harness and compare all read this, so
+# coverage grows in one place. A later family must not silently reuse a name
+# an earlier one claimed, so the merge checks for a collision.
+def _merge(*families):
+    merged = {}
+    for family in families:
+        for name, stub in family.items():
+            if name in merged and merged[name] is not stub:
+                raise ValueError(f"two stubs claim the name {name!r}")
+            merged[name] = stub
+    return merged
+
+
+STUBS = _merge(BLOCK_MEMORY)
+
+
+def resolver(name):
+    """Return the stub for an import name, or None if no family serves it.
+
+    This is the resolver the harness and compare use: a name it does not know
+    makes the call inconclusive, never a guess. The whole verifier shares one
+    resolver so a claim is judged against the same stubs however it is run.
+    """
+    return STUBS.get(name)

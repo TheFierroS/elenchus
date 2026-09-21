@@ -16,7 +16,15 @@ from elenchus.corpus.dwarf import ground_truth
 from elenchus.emulation.abi import placement
 from elenchus.emulation.compare import Verdict, compare
 from elenchus.emulation.harness import Loader, Status, run
-from elenchus.emulation.stubs import BLOCK_MEMORY, memcmp, memcpy, memmove, memset
+from elenchus.emulation.stubs import (
+    BLOCK_MEMORY,
+    STUBS,
+    memcmp,
+    memcpy,
+    memmove,
+    memset,
+    resolver,
+)
 
 # The verifier needs unicorn, an optional dependency; skip if it is absent.
 pytest.importorskip("unicorn")
@@ -164,10 +172,6 @@ def fixture(request):
     return loader, sigs
 
 
-def resolver(name):
-    return BLOCK_MEMORY.get(name)
-
-
 def test_a_function_calling_memcpy_completes_with_the_stub(fixture):
     """copy(dest, src, n) is a wrapper around memcpy. With the stub it runs to
     completion instead of stopping at the import."""
@@ -188,7 +192,26 @@ def test_the_memcpy_wrapper_survives_its_own_twin():
     result = compare(o0, s0["copy"].address, o3, s3["copy"].address,
                      placement(s3["copy"].abi),
                      [[BUF, BUF + 0x1000, 16], [BUF, BUF + 0x1000, 1]],
-                     )
-    # compare does not take a resolver yet; this checks the pair is at least
-    # not refuted when both stop identically at the import.
-    assert result.verdict in {Verdict.SURVIVED, Verdict.INCONCLUSIVE}
+                     stub_resolver=resolver)
+    # With the stub serving memcpy, both sides run to completion and agree:
+    # the same function copies the same bytes at either level.
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_the_central_resolver_serves_the_block_family():
+    assert resolver("memcpy") is memcpy
+    assert resolver("__builtin_memset") is memset
+    assert resolver("no_such_function") is None
+
+
+def test_a_duplicate_stub_name_is_caught():
+    """Adding a family that reuses a name must fail loudly, not shadow."""
+    import pytest as _pytest
+
+    from elenchus.emulation.stubs import _merge
+    with _pytest.raises(ValueError, match="two stubs"):
+        _merge({"memcpy": memcpy}, {"memcpy": memset})
+
+
+def test_the_stubs_table_is_the_union_of_the_families():
+    assert set(STUBS) >= set(BLOCK_MEMORY)
