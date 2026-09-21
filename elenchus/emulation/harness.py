@@ -194,6 +194,98 @@ def _read_xmm0_low(uc) -> int:
     return uc.reg_read(UC_X86_REG_XMM0) & ((1 << 64) - 1)
 
 
+class StubDeclined(Exception):
+    """A stub cannot serve this call faithfully, so the input is inconclusive.
+
+    Raised by a stub when honouring the call exactly is beyond what it
+    implements - a realloc that would have to move a block the arena cannot,
+    an argument it will not assume. Never a refutation: the caller turns it
+    into IMPORT_WITHOUT_STUB, and the pair is inconclusive.
+    """
+
+
+def _fill_page(uc, page_base: int, seed: int) -> None:
+    """Map one page and fill it with its address-and-seed pattern."""
+    uc.mem_map(page_base, PAGE)
+    uc.mem_write(page_base, _fill(page_base, seed))
+
+
+def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int) -> None:
+    """Map and fill every page a range [address, address+size) touches that is
+    not mapped yet, so a read of it returns the same bytes a function's own
+    read would. Used by a stub through the Machine."""
+    first = address & ~(PAGE - 1)
+    last = (address + size - 1) & ~(PAGE - 1)
+    for page in range(first, last + PAGE, PAGE):
+        if page not in mapped:
+            _fill_page(uc, page, seed)
+            mapped.add(page)
+
+
+class Machine:
+    """What a stub is handed: the emulator's memory and the call's registers.
+
+    A stub reads its arguments from here by the Win64 convention (RCX, RDX,
+    R8, R9 for the first four integers or pointers), works on emulated memory
+    through read/write, and sets its return value. It never touches the
+    emulator directly.
+
+    read and write map memory on first touch with the same pattern the
+    function's own accesses use, so a stub serving memcpy sees the buffer's
+    address-derived bytes rather than inventing data or faulting on memory the
+    function had not reached yet.
+    """
+
+    def __init__(self, uc, mapped, seed):
+        self._uc = uc
+        self._mapped = mapped
+        self._seed = seed
+
+    def arg(self, index: int) -> int:
+        """The index-th integer or pointer argument (0-based), from its
+        register. Stubs here take no more than four, so no stack reads."""
+        from unicorn.x86_const import (
+            UC_X86_REG_R8,
+            UC_X86_REG_R9,
+            UC_X86_REG_RCX,
+            UC_X86_REG_RDX,
+        )
+        regs = (UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_R8, UC_X86_REG_R9)
+        return self._uc.reg_read(regs[index]) & 0xFFFFFFFFFFFFFFFF
+
+    def read(self, address: int, size: int) -> bytes:
+        if size:
+            _ensure_mapped(self._uc, self._mapped, address, size, self._seed)
+        return bytes(self._uc.mem_read(address, size))
+
+    def write(self, address: int, data: bytes) -> None:
+        if data:
+            _ensure_mapped(self._uc, self._mapped, address, len(data), self._seed)
+        self._uc.mem_write(address, data)
+
+    def set_return(self, value: int) -> None:
+        from unicorn.x86_const import UC_X86_REG_RAX
+        self._uc.reg_write(UC_X86_REG_RAX, value & 0xFFFFFFFFFFFFFFFF)
+
+
+def _run_stub(uc, stub, mapped, seed) -> None:
+    """Run a stub in place of the call, then return to the caller.
+
+    The call pushed a return address and jumped to the trap; the stub does
+    the function's work on the Machine, and then RIP is set to the pushed
+    return address and RSP stepped past it, exactly as a `ret` would, so the
+    caller continues as if the real function had run and returned.
+    """
+    from unicorn.x86_const import UC_X86_REG_RIP, UC_X86_REG_RSP
+
+    stub(Machine(uc, mapped, seed))
+
+    rsp = uc.reg_read(UC_X86_REG_RSP)
+    return_address = int.from_bytes(uc.mem_read(rsp, 8), "little")
+    uc.reg_write(UC_X86_REG_RSP, rsp + 8)
+    uc.reg_write(UC_X86_REG_RIP, return_address)
+
+
 def run(loader: Loader, address: int, placement: Placement, args,
         seed: int = 1, budget: int = 5_000_000, stub_resolver=None) -> Outcome:
     """Run one function and return what it produced.
@@ -240,7 +332,8 @@ def run(loader: Loader, address: int, placement: Placement, args,
     uc.reg_write(UC_X86_REG_RSP, rsp)
     _load_arguments(uc, placement, args, rsp)
 
-    state = {"status": None, "detail": "", "touched": 0}
+    state = {"status": None, "detail": ""}
+    mapped: set = set()          # pages the harness filled on first touch
     written: set = set()
 
     def on_unmapped(uc, access, addr, size, value, _):
@@ -252,13 +345,12 @@ def run(loader: Loader, address: int, placement: Placement, args,
             state["detail"] = f"null dereference at {addr:#x}"
             uc.emu_stop()
             return False
-        if state["touched"] >= UNMAPPED_FILL_LIMIT:
+        if len(mapped) >= UNMAPPED_FILL_LIMIT:
             state["status"] = Status.TOO_MUCH_MEMORY
             uc.emu_stop()
             return False
-        uc.mem_map(page, PAGE)
-        uc.mem_write(page, _fill(page, seed))
-        state["touched"] += 1
+        _fill_page(uc, page, seed)
+        mapped.add(page)
         return True
 
     def on_write(uc, access, addr, size, value, _):
@@ -267,14 +359,23 @@ def run(loader: Loader, address: int, placement: Placement, args,
 
     def on_code(uc, addr, size, _):
         # A call to an import lands on its trap address (see Loader). Catch it
-        # here and either serve it with a stub or end the run naming it.
+        # here and either run a stub in the emulator's place, or end the run
+        # naming the import.
         name = loader.traps.get(addr)
-        if name is not None:
-            stub = stub_resolver(name) if stub_resolver else None
-            if stub is None:
-                state["status"] = Status.IMPORT_WITHOUT_STUB
-                state["detail"] = name
-                uc.emu_stop()
+        if name is None:
+            return
+        stub = stub_resolver(name) if stub_resolver else None
+        if stub is None:
+            state["status"] = Status.IMPORT_WITHOUT_STUB
+            state["detail"] = name
+            uc.emu_stop()
+            return
+        try:
+            _run_stub(uc, stub, mapped, seed)
+        except StubDeclined as exc:
+            state["status"] = Status.IMPORT_WITHOUT_STUB
+            state["detail"] = f"{name}: {exc}"
+            uc.emu_stop()
 
     uc.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED
                 | UC_HOOK_MEM_FETCH_UNMAPPED, on_unmapped)
@@ -285,8 +386,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
         uc.emu_start(address, SENTINEL, count=budget)
     except UcError as exc:
         status = state["status"] or Status.FAULT
-        return Outcome(status, detail=state["detail"] or str(exc),
-                       instructions=state["touched"])
+        return Outcome(status, detail=state["detail"] or str(exc))
 
     if state["status"] is not None:
         return Outcome(state["status"], detail=state["detail"])

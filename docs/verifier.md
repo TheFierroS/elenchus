@@ -457,6 +457,75 @@ follow.
 7. Claims and verdicts as events; `elenchus verify` and `--replay`.
 8. Measurement on val; then the end-to-end protocol; then test, once.
 
+## Hardening - the core is built, these make it stronger
+
+The core runs (abi, harness, compare) and refutes true fixture pairs zero
+times. Everything below is a way it can be made harder to fool or wider in
+reach, gathered here so none is lost in the code. The verifier is the part
+the project stands on, so each of these is planned work before v1, not a
+someday-list, and each enters the same way everything has: measured, tested,
+and never by loosening the rule that a true claim is never refuted.
+
+**Not yet built, in the order they buy the most:**
+
+1. **Stub families (tier 2).** Without stubs every function that calls an
+   import is inconclusive, so this is the largest coverage gain and comes
+   first. Block memory, then C string, character, number/text, allocation,
+   each on one tested core (Coverage, above).
+2. **Input generation.** The generator that builds input vectors from the
+   reference signature - boundary values, seeded random, distinct pointer
+   regions - so a claim is tested without hand-written inputs. Its seed is
+   recorded with the verdict.
+3. **Static tier (tier 1 evidence).** The cheap checks before emulation -
+   reachable imports, string and constant references - each admitted only
+   at zero false refutations on train, to reorder candidates and refute the
+   obvious mismatches without running anything.
+
+**Sharpening what is built, so a true claim is even harder to refute:**
+
+4. **Byte-precise write tracking.** Writes are compared a page (4 KB) at a
+   time; a function that writes four bytes of a page leaves the rest as
+   whatever was there, and the two fill seeds catch most but not all of that
+   noise. Recording exactly which byte offsets a version wrote, and
+   comparing only those, removes a class of page-level false differences.
+   This directly lowers the false-refutation risk, so it comes right after
+   the first stubs.
+5. **Stack-frame alignment.** The frame is 16-aligned; Win64 wants RSP to be
+   8 mod 16 at entry (the return address just pushed). MinGW emits movups so
+   nothing faults today (measured), but MSVC (v2) and hand-tuned SSE would,
+   and getting entry alignment exactly right removes that as a variable.
+6. **Global state.** A function that reads a global sees each binary's own
+   initialised data, which is the same source; a function that only *writes*
+   globals is the recorded blind spot, since a stripped Q's global cannot be
+   matched to K's. Writes to the binary's own data sections could be compared
+   by their offset from the image base, which is stable across the twins even
+   when the address is not - a way to close part of the blind spot.
+7. **Float tolerance.** Float returns are compared bit-for-bit. Neither build
+   uses -ffast-math, so this should hold; calibration on true pairs will show
+   whether it does, and if not a per-type tolerance goes in compare, recorded
+   with the verdict.
+8. **Sub-page and heap-content comparison.** Once an allocator stub exists,
+   memory it handed out is part of the effect and is compared by content like
+   argument memory; the write tracker (4) makes that precise.
+
+**Widening reach further (toward v1's ceiling, and v2):**
+
+9. **By-value structs and long double.** Declined today. The Win64 rules for
+   aggregates (in a register up to 8 bytes, by reference above, returned
+   through a hidden pointer above 8) are mechanical; adding them turns a band
+   of inconclusive claims into judged ones.
+10. **A deeper input budget where it pays.** More input vectors refute more
+    false pairs but cost time; V0 and the false-pair measurement say where a
+    larger budget is worth it, per domain.
+11. **MSVC and ELF (v2).** The calling convention here is one place, the
+    debug format another; both change for MSVC, and the design keeps each in
+    one module so the harness body is reused.
+
+Each item is taken up in this order unless a measurement - V0's histogram, a
+calibration false-refutation, the false-pair power - says a later one matters
+more. The order serves one end: the widest reach that never once refutes a
+function that is what it is claimed to be.
+
 ## Open questions
 
 - **How much will be inconclusive?** Functions that do I/O, take
