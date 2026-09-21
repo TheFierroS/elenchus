@@ -1,0 +1,210 @@
+"""Turning two runs into a verdict, and never refuting a true claim.
+
+Two layers of test. The first builds Outcomes by hand and feeds them to the
+judging logic, so every branch - masked return, garbage exclusion, memory
+difference, a version that did not complete - is checked without an emulator.
+The second runs real fixture functions end to end: the same function at -O0
+and -O3 must survive (it is the same function), and two genuinely different
+functions must be refuted.
+"""
+
+import struct
+from pathlib import Path
+
+import pytest
+
+from elenchus.corpus.dwarf import ground_truth
+from elenchus.emulation.abi import placement
+from elenchus.emulation.compare import (
+    Verdict,
+    _judge,
+    _stable_return,
+    _stable_writes,
+    compare,
+)
+from elenchus.emulation.harness import Loader, Outcome, Status
+
+FIXTURES = Path(__file__).parent / "fixtures" / "emulation"
+BUF = 0x0000_2000_0000_0000
+
+
+# ------------------------------------------------------- hand-built outcomes
+
+
+def done(ret_int=0, ret_float_bits=0, writes=None):
+    return Outcome(Status.COMPLETED, ret_int=ret_int,
+                   ret_float_bits=ret_float_bits, writes=writes or {})
+
+
+def place(kind="int", size=4):
+    return placement({"return": {"kind": kind, "size": size, "signed": True},
+                      "params": [], "variadic": False})
+
+
+def test_a_stable_masked_return_is_read():
+    """The upper bits of RAX differ but the low 4 are the same: the value is
+    stable, because only the masked width is read."""
+    a = done(ret_int=0xAAAA_AAAA_0000_0042)
+    b = done(ret_int=0xBBBB_BBBB_0000_0042)
+    assert _stable_return(a, b, place("int", 4)) == ("int", 0x42)
+
+
+def test_a_return_that_changes_with_the_seed_is_garbage():
+    """Different low bytes between the two seeds: the return depended on
+    uninitialised memory, so it cannot be compared."""
+    a = done(ret_int=0x0000_0001)
+    b = done(ret_int=0x0000_0002)
+    assert _stable_return(a, b, place("int", 4)) is None
+
+
+def test_a_void_return_is_nothing_to_compare():
+    assert _stable_return(done(), done(), place("void", 0)) == "void"
+
+
+def test_stable_writes_keep_only_pages_both_seeds_agree_on():
+    a = done(writes={0x1000: b"same", 0x2000: b"garbageA"})
+    b = done(writes={0x1000: b"same", 0x2000: b"garbageB"})
+    assert _stable_writes(a, b) == {0x1000: b"same"}
+
+
+# ------------------------------------------------------- judging one input
+
+
+def test_two_runs_that_agree_survive():
+    q = (done(ret_int=7), done(ret_int=7))
+    k = (done(ret_int=7), done(ret_int=7))
+    assert _judge(*q, *k, place()).verdict is Verdict.SURVIVED
+
+
+def test_a_stable_difference_refutes():
+    q = (done(ret_int=7), done(ret_int=7))
+    k = (done(ret_int=8), done(ret_int=8))
+    result = _judge(*q, *k, place())
+    assert result.verdict is Verdict.REFUTED
+    assert "return" in result.reason
+
+
+def test_a_difference_only_one_seed_shows_does_not_refute():
+    """Q returns 7 then 8 - its own return is garbage-dependent - and K is a
+    steady 7. The difference is not real, so this input cannot refute; with
+    nothing else to compare it is inconclusive, not a refutation."""
+    q = (done(ret_int=7), done(ret_int=8))
+    k = (done(ret_int=7), done(ret_int=7))
+    result = _judge(*q, *k, place())
+    assert result.verdict is Verdict.INCONCLUSIVE
+
+
+def test_a_version_that_did_not_complete_is_inconclusive():
+    q = (Outcome(Status.BUDGET_EXHAUSTED), Outcome(Status.BUDGET_EXHAUSTED))
+    k = (done(ret_int=7), done(ret_int=7))
+    result = _judge(*q, *k, place())
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert "budget" in result.reason
+
+
+def test_a_stable_memory_difference_refutes():
+    q = (done(writes={0x4000: b"AAAA"}), done(writes={0x4000: b"AAAA"}))
+    k = (done(writes={0x4000: b"BBBB"}), done(writes={0x4000: b"BBBB"}))
+    result = _judge(*q, *k, place("void", 0))
+    assert result.verdict is Verdict.REFUTED
+    assert "memory" in result.reason
+
+
+def test_garbage_memory_does_not_refute():
+    """Each version writes a page that differs between its own seeds: garbage,
+    dropped from both, so the two versions are not compared on it."""
+    q = (done(ret_int=1, writes={0x4000: b"qA"}), done(ret_int=1, writes={0x4000: b"qB"}))
+    k = (done(ret_int=1, writes={0x4000: b"kA"}), done(ret_int=1, writes={0x4000: b"kB"}))
+    assert _judge(*q, *k, place()).verdict is Verdict.SURVIVED
+
+
+def test_a_float_return_compares_by_bits():
+    bits = struct.unpack("<Q", struct.pack("<d", 3.5))[0]
+    q = (done(ret_float_bits=bits), done(ret_float_bits=bits))
+    k = (done(ret_float_bits=bits), done(ret_float_bits=bits))
+    fplace = placement({"return": {"kind": "float", "size": 8}, "params": [],
+                        "variadic": False})
+    assert _judge(*q, *k, fplace).verdict is Verdict.SURVIVED
+
+
+# ------------------------------------------------------- end to end
+
+
+def loaders_and_sigs():
+    o0 = Loader(FIXTURES / "cases_O0.dll")
+    o3 = Loader(FIXTURES / "cases_O3.dll")
+    s0 = {f.name: f for f in ground_truth(FIXTURES / "cases_O0.dll")}
+    s3 = {f.name: f for f in ground_truth(FIXTURES / "cases_O3.dll")}
+    return o0, o3, s0, s3
+
+
+@pytest.fixture(scope="module")
+def env():
+    return loaders_and_sigs()
+
+
+def compare_named(env, q_name, k_name, inputs):
+    o0, o3, s0, s3 = env
+    return compare(o0, s0[q_name].address, o3, s3[k_name].address,
+                   placement(s3[k_name].abi), inputs)
+
+
+def test_the_same_function_at_two_levels_survives(env):
+    """add3 at -O0 against add3 at -O3: the same function, so it must never
+    be refuted - the requirement the whole design rests on."""
+    result = compare_named(env, "add3", "add3", [[1, 2, 3], [7, 5, 2], [-1, 0, 100]])
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_a_wide_function_survives_itself(env):
+    result = compare_named(env, "mix64", "mix64",
+                           [[1, 2], [0xDEADBEEF, 0xABCD], [0, 0]])
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_a_void_writer_survives_itself(env):
+    result = compare_named(env, "fill", "fill", [[BUF, 16, 0x41], [BUF, 8, 0]])
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_a_double_function_survives_itself(env):
+    d3 = struct.unpack("<Q", struct.pack("<d", 3.0))[0]
+    d2 = struct.unpack("<Q", struct.pack("<d", 2.5))[0]
+    result = compare_named(env, "scale", "scale", [[d3, 4], [d2, 7]])
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_two_different_functions_are_refuted(env):
+    """add3 against mix64 under add3's signature: different functions, so
+    some input must make them disagree."""
+    o0, o3, s0, s3 = env
+    result = compare(o0, s0["add3"].address, o3, s3["mix64"].address,
+                     placement(s3["add3"].abi),
+                     [[1, 2, 3], [7, 5, 2], [100, 200, 300], [0, 0, 0]])
+    assert result.verdict is Verdict.REFUTED
+    assert result.refuting_input is not None
+
+
+def test_a_caller_survives_itself(env):
+    """uses_helper calls into the binary; following those calls, -O0 and -O3
+    still agree."""
+    result = compare_named(env, "uses_helper", "uses_helper",
+                           [[5, 3], [10, 10], [-2, 7]])
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_an_unstubbed_import_is_inconclusive(env):
+    """duplicate calls malloc; with no stubs both sides stop the same way, so
+    the claim cannot be judged - inconclusive, not refuted."""
+    result = compare_named(env, "duplicate", "duplicate", [[BUF]])
+    assert result.verdict is Verdict.INCONCLUSIVE
+
+
+def test_the_first_refutation_stops_the_comparison(env):
+    o0, o3, s0, s3 = env
+    result = compare(o0, s0["add3"].address, o3, s3["mix64"].address,
+                     placement(s3["add3"].abi),
+                     [[5, 5, 5], [1, 1, 1], [2, 2, 2], [3, 3, 3]])
+    assert result.verdict is Verdict.REFUTED
+    # It stopped at the first refuting input, not run all four.
+    assert len(result.inputs) == result.refuting_input + 1
