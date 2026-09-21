@@ -222,6 +222,57 @@ def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int) -> None:
             mapped.add(page)
 
 
+ARENA_BASE = 0x0000_3000_0000_0000
+ARENA_LIMIT = 0x0000_3000_1000_0000      # 256 MiB of address space to hand out
+ALIGN = 16                               # malloc returns 16-byte-aligned memory
+
+
+class Arena:
+    """A deterministic bump allocator shared across one function's run.
+
+    Addresses are handed out in order from ARENA_BASE, 16-byte aligned, so
+    the same sequence of allocations gives the same addresses every time and
+    in both versions of a claim - which is why a pointer the allocator
+    returned is never compared by value, only the memory it points at.
+
+    Blocks are tracked here, out of emulated memory, so free can tell a live
+    block from a bad pointer and realloc can find a block's size. free marks a
+    block freed but does not reuse its address: reuse would let -O0 and -O3,
+    which free at different points, diverge on later addresses. Address space
+    is cheap; determinism is not.
+    """
+
+    def __init__(self):
+        self.next = ARENA_BASE
+        self.blocks = {}          # address -> {"size", "live"}
+
+    def allocate(self, size):
+        if size == 0:
+            size = 1              # malloc(0) returns a unique, freeable pointer
+        address = self.next
+        stride = (size + ALIGN - 1) & ~(ALIGN - 1)
+        if address + stride > ARENA_LIMIT:
+            raise StubDeclined("arena exhausted")
+        self.next += stride
+        self.blocks[address] = {"size": size, "live": True}
+        return address
+
+    def free(self, address):
+        if address == 0:
+            return               # free(NULL) is a no-op
+        block = self.blocks.get(address)
+        if block is None or not block["live"]:
+            raise StubDeclined("free of a bad or already-freed pointer")
+        block["live"] = False
+
+    def size_of(self, address):
+        block = self.blocks.get(address)
+        if block is None or not block["live"]:
+            raise StubDeclined("realloc of a bad or already-freed pointer")
+        return block["size"]
+
+
+
 class Machine:
     """What a stub is handed: the emulator's memory and the call's registers.
 
@@ -236,10 +287,11 @@ class Machine:
     function had not reached yet.
     """
 
-    def __init__(self, uc, mapped, seed):
+    def __init__(self, uc, mapped, seed, arena):
         self._uc = uc
         self._mapped = mapped
         self._seed = seed
+        self.arena = arena
 
     def arg(self, index: int) -> int:
         """The index-th integer or pointer argument (0-based), from its
@@ -268,7 +320,7 @@ class Machine:
         self._uc.reg_write(UC_X86_REG_RAX, value & 0xFFFFFFFFFFFFFFFF)
 
 
-def _run_stub(uc, stub, mapped, seed) -> None:
+def _run_stub(uc, stub, mapped, seed, arena) -> None:
     """Run a stub in place of the call, then return to the caller.
 
     The call pushed a return address and jumped to the trap; the stub does
@@ -278,7 +330,7 @@ def _run_stub(uc, stub, mapped, seed) -> None:
     """
     from unicorn.x86_const import UC_X86_REG_RIP, UC_X86_REG_RSP
 
-    stub(Machine(uc, mapped, seed))
+    stub(Machine(uc, mapped, seed, arena))
 
     rsp = uc.reg_read(UC_X86_REG_RSP)
     return_address = int.from_bytes(uc.mem_read(rsp, 8), "little")
@@ -335,6 +387,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
     state = {"status": None, "detail": ""}
     mapped: set = set()          # pages the harness filled on first touch
     written: set = set()
+    arena = Arena()              # fresh per run: both versions allocate alike
 
     def on_unmapped(uc, access, addr, size, value, _):
         page = addr & ~(PAGE - 1)
@@ -371,7 +424,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
             uc.emu_stop()
             return
         try:
-            _run_stub(uc, stub, mapped, seed)
+            _run_stub(uc, stub, mapped, seed, arena)
         except StubDeclined as exc:
             state["status"] = Status.IMPORT_WITHOUT_STUB
             state["detail"] = f"{name}: {exc}"

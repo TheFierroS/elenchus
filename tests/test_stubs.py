@@ -215,3 +215,133 @@ def test_a_duplicate_stub_name_is_caught():
 
 def test_the_stubs_table_is_the_union_of_the_families():
     assert set(STUBS) >= set(BLOCK_MEMORY)
+
+
+# --------------------------------------------------------- allocation
+
+from elenchus.emulation.harness import Arena, StubDeclined  # noqa: E402
+from elenchus.emulation.stubs import calloc, free, malloc, realloc  # noqa: E402
+
+
+class ArenaMachine:
+    """A Machine over a real Arena, memory kept sparse in a dict so the huge
+    arena addresses need no giant buffer."""
+
+    def __init__(self, args):
+        self._args = args
+        self.arena = Arena()
+        self.byte = {}                     # address -> value, unset reads as 0
+        self.returned = None
+
+    def arg(self, index):
+        return self._args[index]
+
+    def read(self, address, size):
+        return bytes(self.byte.get(address + i, 0) for i in range(size))
+
+    def write(self, address, data):
+        for i, value in enumerate(data):
+            self.byte[address + i] = value
+
+    def set_return(self, value):
+        self.returned = value
+
+
+def test_malloc_returns_aligned_non_overlapping_blocks():
+    a = Arena()
+    first = a.allocate(10)
+    second = a.allocate(10)
+    assert first % 16 == 0 and second % 16 == 0
+    assert second >= first + 10                 # no overlap
+    assert second - first == 16                 # 10 rounded up to 16
+
+
+def test_malloc_zero_returns_a_unique_freeable_pointer():
+    a = Arena()
+    p = a.allocate(0)
+    assert p != 0
+    a.free(p)                                   # freeable, no error
+
+
+def test_free_null_is_a_no_op():
+    a = Arena()
+    a.free(0)                                   # no error
+
+
+def test_free_of_a_bad_pointer_declines():
+    a = Arena()
+    with pytest.raises(StubDeclined):
+        a.free(0xDEAD0000)
+
+
+def test_double_free_declines():
+    a = Arena()
+    p = a.allocate(8)
+    a.free(p)
+    with pytest.raises(StubDeclined):
+        a.free(p)
+
+
+def test_a_freed_address_is_not_handed_out_again():
+    """Reuse would let -O0 and -O3, freeing at different points, diverge on
+    later addresses; the arena never reuses."""
+    a = Arena()
+    p = a.allocate(16)
+    a.free(p)
+    q = a.allocate(16)
+    assert q != p
+
+
+def test_calloc_zeroes_the_memory():
+    m = ArenaMachine(args=[4, 8])
+    calloc(m)
+    assert m.read(m.returned, 32) == b"\x00" * 32
+
+
+def test_calloc_overflow_returns_null():
+    m = ArenaMachine(args=[1 << 40, 1 << 40])    # product overflows 64 bits
+    calloc(m)
+    assert m.returned == 0
+
+
+def test_realloc_null_is_malloc():
+    m = ArenaMachine(args=[0, 16])
+    realloc(m)
+    assert m.returned != 0                       # realloc(NULL, n) is malloc
+
+
+def test_realloc_grows_and_keeps_the_old_bytes():
+    m = ArenaMachine(args=[4])          # malloc(4), one argument
+    malloc(m)
+    p = m.returned
+    m.write(p, b"ABCD")
+    m2 = ArenaMachine(args=[p, 8])
+    m2.arena = m.arena
+    m2.byte = m.byte
+    realloc(m2)
+    assert m2.read(m2.returned, 4) == b"ABCD"    # old contents preserved
+    assert m2.returned != p                      # moved
+
+
+def test_realloc_of_a_bad_pointer_declines():
+    m = ArenaMachine(args=[0xBADF00D, 16])
+    with pytest.raises(StubDeclined):
+        realloc(m)
+
+
+def test_the_allocation_family_is_in_the_resolver():
+    assert resolver("malloc") is malloc
+    assert resolver("free") is free
+    assert resolver("calloc") is calloc
+    assert resolver("realloc") is realloc
+
+
+def test_duplicate_still_needs_strlen(fixture):
+    """duplicate calls strlen then malloc then memcpy; with allocation and
+    block-memory stubs but no string family yet, it stops at strlen -
+    inconclusive, not a fault, and not a wrong completion."""
+    loader, sigs = fixture
+    f = sigs["duplicate"]
+    out = run(loader, f.address, placement(f.abi), [BUF], stub_resolver=resolver)
+    assert out.status is Status.IMPORT_WITHOUT_STUB
+    assert out.detail == "strlen"

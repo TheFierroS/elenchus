@@ -113,6 +113,66 @@ BLOCK_MEMORY = {
 }
 
 
+# --- allocation: malloc, calloc, realloc, free, over a deterministic arena --
+
+# A block's header, kept in a Python dict on the Machine rather than in
+# emulated memory, so a program cannot corrupt the allocator's own bookkeeping
+# and a freed block can be recognised. Addresses come from one region, far
+# from the image, the stack and the traps.
+def malloc(m) -> None:
+    """void *malloc(size_t size). Returns a fresh block, or the arena declines."""
+    size = m.arg(0)
+    m.set_return(m.arena.allocate(size))
+
+
+def calloc(m) -> None:
+    """void *calloc(size_t n, size_t size). Zeroed; n*size overflow returns 0."""
+    n, size = m.arg(0), m.arg(1)
+    total = n * size
+    if total >> 64:                          # would overflow size_t
+        m.set_return(0)
+        return
+    address = m.arena.allocate(total)
+    if total:
+        m.write(address, b"\x00" * total)
+    m.set_return(address)
+
+
+def realloc(m) -> None:
+    """void *realloc(void *p, size_t size).
+
+    realloc(NULL, size) is malloc; realloc(p, 0) frees p and returns a fresh
+    minimal block. Otherwise a new block is allocated, the smaller of the two
+    sizes is copied, and the old block freed - moving every time, which is
+    always allowed and keeps the arena a simple bump allocator.
+    """
+    old, size = m.arg(0), m.arg(1)
+    if old == 0:
+        m.set_return(m.arena.allocate(size))
+        return
+    old_size = m.arena.size_of(old)          # declines a bad pointer
+    new = m.arena.allocate(size)
+    keep = min(old_size, size)
+    if keep:
+        m.write(new, m.read(old, keep))
+    m.arena.free(old)
+    m.set_return(new)
+
+
+def free(m) -> None:
+    """void free(void *p). NULL is a no-op; a bad pointer declines."""
+    m.arena.free(m.arg(0))
+    m.set_return(0)
+
+
+ALLOCATION = {
+    "malloc": malloc,
+    "calloc": calloc,
+    "realloc": realloc,
+    "free": free,
+}
+
+
 # Every stub family, merged into one table. A new family is added here and
 # nowhere else: the resolver, the harness and compare all read this, so
 # coverage grows in one place. A later family must not silently reuse a name
@@ -127,7 +187,7 @@ def _merge(*families):
     return merged
 
 
-STUBS = _merge(BLOCK_MEMORY)
+STUBS = _merge(BLOCK_MEMORY, ALLOCATION)
 
 
 def resolver(name):
