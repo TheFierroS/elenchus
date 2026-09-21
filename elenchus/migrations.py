@@ -9,7 +9,7 @@ append-only: once released, a migration is never edited or removed, because
 someone may still hold a database that has not passed through it yet.
 """
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def has_column(conn, table, column):
@@ -267,6 +267,20 @@ def _migration_009_corpus_gaps(conn):
     """)
 
 
+def _migration_010_ground_truth_abi(conn):
+    """ground_truth.abi: each signature resolved to what a call needs.
+
+    param_types and return_type are names - uint32_t, size_t, word - and a
+    name does not say how wide a value is. The verifier passes arguments
+    and reads return values by kind, width and sign, resolved from DWARF
+    through every typedef, and needs to know when a function is variadic,
+    which the names never recorded. Nullable, so a plain ALTER suffices;
+    existing rows fill in when refresh-truth reads the debug twins again.
+    """
+    if not has_column(conn, "ground_truth", "abi"):
+        conn.execute("ALTER TABLE ground_truth ADD COLUMN abi TEXT")
+
+
 MIGRATIONS = [
     (1, "runs table, events.run_id", _migration_001_runs),
     (2, "functions.library for imports", _migration_002_function_library),
@@ -277,6 +291,7 @@ MIGRATIONS = [
     (7, "dataset_split table", _migration_007_dataset_split),
     (8, "measurements table", _migration_008_measurements),
     (9, "corpus_gaps table", _migration_009_corpus_gaps),
+    (10, "ground_truth.abi resolved signatures", _migration_010_ground_truth_abi),
 ]
 
 

@@ -50,10 +50,14 @@ class GroundTruthFunction:
     param_types: tuple[str, ...]
     decl_file: str | None
     decl_line: int | None
+    abi: dict | None = None
 
     @property
     def signature(self) -> str:
-        return f"{self.return_type} {self.name}({', '.join(self.param_types)})"
+        params = list(self.param_types)
+        if self.abi and self.abi.get("variadic"):
+            params.append("...")
+        return f"{self.return_type} {self.name}({', '.join(params)})"
 
 
 def _resolve_section_names(pe, raw):
@@ -315,10 +319,16 @@ def _type_name(die, offsets, depth=0):
         return _die_name(die) or "?"
     if tag == "DW_TAG_pointer_type":
         return _type_name(inner(), offsets, depth + 1) + "*"
-    if tag == "DW_TAG_const_type":
-        return "const " + _type_name(inner(), offsets, depth + 1)
-    if tag == "DW_TAG_volatile_type":
-        return "volatile " + _type_name(inner(), offsets, depth + 1)
+    if tag in ("DW_TAG_const_type", "DW_TAG_volatile_type"):
+        # A qualifier on a pointer belongs after the star, where C writes it:
+        # const char *const * is a pointer to a constant pointer to constant
+        # characters. Put in front of both, it read "const const char**".
+        word = "const" if tag == "DW_TAG_const_type" else "volatile"
+        target = inner()
+        name = _type_name(target, offsets, depth + 1)
+        if target is not None and target.tag == "DW_TAG_pointer_type":
+            return f"{name} {word}"
+        return f"{word} {name}"
     if tag == "DW_TAG_structure_type":
         return "struct " + (_die_name(die) or "anon")
     if tag == "DW_TAG_union_type":
@@ -330,6 +340,81 @@ def _type_name(die, offsets, depth=0):
 
     name = _die_name(die)
     return name if name else tag.replace("DW_TAG_", "")
+
+
+# DW_ATE_* base-type encodings (DWARF 5, section 7.8).
+_ENCODINGS = {
+    0x02: ("int", False),       # boolean
+    0x04: ("float", None),
+    0x05: ("int", True),        # signed
+    0x06: ("int", True),        # signed char
+    0x07: ("int", False),       # unsigned
+    0x08: ("int", False),       # unsigned char
+    0x10: ("int", False),       # UTF (char16_t, char32_t)
+}
+
+_QUALIFIERS = ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type",
+               "DW_TAG_restrict_type", "DW_TAG_atomic_type")
+
+
+def _abi_type(die, offsets, depth=0):
+    """Resolve a type DIE to what a calling convention needs to know.
+
+    A type's name says nothing about its width: uint32_t, u32 and word are
+    all four unsigned bytes, and only the chain of typedefs down to a base
+    type says so. The verifier passes arguments and reads return values by
+    this, so it is resolved here, from the debug information, rather than
+    guessed later from names.
+
+    Returns {"kind", "size", "signed"}; kind is one of int, float, pointer,
+    struct, union, function, complex, void or unknown.
+    """
+    def result(kind, size=0, signed=None):
+        return {"kind": kind, "size": size, "signed": signed}
+
+    if die is None:
+        return result("void")
+    if depth > 16:
+        return result("unknown")
+
+    def inner():
+        ref = die.attributes.get("DW_AT_type")
+        if ref is None:
+            return None
+        return offsets.get(ref.value + die.cu.cu_offset)
+
+    def size():
+        attr = die.attributes.get("DW_AT_byte_size")
+        return attr.value if attr is not None else 0
+
+    tag = die.tag
+    if tag in _QUALIFIERS:
+        return _abi_type(inner(), offsets, depth + 1)
+    if tag == "DW_TAG_base_type":
+        encoding = die.attributes.get("DW_AT_encoding")
+        if encoding is not None and encoding.value == 0x03:
+            return result("complex", size())
+        kind, signed = _ENCODINGS.get(encoding.value if encoding else None,
+                                      ("unknown", None))
+        return result(kind, size(), signed)
+    if tag in ("DW_TAG_pointer_type", "DW_TAG_reference_type",
+               "DW_TAG_rvalue_reference_type"):
+        return result("pointer", size() or 8, False)
+    if tag == "DW_TAG_array_type":
+        # A parameter declared as an array is a pointer to its first element.
+        return result("pointer", 8, False)
+    if tag == "DW_TAG_enumeration_type":
+        underlying = inner()
+        if underlying is not None:
+            return _abi_type(underlying, offsets, depth + 1)
+        return result("int", size(), None)
+    if tag == "DW_TAG_structure_type":
+        return result("struct", size())
+    if tag == "DW_TAG_union_type":
+        return result("union", size())
+    if tag == "DW_TAG_subroutine_type":
+        return result("function")
+    return result("unknown")
 
 
 def ground_truth(path):
@@ -390,12 +475,20 @@ def _subprogram(die, offsets, file_table, cu_offset):
     ret_die = offsets.get(ret_ref.value + cu_offset) if ret_ref else None
 
     params = []
+    resolved = []
+    variadic = False
     for child in die.iter_children():
+        if child.tag == "DW_TAG_unspecified_parameters":
+            # The "..." of a variadic function. Without this the function
+            # looks as if it took only its named parameters.
+            variadic = True
+            continue
         if child.tag != "DW_TAG_formal_parameter":
             continue
         p_ref = child.attributes.get("DW_AT_type")
         p_die = offsets.get(p_ref.value + cu_offset) if p_ref else None
         params.append(_type_name(p_die, offsets))
+        resolved.append(_abi_type(p_die, offsets))
 
     line_attr = die.attributes.get("DW_AT_decl_line")
     file_attr = die.attributes.get("DW_AT_decl_file")
@@ -407,4 +500,6 @@ def _subprogram(die, offsets, file_table, cu_offset):
         param_types=tuple(params),
         decl_file=file_table.get(file_attr.value) if file_attr else None,
         decl_line=line_attr.value if line_attr else None,
+        abi={"return": _abi_type(ret_die, offsets), "params": resolved,
+             "variadic": variadic},
     )

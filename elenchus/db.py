@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS ground_truth (
     param_types TEXT,
     decl_file   TEXT,
     decl_line   INTEGER,
+    abi         TEXT,
     UNIQUE (binary_id, address)
 );
 
