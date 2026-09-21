@@ -1343,6 +1343,61 @@ training or validation. Recorded in `measurements` with split `test`.
 refuses any other); and `measurements` holds no `test` rows for this
 corpus, so this is the first look.
 
+**Result (run 1297, 21 September, code `f0cb530`, corpus
+`69b6d888c94c2175`).** Read once and not acted on. 4,896 -O0 queries
+against a pool of 5,147 -O3 functions, 39 packages.
+
+| | MRR | recall@1 | recall@10 | package MRR | median rank |
+|---|---|---|---|---|---|
+| **v1: 11M, seed 0 (run 1293)** | **0.735** | **0.670** | **0.859** | **0.744** | **1** |
+| 11M, seed 1 (run 1296) | 0.731 | 0.664 | 0.855 | 0.735 | 1 |
+| 3.6M (run 1295) | 0.699 | 0.631 | 0.821 | 0.703 | 1 |
+| import-jaccard | 0.102 | 0.066 | 0.151 | 0.118 | 2,574 |
+| bm25-mnemonic | 0.079 | 0.047 | 0.136 | 0.089 | 489 |
+| structural | 0.039 | 0.009 | 0.087 | 0.037 | 165 |
+| random | 0.003 | 0.000 | 0.004 | 0.002 | 2,449 |
+
+**v1, on 39 libraries it never saw:** two thirds of functions found at the
+first guess among 5,147, the right one in the first ten for 86%, and more
+than half of all queries answered at rank one. Seven times the best
+model-free baseline.
+
+- **Test came out above val, for everything.** The three models gained
+  0.047-0.052 over their val scores; the protocol expected the other
+  direction. The model-free baselines rose too (import-jaccard 0.076 to
+  0.102, bm25 0.065 to 0.079), and they learn nothing, so this is not
+  leakage: the test packages are, taken together, easier than the val
+  packages. Reported, as the protocol said, and not corrected.
+- **The size gain held on packages the choice never saw:** 11M over 3.6M by
+  +0.034 on the query mean (val +0.031) and +0.037 on the package mean (val
+  +0.041). The seeds stay close: 0.735 and 0.731.
+- **Where it struggles is informative.** secp256k1 (0.28) and monocypher
+  (0.56) are constant-time big-number arithmetic - long, branchless, alike.
+  mpack (0.49) and pdcurses (0.57) are many small near-identical functions.
+  stb (0.43) and plutovg (0.55) are the pair F12 found sharing code, so what
+  remains of each after the dedup is the part that is hard to tell apart.
+  The model is weakest where many things look the same, which is what hard
+  negatives (v2) are for.
+- **It runs on the laptop.** Scoring ~10,000 functions took 462 s for 11M
+  and 182 s for 3.6M - about 46 ms a function for v1, with no training cost.
+
+**Two things about how it was taken.**
+
+- The pre-check asked whether `measurements` held any test rows, found 20,
+  and stopped. They are baselines only, from 14-15 September, on test
+  splits of earlier corpora (455 and 1,203 queries); no trained model had
+  ever been scored on any test split, and none of these packages had been
+  looked at in this one. The check asked the wrong question - "any test
+  rows" rather than "any for this split" - and the look went ahead once
+  the answer to the right one was known.
+- The scores were first recorded as encoder (run 2), (run 5) and (run 4):
+  the numbers the checkpoints were trained under on rented hardware, which
+  here are extract runs from 14 September. `b9c7e80` matches a checkpoint
+  to its local training run by what it was rather than by that number, and
+  `elenchus check` now fails on a score named after a run that did not
+  train. The three rows were renamed to runs 1293, 1296 and 1295, the
+  mapping confirmed two ways: by import-runs and by the new matching.
+
 ## v1 checklist
 
 Kept as it was written, ticked as it was done; the items after the first
@@ -1375,5 +1430,5 @@ block were added as the work reached them.
 - [x] Stage 1, runs 1287-1291: MLM helps, keep it
 - [x] Stages 2 and 3, runs 1292-1296: v1 is 11M; 15M not run, the reason
       written down (F14 for the move to rented hardware)
-- [ ] Test split, one look (protocol above)
+- [x] Test split, one look: run 1297, v1 at 0.735 MRR and 0.859 recall@10
 - [ ] Verifier: how many claims survive verification, end to end
