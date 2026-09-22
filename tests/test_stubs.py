@@ -46,6 +46,9 @@ class FakeMachine:
         return self._args[index]
 
     def read(self, address, size):
+        from elenchus.emulation.harness import MAX_TRANSFER, StubDeclined
+        if size > MAX_TRANSFER:
+            raise StubDeclined(f"read of {size} bytes, past the sanity bound")
         start = address - self.base
         assert start >= 0 and start + size <= len(self.mem), "read out of range"
         return bytes(self.mem[start:start + size])
@@ -55,6 +58,12 @@ class FakeMachine:
         if start + len(data) > len(self.mem):
             self.mem.extend(b"\x00" * (start + len(data) - len(self.mem)))
         self.mem[start:start + len(data)] = data
+
+    def bound(self, size):
+        from elenchus.emulation.harness import MAX_TRANSFER, StubDeclined
+        if size > MAX_TRANSFER:
+            raise StubDeclined(f"size {size} past the sanity bound")
+        return size
 
     def set_return(self, value):
         self.returned = value
@@ -243,6 +252,12 @@ class ArenaMachine:
         for i, value in enumerate(data):
             self.byte[address + i] = value
 
+    def bound(self, size):
+        from elenchus.emulation.harness import MAX_TRANSFER, StubDeclined
+        if size > MAX_TRANSFER:
+            raise StubDeclined(f"size {size} past the sanity bound")
+        return size
+
     def set_return(self, value):
         self.returned = value
 
@@ -390,6 +405,12 @@ class StrMachine:
     def write(self, address, data):
         for i, v in enumerate(data):
             self.byte[address + i] = v
+
+    def bound(self, size):
+        from elenchus.emulation.harness import MAX_TRANSFER, StubDeclined
+        if size > MAX_TRANSFER:
+            raise StubDeclined(f"size {size} past the sanity bound")
+        return size
 
     def set_return(self, value):
         self.returned = value
@@ -556,3 +577,27 @@ def test_string_wrappers_survive_their_own_twins():
         result = compare(o0, s0[name].address, o3, s3[name].address,
                          placement(s3[name].abi), inputs, stub_resolver=resolver)
         assert result.verdict in {Verdict.SURVIVED, Verdict.INCONCLUSIVE}, name
+
+
+def test_a_garbage_size_declines_instead_of_crashing():
+    """memset(dest, c, n) with a nonsense n - a pointer reinterpreted as a
+    count - must not try to build forty billion bytes and crash. It declines,
+    inconclusive. This is the MemoryError V0 hit on the real corpus."""
+    from elenchus.emulation.harness import StubDeclined
+    m = FakeMachine(args=[0x1000, 0x41, 40_000_000_000], memory=b"", base=0x1000)
+    with pytest.raises(StubDeclined):
+        memset(m)
+
+
+def test_a_garbage_memcpy_size_declines():
+    from elenchus.emulation.harness import StubDeclined
+    m = FakeMachine(args=[0x1000, 0x2000, 1 << 40], memory=b"\x00" * 16, base=0x1000)
+    with pytest.raises(StubDeclined):
+        memcpy(m)
+
+
+def test_a_reasonable_size_still_works():
+    """The bound only stops the absurd; an ordinary memset is unaffected."""
+    m = FakeMachine(args=[0x1000, 0x41, 5], memory=b"\x00" * 8, base=0x1000)
+    memset(m)
+    assert m.read(0x1000, 5) == b"AAAAA"

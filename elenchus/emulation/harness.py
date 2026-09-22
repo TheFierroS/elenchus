@@ -72,6 +72,15 @@ NULL_GUARD = 0x1_0000
 # the timeout in microseconds.
 DEFAULT_TIMEOUT_US = 2_000_000       # 2 seconds
 
+# The largest single read or write a stub may perform. A stub takes a size or
+# length from the function's arguments, and V0 feeds functions garbage, so
+# that size can be nonsense - forty billion, a pointer reinterpreted as a
+# count. A real memset of that size would exhaust memory; the stub must not.
+# Anything past this makes the input inconclusive (StubDeclined), never a
+# crash and never a wrong result. 16 MiB is far more than any real buffer a
+# function touches in one call, and well past the page-map limit above.
+MAX_TRANSFER = 16 * 1024 * 1024
+
 
 class Status(Enum):
     """Why a run ended. Only COMPLETED yields a return value to compare."""
@@ -321,11 +330,15 @@ class Machine:
         return self._uc.reg_read(regs[index]) & 0xFFFFFFFFFFFFFFFF
 
     def read(self, address: int, size: int) -> bytes:
+        if size > MAX_TRANSFER:
+            raise StubDeclined(f"read of {size} bytes, past the sanity bound")
         if size:
             _ensure_mapped(self._uc, self._mapped, address, size, self._seed)
         return bytes(self._uc.mem_read(address, size))
 
     def write(self, address: int, data: bytes) -> None:
+        if len(data) > MAX_TRANSFER:
+            raise StubDeclined(f"write of {len(data)} bytes, past the sanity bound")
         if data:
             _ensure_mapped(self._uc, self._mapped, address, len(data), self._seed)
         self._uc.mem_write(address, data)
@@ -333,6 +346,19 @@ class Machine:
     def set_return(self, value: int) -> None:
         from unicorn.x86_const import UC_X86_REG_RAX
         self._uc.reg_write(UC_X86_REG_RAX, value & 0xFFFFFFFFFFFFFFFF)
+
+    def bound(self, size: int) -> int:
+        """Return size if it is within the sanity bound, else decline.
+
+        A stub calls this before building a buffer of `size` bytes, so a
+        garbage size from the function's arguments declines the input rather
+        than materialising forty billion bytes and crashing. read and write
+        check the bound too, but a stub that constructs the buffer itself
+        (memset building c*n) must check before constructing it.
+        """
+        if size > MAX_TRANSFER:
+            raise StubDeclined(f"size {size} past the sanity bound")
+        return size
 
 
 def _run_stub(uc, stub, mapped, seed, arena) -> None:

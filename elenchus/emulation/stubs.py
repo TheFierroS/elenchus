@@ -66,7 +66,7 @@ def memset(m) -> None:
     """
     dest, c, n = m.arg(0), m.arg(1), m.arg(2)
     if n:
-        m.write(dest, bytes([c & 0xFF]) * n)
+        m.write(dest, bytes([c & 0xFF]) * m.bound(n))
     m.set_return(dest)
 
 
@@ -134,6 +134,7 @@ def calloc(m) -> None:
     if total >> 64:                          # would overflow size_t
         m.set_return(0)
         return
+    m.bound(total)
     address = m.arena.allocate(total)
     if total:
         m.write(address, b"\x00" * total)
@@ -264,6 +265,7 @@ def strncpy(m) -> None:
     """char *strncpy(char *d, const char *s, size_t n). Copy up to n bytes of
     s; if s is shorter, pad the rest with NUL to exactly n bytes. Return d."""
     dest, src, n = m.arg(0), m.arg(1), m.arg(2)
+    m.bound(n)
     s = _cstring_capped(m, src, n)
     padded = (s + b"\x00" * n)[:n]
     if n:

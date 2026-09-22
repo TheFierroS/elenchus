@@ -508,6 +508,22 @@ way the budget and the page limit do not foresee is TIMED_OUT - inconclusive,
 like the budget, never a refutation. Budget and timeout are told apart by
 whether the instruction count reached the budget.
 
+## A stub crashed on a garbage size (F17)
+
+The first 3000-pair run died in seconds with a MemoryError: memset(dest, c,
+n) was called with n in the tens of billions - a pointer the function passed
+where a count belonged, since V0 feeds garbage - and `bytes([c]) * n` tried
+to build forty billion bytes. A real memset of that size would exhaust
+memory too, but the verifier must not: it has to decline, not die.
+
+The fix is one sanity bound, MAX_TRANSFER (16 MiB), checked in one place -
+the Machine's read and write, and a `bound` a stub calls before it
+constructs a buffer itself. A size past it raises StubDeclined, so the input
+is inconclusive, never a crash and never a wrong result. Every stub, present
+and future, is covered because the bound sits in the Machine they all go
+through, not in each stub. 16 MiB is far past any real single transfer and
+past the page-map limit, so nothing legitimate is affected.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
