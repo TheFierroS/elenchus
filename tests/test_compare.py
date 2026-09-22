@@ -294,3 +294,61 @@ def test_masking_only_blanks_image_addresses():
     assert masked[0:8] == b"\x00" * 8                      # the image pointer
     assert masked[8:16] == outside                         # buffer pointer kept
     assert masked[16:24] == data                           # plain data kept
+
+
+# ------------------------------------------- the input-variant rule (F24)
+
+
+def _input_result(verdict, reason="", detail=None):
+    from elenchus.emulation.compare import InputResult
+    return InputResult(verdict, reason, detail or {})
+
+
+def test_a_difference_under_both_fills_refutes():
+    """The difference is there whatever we put in the buffers, so it is the
+    functions' own."""
+    from elenchus.emulation.compare import _combine_variants
+    both = [_input_result(Verdict.REFUTED, "return value differs"),
+            _input_result(Verdict.REFUTED, "return value differs")]
+    assert _combine_variants(both).verdict is Verdict.REFUTED
+
+
+def test_a_difference_under_one_fill_only_is_inconclusive():
+    """A function that branches on the invented buffer bytes - a hash
+    finaliser given a garbage context - differs under one fill and not the
+    other. That difference is ours, not the function's, so it cannot refute."""
+    from elenchus.emulation.compare import _combine_variants
+    mixed = [_input_result(Verdict.REFUTED, "written memory differs"),
+             _input_result(Verdict.SURVIVED, "agreed on this input")]
+    result = _combine_variants(mixed)
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert "one input fill" in result.reason
+
+
+def test_agreement_under_either_fill_survives():
+    from elenchus.emulation.compare import _combine_variants
+    mixed = [_input_result(Verdict.INCONCLUSIVE, "Q budget exhausted"),
+             _input_result(Verdict.SURVIVED, "agreed on this input")]
+    assert _combine_variants(mixed).verdict is Verdict.SURVIVED
+
+
+def test_two_unjudgeable_fills_stay_inconclusive():
+    from elenchus.emulation.compare import _combine_variants
+    neither = [_input_result(Verdict.INCONCLUSIVE, "Q import without a stub"),
+               _input_result(Verdict.INCONCLUSIVE, "Q import without a stub")]
+    assert _combine_variants(neither).verdict is Verdict.INCONCLUSIVE
+
+
+def test_a_real_difference_still_refutes_through_both_fills(env):
+    """The variant rule must not blunt the verifier: add3 against mix64 differ
+    whatever fills the buffers, and are still refuted."""
+    o0, o3, s0, s3 = env
+    result = compare(o0, s0["add3"].address, o3, s3["mix64"].address,
+                     placement(s3["add3"].abi),
+                     [[1, 2, 3], [7, 5, 2], [100, 200, 300]])
+    assert result.verdict is Verdict.REFUTED
+
+
+def test_a_true_pair_still_survives_through_both_fills(env):
+    result = compare_named(env, "sum", "sum", [[BUF, 9], [BUF, 3]])
+    assert result.verdict is Verdict.SURVIVED

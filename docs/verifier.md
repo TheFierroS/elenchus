@@ -661,6 +661,33 @@ address in both versions, still compares, and so does all real data. A
 fixture that writes a global's address beside a plain count (`publish`) and
 a unit test of the mask hold it, mutation-checked.
 
+## A difference we caused is not evidence (F24)
+
+F23 left one disagreement in 500: rhash_ripemd160_final, and only in the
+stubbed layer. Read closely, -O0 ran 2576 instructions and wrote one buffer;
+-O3 ran 1710 and wrote two, the second exactly 20 bytes - a RIPEMD-160
+digest. The two versions took different paths, because the context they were
+handed is a buffer we filled with an invented pattern, not a real hash
+context. A function given a meaningless context does something meaningless,
+and the two builds need not do the same meaningless thing.
+
+So the input fill becomes an axis of the comparison, the way the stack fill
+already was. Every input is now judged under two input-buffer fills, and a
+refutation counts only if **both** fills refute. A difference that appears
+under one fill and not the other came from bytes we invented: the claim
+cannot be judged on that input, and it is inconclusive - never refuted,
+because a difference we caused is not the function's.
+
+The cost is double the runs per input; the tests check that it does not
+blunt anything - two genuinely different functions are still refuted through
+both fills, and a true pair still survives - and each branch of the rule has
+its own test, mutation-checked.
+
+This closes the class, but only by declining it. Judging such a function
+properly needs a *valid* context, which means calling its initialiser first;
+that is the constructor-chain work, the next item on the roadmap, and it is
+how these move from inconclusive to actually verified.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

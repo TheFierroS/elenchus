@@ -46,6 +46,16 @@ from elenchus.emulation.harness import Loader, Status, run
 SEED_A = 0x1111_1111
 SEED_B = 0x2222_2222
 
+# The two input-buffer fills. A pointer argument's buffer is data we invented,
+# and some functions - a hash finaliser given a context, a parser given a
+# header - branch on it, taking a different path for different bytes. Running
+# the whole comparison under two fills tells that apart: if a version writes
+# different places under the two, its behaviour turns on data we made up, the
+# claim cannot be judged on this input, and it is inconclusive (F24). Never
+# refuted: a difference we caused is not the function's.
+VARIANT_A = 0
+VARIANT_B = 0xA5A5_A5A5
+
 
 class Verdict(Enum):
     REFUTED = "refuted"
@@ -189,6 +199,32 @@ class Comparison:
     #                                              budget sits
 
 
+def _combine_variants(per_variant) -> InputResult:
+    """One verdict for an input from its judgement under both fills.
+
+    The rule is asymmetric, like everything else here:
+
+    - Both fills refuted: the difference is there whatever we put in the
+      buffers, so it is the functions' own. REFUTED.
+    - One refuted, the other did not: the difference turns on bytes we
+      invented, so the claim cannot be judged on this input. INCONCLUSIVE,
+      never refuted - a difference we caused is not evidence.
+    - Neither refuted and at least one survived: SURVIVED.
+    - Neither could be judged: INCONCLUSIVE, carrying the first reason.
+    """
+    verdicts = [r.verdict for r in per_variant]
+    if all(v is Verdict.REFUTED for v in verdicts):
+        return per_variant[0]
+    if any(v is Verdict.REFUTED for v in verdicts):
+        refuting = next(r for r in per_variant if r.verdict is Verdict.REFUTED)
+        return InputResult(Verdict.INCONCLUSIVE,
+                           "differs under one input fill only",
+                           refuting.detail)
+    if any(v is Verdict.SURVIVED for v in verdicts):
+        return next(r for r in per_variant if r.verdict is Verdict.SURVIVED)
+    return per_variant[0]
+
+
 def compare(q_loader: Loader, q_address: int,
             k_loader: Loader, k_address: int,
             placement: Placement, input_vectors,
@@ -215,18 +251,23 @@ def compare(q_loader: Loader, q_address: int,
     judged_any = False
     peak = 0
     for index, args in enumerate(input_vectors):
-        q_a = run(q_loader, q_address, placement, args, seed=SEED_A,
-                  budget=budget, stub_resolver=stub_resolver)
-        q_b = run(q_loader, q_address, placement, args, seed=SEED_B,
-                  budget=budget, stub_resolver=stub_resolver)
-        k_a = run(k_loader, k_address, placement, args, seed=SEED_A,
-                  budget=budget, stub_resolver=stub_resolver)
-        k_b = run(k_loader, k_address, placement, args, seed=SEED_B,
-                  budget=budget, stub_resolver=stub_resolver)
-        peak = max(peak, q_a.instructions, q_b.instructions,
-                   k_a.instructions, k_b.instructions)
+        # Each input is judged twice, once per input-buffer fill. A refutation
+        # counts only if both fills refute: a difference that appears under
+        # one fill and not the other came from the bytes we invented, not from
+        # the functions (F24).
+        per_variant = []
+        for variant in (VARIANT_A, VARIANT_B):
+            runs = [
+                run(loader, address, placement, args, seed=seed, budget=budget,
+                    stub_resolver=stub_resolver, input_variant=variant)
+                for loader, address in ((q_loader, q_address), (k_loader, k_address))
+                for seed in (SEED_A, SEED_B)
+            ]
+            q_a, q_b, k_a, k_b = runs[0], runs[1], runs[2], runs[3]
+            peak = max(peak, *(r.instructions for r in runs))
+            per_variant.append(_judge(q_a, q_b, k_a, k_b, placement, image_ranges))
 
-        result = _judge(q_a, q_b, k_a, k_b, placement, image_ranges)
+        result = _combine_variants(per_variant)
         results.append(result)
         if result.verdict is Verdict.REFUTED:
             return Comparison(Verdict.REFUTED, results, refuting_input=index,

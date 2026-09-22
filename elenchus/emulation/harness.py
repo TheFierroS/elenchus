@@ -262,27 +262,35 @@ def _stack_garbage(seed: int) -> bytes:
     return random.Random(f"elenchus-stack-{seed}").randbytes(STACK_SIZE)
 
 
-def _fill_seed_for(address: int, seed: int) -> int:
+def _fill_seed_for(address: int, seed: int, input_variant: int = 0) -> int:
     """The fill seed a page at `address` takes.
 
     Input buffers are the function's input and must look the same in every
-    run, so they are filled from the address alone (seed 0). Everything else
-    a run touches is uninitialised - the stack, a wild pointer's page - and
-    takes the run's seed, which is what makes the two-seed check able to spot
-    a result that depends on garbage.
+    run of one comparison, so they are filled from the address and the
+    *input variant* - not the run seed. Running a whole comparison twice with
+    two variants is how a function whose behaviour turns on the invented
+    input data is recognised (F24): if it writes different places depending
+    on bytes we made up, the data is meaningless to it and the claim cannot
+    be judged on it.
+
+    Everything else a run touches is uninitialised - the stack, a wild
+    pointer's page - and takes the run's seed, which is what makes the
+    two-seed check able to spot a result that depends on garbage.
     """
     if INPUT_REGION_BASE <= address < INPUT_REGION_END:
-        return 0
+        return input_variant
     return seed
 
 
-def _fill_page(uc, page_base: int, seed: int) -> None:
-    """Map one page and fill it, input memory from its address alone."""
+def _fill_page(uc, page_base: int, seed: int, input_variant: int = 0) -> None:
+    """Map one page and fill it, input memory by its address and variant."""
     uc.mem_map(page_base, PAGE)
-    uc.mem_write(page_base, _fill(page_base, _fill_seed_for(page_base, seed)))
+    uc.mem_write(page_base,
+                 _fill(page_base, _fill_seed_for(page_base, seed, input_variant)))
 
 
-def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int) -> None:
+def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int,
+                   input_variant: int = 0) -> None:
     """Map and fill every page a range [address, address+size) touches that is
     not mapped yet, so a read of it returns the same bytes a function's own
     read would. Used by a stub through the Machine."""
@@ -290,7 +298,7 @@ def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int) -> None:
     last = (address + size - 1) & ~(PAGE - 1)
     for page in range(first, last + PAGE, PAGE):
         if page not in mapped:
-            _fill_page(uc, page, seed)
+            _fill_page(uc, page, seed, input_variant)
             mapped.add(page)
 
 
@@ -359,10 +367,11 @@ class Machine:
     function had not reached yet.
     """
 
-    def __init__(self, uc, mapped, seed, arena):
+    def __init__(self, uc, mapped, seed, arena, input_variant=0):
         self._uc = uc
         self._mapped = mapped
         self._seed = seed
+        self._input_variant = input_variant
         self.arena = arena
 
     def arg(self, index: int) -> int:
@@ -381,14 +390,16 @@ class Machine:
         if size > MAX_TRANSFER:
             raise StubDeclined(f"read of {size} bytes, past the sanity bound")
         if size:
-            _ensure_mapped(self._uc, self._mapped, address, size, self._seed)
+            _ensure_mapped(self._uc, self._mapped, address, size, self._seed,
+                           self._input_variant)
         return bytes(self._uc.mem_read(address, size))
 
     def write(self, address: int, data: bytes) -> None:
         if len(data) > MAX_TRANSFER:
             raise StubDeclined(f"write of {len(data)} bytes, past the sanity bound")
         if data:
-            _ensure_mapped(self._uc, self._mapped, address, len(data), self._seed)
+            _ensure_mapped(self._uc, self._mapped, address, len(data),
+                           self._seed, self._input_variant)
         self._uc.mem_write(address, data)
 
     def set_return(self, value: int) -> None:
@@ -409,7 +420,7 @@ class Machine:
         return size
 
 
-def _run_stub(uc, stub, mapped, seed, arena) -> None:
+def _run_stub(uc, stub, mapped, seed, arena, input_variant=0) -> None:
     """Run a stub in place of the call, then return to the caller.
 
     The call pushed a return address and jumped to the trap; the stub does
@@ -419,7 +430,7 @@ def _run_stub(uc, stub, mapped, seed, arena) -> None:
     """
     from unicorn.x86_const import UC_X86_REG_RIP, UC_X86_REG_RSP
 
-    stub(Machine(uc, mapped, seed, arena))
+    stub(Machine(uc, mapped, seed, arena, input_variant))
 
     rsp = uc.reg_read(UC_X86_REG_RSP)
     return_address = int.from_bytes(uc.mem_read(rsp, 8), "little")
@@ -429,7 +440,8 @@ def _run_stub(uc, stub, mapped, seed, arena) -> None:
 
 def run(loader: Loader, address: int, placement: Placement, args,
         seed: int = 1, budget: int = 5_000_000, stub_resolver=None,
-        timeout_us: int = DEFAULT_TIMEOUT_US) -> Outcome:
+        timeout_us: int = DEFAULT_TIMEOUT_US,
+        input_variant: int = 0) -> Outcome:
     """Run one function and return what it produced.
 
     args are integers positioned by `placement`: an integer, a pointer's
@@ -447,7 +459,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
     uc = Uc(UC_ARCH_X86, UC_MODE_64)
     try:
         return _run_in(uc, loader, address, placement, args, seed, budget,
-                       stub_resolver, timeout_us)
+                       stub_resolver, timeout_us, input_variant)
     finally:
         # Unicorn holds C-side memory (every mapped page, the hooks) that is
         # not freed when the Python object is collected, and the hook closures
@@ -462,7 +474,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
 
 
 def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
-            timeout_us):
+            timeout_us, input_variant=0):
     """The body of one run, on an already-created emulator; run() owns its
     lifetime and releases it. Split out so every return path is covered by
     run()'s finally without repeating the cleanup."""
@@ -519,7 +531,7 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             state["status"] = Status.TOO_MUCH_MEMORY
             uc.emu_stop()
             return False
-        _fill_page(uc, page, seed)
+        _fill_page(uc, page, seed, input_variant)
         mapped.add(page)
         return True
 
@@ -557,7 +569,7 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             uc.emu_stop()
             return
         try:
-            _run_stub(uc, stub, mapped, seed, arena)
+            _run_stub(uc, stub, mapped, seed, arena, input_variant)
         except StubDeclined as exc:
             state["status"] = Status.IMPORT_WITHOUT_STUB
             state["detail"] = f"{name}: {exc}"
