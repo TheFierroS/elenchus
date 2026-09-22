@@ -484,6 +484,30 @@ whose only effect is on globals still survives a claim it should not, until
 item 6 below compares those writes by image offset. Zero false refutations
 holds again on the fixtures; the next real V0 pass is where it is retested.
 
+## V0's speed, and the lost walk (F16)
+
+The first V0 passes were slow - 50 pairs in 20-37 minutes - and the
+instruction count, added to find out why, showed the cause was not
+instructions. The finishers took a median of 40 and a p90 of 153; the time
+went to a few functions that never came near the budget. `flecs_query_pred
+_eq_name` took 35 seconds a run at 37,000 instructions, ending "mapped too
+much memory".
+
+The cause: a function that walks a data structure - a query engine over a
+list or hash table - given a garbage pointer, chases it as if it were a real
+node, touching a fresh far page each step. The harness maps and fills each
+page on first touch, in Python, and the page limit was 4096 (16 MiB), so a
+lost walk filled thousands of pages before stopping. Three functions were
+43% of a 50-pair pass.
+
+Two fixes, both keeping the verdict unchanged and only reaching it sooner:
+the page limit drops to 512 (2 MiB), which a real function never approaches
+but a lost walk hits in a fraction of the time; and a wall-clock timeout
+(2 s by default) is the last safety net, so a function that stalls in any
+way the budget and the page limit do not foresee is TIMED_OUT - inconclusive,
+like the budget, never a refutation. Budget and timeout are told apart by
+whether the instruction count reached the budget.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

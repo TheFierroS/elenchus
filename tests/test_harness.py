@@ -192,3 +192,35 @@ def _from_double_bits(bits):
 
 def _from_float_bits(bits):
     return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
+
+
+def test_the_page_limit_is_small_enough_to_catch_a_lost_walk():
+    """A function chasing a garbage pointer maps a fresh page per step; the
+    limit caps that at 2 MiB, well under what a real function touches, so the
+    lost walk stops quickly as inconclusive instead of mapping 16 MiB slowly
+    (F16, the cause of the first V0 pass's time)."""
+    from elenchus.emulation.harness import UNMAPPED_FILL_LIMIT
+    assert UNMAPPED_FILL_LIMIT <= 512
+
+
+def test_a_slow_run_times_out_rather_than_hanging(fixture):
+    """spin(n) never returns. With a tiny wall-clock timeout it stops as
+    TIMED_OUT well before the instruction budget, so no function can hang the
+    verifier no matter how it loops."""
+    loader, sigs = fixture
+    f = sigs["spin"]
+    out = run(loader, f.address, placement(f.abi), [5],
+              budget=10_000_000, timeout_us=100_000)   # 0.1s, huge budget
+    assert out.status is Status.TIMED_OUT
+    assert out.instructions < 10_000_000               # stopped on time, not count
+
+
+def test_budget_and_timeout_are_told_apart(fixture):
+    """spin with a tiny budget and a generous timeout is BUDGET_EXHAUSTED, not
+    TIMED_OUT: the two are distinguished by whether the count reached the
+    budget."""
+    loader, sigs = fixture
+    f = sigs["spin"]
+    out = run(loader, f.address, placement(f.abi), [5],
+              budget=20_000, timeout_us=5_000_000)      # small budget, 5s
+    assert out.status is Status.BUDGET_EXHAUSTED

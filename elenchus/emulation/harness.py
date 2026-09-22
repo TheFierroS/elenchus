@@ -43,7 +43,14 @@ GOLDEN = 0x9E3779B97F4A7C15          # an odd constant, for a spread-out fill
 STACK_TOP = 0x0000_7FF0_0000_0000
 STACK_SIZE = 0x0010_0000             # 1 MiB
 SENTINEL = 0x0000_0000_0000_1000     # return address; not a real code page
-UNMAPPED_FILL_LIMIT = 4096           # pages the harness will map on first touch
+UNMAPPED_FILL_LIMIT = 512            # pages the harness maps on first touch
+#                                      before calling it a lost walk. 2 MiB is
+#                                      already far more than a real function
+#                                      touches; a garbage pointer chased
+#                                      through a data structure hits this fast,
+#                                      and each page filled in Python is not
+#                                      cheap, so a high limit was most of the
+#                                      first V0 pass's time (F16).
 
 # Imports are given trap addresses in a page of their own. A call to an
 # import compiles to `call [thunk]`, an indirect call through the import
@@ -58,6 +65,13 @@ TRAP_STRIDE = 0x10
 # rather than being filled like any other first-touched address.
 NULL_GUARD = 0x1_0000
 
+# A wall-clock ceiling per run, the last safety net. The instruction budget
+# and the page limit catch the patterns we know; this catches whatever they
+# do not, so no single function can ever hang the verifier. A run past it is
+# TIMED_OUT - inconclusive, like the budget, never a refutation. Unicorn takes
+# the timeout in microseconds.
+DEFAULT_TIMEOUT_US = 2_000_000       # 2 seconds
+
 
 class Status(Enum):
     """Why a run ended. Only COMPLETED yields a return value to compare."""
@@ -65,6 +79,7 @@ class Status(Enum):
     UNSUPPORTED_INSTRUCTION = "unsupported instruction"
     IMPORT_WITHOUT_STUB = "import without a stub"
     BUDGET_EXHAUSTED = "budget exhausted"
+    TIMED_OUT = "timed out"
     TOO_MUCH_MEMORY = "mapped too much memory"
     FAULT = "fault"
 
@@ -339,7 +354,8 @@ def _run_stub(uc, stub, mapped, seed, arena) -> None:
 
 
 def run(loader: Loader, address: int, placement: Placement, args,
-        seed: int = 1, budget: int = 5_000_000, stub_resolver=None) -> Outcome:
+        seed: int = 1, budget: int = 5_000_000, stub_resolver=None,
+        timeout_us: int = DEFAULT_TIMEOUT_US) -> Outcome:
     """Run one function and return what it produced.
 
     args are integers positioned by `placement`: an integer, a pointer's
@@ -452,7 +468,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
     uc.hook_add(UC_HOOK_CODE, on_code)
 
     try:
-        uc.emu_start(address, SENTINEL, count=budget)
+        uc.emu_start(address, SENTINEL, timeout=timeout_us, count=budget)
     except UcError as exc:
         status = state["status"] or Status.FAULT
         return Outcome(status, detail=state["detail"] or str(exc),
@@ -463,7 +479,13 @@ def run(loader: Loader, address: int, placement: Placement, args,
                        instructions=state["count"])
 
     if uc.reg_read(UC_X86_REG_RIP) != SENTINEL:
-        return Outcome(Status.BUDGET_EXHAUSTED, instructions=state["count"])
+        # emu_start returned without reaching the sentinel: either the
+        # instruction budget ran out or the wall-clock timeout fired. They are
+        # told apart by whether the count reached the budget - a timeout stops
+        # mid-budget on elapsed time, not instruction count.
+        if state["count"] >= budget:
+            return Outcome(Status.BUDGET_EXHAUSTED, instructions=state["count"])
+        return Outcome(Status.TIMED_OUT, instructions=state["count"])
 
     writes = {page: bytes(uc.mem_read(page, PAGE)) for page in sorted(written)}
     return Outcome(Status.COMPLETED,

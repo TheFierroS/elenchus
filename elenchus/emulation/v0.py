@@ -50,6 +50,7 @@ class Bucket:
     UNSUPPORTED = "unsupported instruction"
     IMPORT_MISSING = "import without a stub"
     BUDGET = "budget exhausted"
+    TIMED_OUT = "timed out"
     TOO_MUCH_MEMORY = "mapped too much memory"
     FAULT = "fault (bad memory access)"
     SIGNATURE_DECLINED = "signature declined"
@@ -66,6 +67,7 @@ _STATUS_BUCKET = {
     Status.UNSUPPORTED_INSTRUCTION: Bucket.UNSUPPORTED,
     Status.IMPORT_WITHOUT_STUB: Bucket.IMPORT_MISSING,
     Status.BUDGET_EXHAUSTED: Bucket.BUDGET,
+    Status.TIMED_OUT: Bucket.TIMED_OUT,
     Status.TOO_MUCH_MEMORY: Bucket.TOO_MUCH_MEMORY,
     Status.FAULT: Bucket.FAULT,
 }
