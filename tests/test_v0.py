@@ -112,3 +112,52 @@ def test_the_report_keeps_disagreements_for_reading():
                           detail="return value differs"))
     assert len(report.disagreements) == 1
     assert report.disagreements[0].detail == "return value differs"
+
+
+def test_a_fault_is_its_own_bucket_not_load_failed(env):
+    """null_read dereferences address 0: a fault while running, distinct from
+    a binary that could not be loaded. The separation is the point - a mixed
+    bucket hid what was really happening."""
+    o0, o3, s0, s3 = env
+    result = bucket_pair(o0, s0["null_read"].address, o3, s3["null_read"].address,
+                         json.dumps(s3["null_read"].abi), inputs=[[0]])
+    assert result.bucket == Bucket.FAULT
+
+
+def test_an_unsupported_instruction_buckets_on_the_exact_status():
+    """The bucket comes from the harness Status enum, not from matching words
+    in a message, so each cause is counted exactly."""
+    from elenchus.emulation.compare import Comparison, InputResult, Verdict
+    from elenchus.emulation.harness import Status
+    from elenchus.emulation.v0 import _inconclusive_bucket
+
+    comparison = Comparison(Verdict.INCONCLUSIVE, [
+        InputResult(Verdict.INCONCLUSIVE, "Q unsupported instruction", {},
+                    status=Status.UNSUPPORTED_INSTRUCTION),
+    ])
+    assert _inconclusive_bucket(comparison).bucket == Bucket.UNSUPPORTED
+
+
+def test_a_run_with_nothing_to_compare_is_unjudged():
+    """A pair that ran but whose only observation was garbage-dependent
+    decided nothing - it is UNJUDGED, not a fault or a load failure."""
+    from elenchus.emulation.compare import Comparison, InputResult, Verdict
+    from elenchus.emulation.v0 import _inconclusive_bucket
+
+    comparison = Comparison(Verdict.INCONCLUSIVE, [
+        InputResult(Verdict.INCONCLUSIVE, "return depended on the fill", {}),
+    ])
+    assert _inconclusive_bucket(comparison).bucket == Bucket.UNJUDGED
+
+
+def test_generated_inputs_let_a_pointer_function_run(env):
+    """count_nonzero(const unsigned char *p, size_t n) takes a pointer. With
+    generated inputs its pointer gets a real buffer, so it completes instead
+    of faulting on a small-integer pointer - the whole reason for the
+    generator."""
+    o0, o3, s0, s3 = env
+    result = bucket_pair(o0, s0["count_nonzero"].address,
+                         o3, s3["count_nonzero"].address,
+                         json.dumps(s3["count_nonzero"].abi))   # no inputs= : generated
+    assert result.bucket == Bucket.COMPLETED
+    assert result.agreement == Bucket.AGREED

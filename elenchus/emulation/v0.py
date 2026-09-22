@@ -27,21 +27,22 @@ from dataclasses import dataclass, field
 
 from elenchus.emulation.abi import Undecidable, placement
 from elenchus.emulation.compare import Verdict, compare
+from elenchus.emulation.harness import Status
+from elenchus.emulation.inputs import input_vectors
 
 # The starting instruction budget. V0 measures whether it is right: a pair
 # that does not finish under it is budget-exhausted, and the distribution of
 # how many instructions the finishers took says where the real budget sits.
-V0_BUDGET = 5_000_000
+# Lowered from the 5M ceiling to 500k after the first pass: real functions
+# that finish do so in far fewer, and a lower budget turns a 5M-instruction
+# spin from most of the running time into a quick budget-exhausted verdict.
+V0_BUDGET = 500_000
 
-# One fixed set of inputs for every pair in V0. Real input generation is a
-# later step; here a small fixed set is enough to see how far a function runs
-# and whether the two versions agree. Vectors are read positionally against
-# the placement, so extra values past a function's arity are ignored.
-V0_INPUTS = [
-    [0, 0, 0, 0],
-    [1, 1, 1, 1],
-    [0x10, 0x20, 0x30, 0x40],
-]
+# How many input vectors per pair. Generated from the reference signature by
+# inputs.input_vectors - real buffers for pointers, boundary values for
+# integers - so a function is exercised where it can refute rather than
+# crashed on a pointer argument given a small integer.
+V0_INPUT_COUNT = 6
 
 
 class Bucket:
@@ -49,11 +50,25 @@ class Bucket:
     UNSUPPORTED = "unsupported instruction"
     IMPORT_MISSING = "import without a stub"
     BUDGET = "budget exhausted"
+    TOO_MUCH_MEMORY = "mapped too much memory"
+    FAULT = "fault (bad memory access)"
     SIGNATURE_DECLINED = "signature declined"
     LOAD_FAILED = "load failed"
+    UNJUDGED = "ran but nothing to compare"
     # among completed pairs:
     AGREED = "agreed"
     DISAGREED = "disagreed"
+
+
+# Each harness Status maps to exactly one bucket. No string matching: the
+# comparison carries the Status enum, and this is the whole translation.
+_STATUS_BUCKET = {
+    Status.UNSUPPORTED_INSTRUCTION: Bucket.UNSUPPORTED,
+    Status.IMPORT_WITHOUT_STUB: Bucket.IMPORT_MISSING,
+    Status.BUDGET_EXHAUSTED: Bucket.BUDGET,
+    Status.TOO_MUCH_MEMORY: Bucket.TOO_MUCH_MEMORY,
+    Status.FAULT: Bucket.FAULT,
+}
 
 
 @dataclass
@@ -127,19 +142,26 @@ def sample_pairs(conn, split="train", count=3000, seed=0):
 
 
 def bucket_pair(o0_loader, o0_addr, o3_loader, o3_addr, abi_json,
-                resolver=None, budget=V0_BUDGET, inputs=V0_INPUTS):
+                resolver=None, budget=V0_BUDGET, inputs=None):
     """Run one pair and return its bucket and, if completed, whether it agreed.
 
     resolver None is the bare layer; a resolver is the stubbed layer. The
     comparison already runs each side twice per seed, so a disagreement here is
     a real one - a false refutation to investigate, since the pair is true.
+
+    inputs, if given, overrides the generated vectors (the tests use this);
+    otherwise they are built from the signature by inputs.input_vectors, so a
+    pointer argument gets a real buffer rather than a small integer.
     """
+    abi = json.loads(abi_json)
     try:
-        place = placement(json.loads(abi_json))
+        place = placement(abi)
     except Undecidable as exc:
         return PairResult("", "", Bucket.SIGNATURE_DECLINED, detail=str(exc))
 
-    result = compare(o0_loader, o0_addr, o3_loader, o3_addr, place, inputs,
+    vectors = inputs if inputs is not None else input_vectors(
+        abi, count=V0_INPUT_COUNT)
+    result = compare(o0_loader, o0_addr, o3_loader, o3_addr, place, vectors,
                      budget=budget, stub_resolver=resolver)
 
     if result.verdict is Verdict.REFUTED:
@@ -235,27 +257,36 @@ def _first_refute_reason(comparison):
 
 
 def _inconclusive_bucket(comparison):
-    """Map an all-inconclusive comparison to the reason it could not run.
+    """Map an all-inconclusive comparison to a bucket, by the exact Status.
 
-    The per-input results carry why each side stopped; the most specific of
-    these is the bucket, so an unstubbed import is reported as that rather
-    than as a bare 'inconclusive'.
+    Every input that stopped a run carries the harness Status that stopped it
+    (compare.InputResult.status). The bucket is the most common such status
+    across the inputs, translated through _STATUS_BUCKET - no string matching,
+    so the count of, say, faults is exactly the count of faults. An import is
+    named from its detail so the histogram can point at the next stub.
+
+    An input with no status is one that ran but had nothing to compare (a
+    garbage-dependent return, no memory written); if that is all there is, the
+    pair is UNJUDGED - it ran, it just decided nothing.
     """
-    reasons = Counter()
-    detail = ""
+    statuses = Counter()
+    import_names = Counter()
     for r in comparison.inputs:
-        reason = r.reason or ""
-        if "import" in reason:
-            reasons[Bucket.IMPORT_MISSING] += 1
-            detail = r.detail.get("detail", "") or detail
-        elif "unsupported" in reason or "instruction" in reason:
-            reasons[Bucket.UNSUPPORTED] += 1
-        elif "budget" in reason:
-            reasons[Bucket.BUDGET] += 1
-        elif "fault" in reason or "null" in reason:
-            reasons[Bucket.LOAD_FAILED] += 1
-    if not reasons:
-        return PairResult("", "", Bucket.LOAD_FAILED, detail="inconclusive")
-    bucket, _ = reasons.most_common(1)[0]
-    name = detail.split(":")[0].strip() if detail else ""
-    return PairResult("", "", bucket, detail=name)
+        if r.status is None:
+            statuses[None] += 1
+            continue
+        statuses[r.status] += 1
+        if r.status is Status.IMPORT_WITHOUT_STUB:
+            name = r.detail.get("detail", "")
+            import_names[name.split(":")[0].strip()] += 1
+
+    ranked = [s for s in statuses if s is not None]
+    if not ranked:
+        return PairResult("", "", Bucket.UNJUDGED)
+
+    status = max(ranked, key=lambda s: (statuses[s], s.value))
+    bucket = _STATUS_BUCKET[status]
+    detail = ""
+    if status is Status.IMPORT_WITHOUT_STUB and import_names:
+        detail = import_names.most_common(1)[0][0]
+    return PairResult("", "", bucket, detail=detail)

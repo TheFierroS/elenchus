@@ -59,6 +59,9 @@ class InputResult:
     verdict: Verdict
     reason: str = ""                 # what disagreed, or why undecidable
     detail: dict = field(default_factory=dict)
+    status: object = None            # the harness Status when inconclusive,
+    #                                  carried exactly so the caller need not
+    #                                  parse `reason`; None otherwise
 
 
 def _stable_return(a, b, placement: Placement):
@@ -99,12 +102,15 @@ def _stable_writes(a, b):
 
 def _judge(q_a, q_b, k_a, k_b, placement: Placement) -> InputResult:
     """Compare the two versions on one input, each already run twice."""
-    # Any run that did not complete makes the input inconclusive.
+    # Any run that did not complete makes the input inconclusive. Carry the
+    # first non-completed status exactly, so the caller buckets on the enum
+    # rather than on the wording of `reason`.
     for outcome, who in ((q_a, "Q"), (q_b, "Q"), (k_a, "K"), (k_b, "K")):
         if outcome.status is not Status.COMPLETED:
             return InputResult(Verdict.INCONCLUSIVE,
                                f"{who} {outcome.status.value}",
-                               {"detail": outcome.detail})
+                               {"detail": outcome.detail},
+                               status=outcome.status)
 
     q_ret = _stable_return(q_a, q_b, placement)
     k_ret = _stable_return(k_a, k_b, placement)
