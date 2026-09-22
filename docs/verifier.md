@@ -547,6 +547,26 @@ address it handed back. A pointer-returning fixture (`banner`, returning a
 All eight V0 disagreements were this one cause; with it fixed the next real
 pass is where zero false refutations is retested at scale.
 
+## The 3000-pair run leaked memory (F19)
+
+The 500-pair run was clean, but 3000 pairs killed WSL: the process reached
+9 GB by 150 pairs and was OOM-killed, with system time (12 min) dwarfing user
+time (3 min) - the signature of runaway allocation, not computation. Measured
+directly, memory grew about 60 MB per pair and never came back.
+
+The cause: each run creates a Unicorn emulator that maps the whole binary
+image plus the stack and arena, and holds it C-side; the Python object does
+not free that when collected, and the hook closures reference the emulator, a
+cycle the collector breaks slowly if at all. Over V0's tens of thousands of
+runs it leaks gigabytes.
+
+The fix: run() creates the emulator, delegates the body to a helper, and
+releases the handle in a finally - so every return path, including a fault,
+frees the C-side memory at once. Measured after: 2500 runs hold flat at
+~115 MB where before 150 pairs reached 9 GB. Two tests check the release
+happens on a normal run and on a faulting one, each with a fresh spy so no
+count leaks between tests.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

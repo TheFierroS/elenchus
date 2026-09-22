@@ -224,3 +224,37 @@ def test_budget_and_timeout_are_told_apart(fixture):
     out = run(loader, f.address, placement(f.abi), [5],
               budget=20_000, timeout_us=5_000_000)      # small budget, 5s
     assert out.status is Status.BUDGET_EXHAUSTED
+
+def test_run_releases_its_emulator(fixture):
+    """Every run releases its Unicorn handle, or a long run leaks the C-side
+    memory of every mapped page and is killed (F19). A fresh spy per call
+    avoids any cross-test total; the leak itself is measured out of band."""
+    import unicorn
+    loader, sigs = fixture
+    f = sigs["add3"]
+
+    seen = []
+    real = unicorn.Uc.release_handle
+    try:
+        unicorn.Uc.release_handle = lambda self: seen.append(1) or real(self)
+        run(loader, f.address, placement(f.abi), [7, 5, 2], budget=50_000)
+    finally:
+        unicorn.Uc.release_handle = real
+    assert seen == [1]                     # released exactly once
+
+
+def test_a_faulting_run_still_releases(fixture):
+    """The release is in a finally, so a faulting run frees its emulator too."""
+    import unicorn
+    loader, sigs = fixture
+
+    seen = []
+    real = unicorn.Uc.release_handle
+    try:
+        unicorn.Uc.release_handle = lambda self: seen.append(1) or real(self)
+        out = run(loader, sigs["null_read"].address,
+                  placement(sigs["null_read"].abi), [0], budget=50_000)
+    finally:
+        unicorn.Uc.release_handle = real
+    assert out.status is Status.FAULT
+    assert seen == [1]

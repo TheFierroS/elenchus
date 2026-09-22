@@ -394,20 +394,40 @@ def run(loader: Loader, address: int, placement: Placement, args,
     calls an import; it returns a stub or None. In this first version there
     are no stubs yet, so any import ends the run as IMPORT_WITHOUT_STUB.
     """
+    from unicorn import UC_ARCH_X86, UC_MODE_64, Uc
+
+    uc = Uc(UC_ARCH_X86, UC_MODE_64)
+    try:
+        return _run_in(uc, loader, address, placement, args, seed, budget,
+                       stub_resolver, timeout_us)
+    finally:
+        # Unicorn holds C-side memory (every mapped page, the hooks) that is
+        # not freed when the Python object is collected, and the hook closures
+        # reference uc, a cycle the collector is slow to break. Over a long
+        # run - V0's thousands of pairs - that leaks gigabytes and the process
+        # is killed (F19). Releasing the handle here frees it at once, and the
+        # emulator is one per run anyway, so nothing outlives the finally.
+        try:
+            uc.release_handle()
+        except Exception:                        # noqa: BLE001
+            pass
+
+
+def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
+            timeout_us):
+    """The body of one run, on an already-created emulator; run() owns its
+    lifetime and releases it. Split out so every return path is covered by
+    run()'s finally without repeating the cleanup."""
     from unicorn import (
-        UC_ARCH_X86,
         UC_HOOK_CODE,
         UC_HOOK_MEM_FETCH_UNMAPPED,
         UC_HOOK_MEM_READ_UNMAPPED,
         UC_HOOK_MEM_WRITE,
         UC_HOOK_MEM_WRITE_UNMAPPED,
-        UC_MODE_64,
-        Uc,
         UcError,
     )
     from unicorn.x86_const import UC_X86_REG_RAX, UC_X86_REG_RIP, UC_X86_REG_RSP
 
-    uc = Uc(UC_ARCH_X86, UC_MODE_64)
     uc.mem_map(loader.base, loader.size)
     loader.write_sections(uc)
 
