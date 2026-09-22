@@ -26,6 +26,7 @@ from elenchus.corpus.gaps import cmd_corpus_gap, known_gaps
 from elenchus.corpus.prune import cmd_prune_corpus
 from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
+from elenchus.emulation.v0 import cmd_verify_v0
 from elenchus.encoder.cli import cmd_train, cmd_vocab
 from elenchus.evaluation.baselines import all_baselines
 from elenchus.evaluation.metrics import evaluate, format_packages, format_table
@@ -482,6 +483,18 @@ def build_parser():
         help="also record strings that no function references",
     )
     scan.set_defaults(func=cmd_scan)
+
+    v0 = sub.add_parser(
+        "verify-v0",
+        help="measure how much of the corpus the verifier can run (V0)",
+    )
+    v0.add_argument("--count", type=int, default=3000,
+                    help="how many true pairs to sample")
+    v0.add_argument("--seed", type=int, default=0,
+                    help="the sample seed, recorded with the result")
+    v0.add_argument("--budget", type=int, default=5_000_000,
+                    help="instruction budget per run")
+    v0.set_defaults(func=cmd_verify_v0)
 
     check = sub.add_parser("check", help="run consistency checks on the database")
     check.add_argument(
