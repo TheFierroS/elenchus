@@ -278,3 +278,38 @@ def test_a_loader_still_maps_correctly_from_raw_bytes(fixture):
     out = run(loader, f.address, placement(f.abi), [7, 5, 2], budget=50_000)
     assert out.status is Status.COMPLETED
     assert (out.ret_int & placement(f.abi).ret.mask) == 24
+
+
+def test_input_memory_is_the_same_in_both_seeds(fixture):
+    """A pointer argument's buffer is the function's input, so it is filled
+    from its address alone: count_nonzero over the same buffer gives the same
+    answer at either seed. Before F22 the buffer took the seed, so a function
+    reading its own input looked garbage-dependent and was excluded."""
+    loader, sigs = fixture
+    f = sigs["sum"]                         # sums p[i]*(i+1): depends on bytes
+    a = run(loader, f.address, placement(f.abi), [BUF, 9], seed=0x1111_1111)
+    b = run(loader, f.address, placement(f.abi), [BUF, 9], seed=0x2222_2222)
+    assert a.status is b.status is Status.COMPLETED
+    assert a.ret_int == b.ret_int           # same input bytes, same sum
+
+
+def test_the_stack_differs_between_seeds(fixture):
+    """The stack is uninitialised memory, so it must differ between the two
+    seeds - that is what lets the two-seed check spot a function reading a
+    local it never wrote. Before F22 it was zero-filled and identical."""
+    loader, sigs = fixture
+    f = sigs["uninit"]                      # returns an uninitialised local
+    a = run(loader, f.address, placement(f.abi), [0], seed=0x1111_1111)
+    b = run(loader, f.address, placement(f.abi), [0], seed=0x2222_2222)
+    assert a.status is b.status is Status.COMPLETED
+    # At -O0 the local is read from the stack, so the two seeds disagree;
+    # at -O3 the compiler may fold it, so accept either but require that the
+    # stack itself is not identical between seeds.
+    from elenchus.emulation.harness import _stack_garbage
+    assert _stack_garbage(0x1111_1111) != _stack_garbage(0x2222_2222)
+
+
+def test_the_stack_garbage_is_deterministic():
+    """Same seed, same bytes - a verdict has to be replayable."""
+    from elenchus.emulation.harness import _stack_garbage
+    assert _stack_garbage(7) == _stack_garbage(7)

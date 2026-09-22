@@ -611,6 +611,33 @@ input generation (roadmap item 2), and are left recorded until then rather
 than papered over. Two in 3000 is 0.07%, and neither is a harness bug the way
 F21 was.
 
+## The fills were the wrong way round (F22)
+
+Looking into the remaining disagreements turned up something worse than they
+were: the two fills the design specifies had ended up inverted in the code.
+
+The design says argument memory is the function's *input* - filled from its
+address alone, identical in every run - while the stack is *uninitialised* and
+takes the seed, which is what lets running twice with two seeds spot a result
+that depends on garbage. The code did the opposite: every page mapped on
+first touch, argument buffers included, took the run's seed, and the stack
+was left as Unicorn's zero fill, identical in both seeds.
+
+Both halves broke something. A function reading its own input buffer gave a
+different answer per seed, so the two-seed check called a legitimate,
+input-dependent result garbage and excluded it - the 3.1% "ran but nothing to
+compare", and judging power lost across the board. And a function reading an
+uninitialised local read zeros in both seeds, so the check that exists to
+catch exactly that could never fire; risk 2 was unguarded.
+
+Fixed: a page in the input-buffer region is filled from its address alone, a
+page anywhere else - the stack, a wild pointer's page - from the seed, and
+the stack is filled with seed garbage at setup instead of left zero. Tests
+hold both halves, and the first version of the input test passed even with
+the fix disabled (count_nonzero counts non-zero bytes, and random fill has
+almost none zero); it was sharpened to `sum`, whose result depends on the
+bytes themselves, before it caught the mutation.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

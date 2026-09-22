@@ -65,6 +65,16 @@ TRAP_STRIDE = 0x10
 # rather than being filled like any other first-touched address.
 NULL_GUARD = 0x1_0000
 
+# Where input buffers live. inputs.input_vectors hands a pointer argument an
+# address in this region, and memory here is the function's *input*: it is
+# filled from its address alone, identical in both runs and both versions, so
+# a function that reads its argument gets the same bytes every time. Memory
+# outside it that a run touches - a wild pointer, the stack - is
+# uninitialised, and takes the seed-dependent fill so the two-seed check can
+# tell a garbage-dependent result from a real one (F22).
+INPUT_REGION_BASE = 0x0000_2000_0000_0000
+INPUT_REGION_END = 0x0000_2000_1000_0000     # 256 MiB of buffer space
+
 # A wall-clock ceiling per run, the last safety net. The instruction budget
 # and the page limit catch the patterns we know; this catches whatever they
 # do not, so no single function can ever hang the verifier. A run past it is
@@ -241,10 +251,35 @@ class StubDeclined(Exception):
     """
 
 
+def _stack_garbage(seed: int) -> bytes:
+    """The bytes a fresh stack holds, deterministic per seed.
+
+    Generated with random.Random, which is reproducible across runs and
+    platforms for a given seed, and fast enough to do per run: filling a
+    megabyte word by word in Python would cost more than the emulation.
+    """
+    import random
+    return random.Random(f"elenchus-stack-{seed}").randbytes(STACK_SIZE)
+
+
+def _fill_seed_for(address: int, seed: int) -> int:
+    """The fill seed a page at `address` takes.
+
+    Input buffers are the function's input and must look the same in every
+    run, so they are filled from the address alone (seed 0). Everything else
+    a run touches is uninitialised - the stack, a wild pointer's page - and
+    takes the run's seed, which is what makes the two-seed check able to spot
+    a result that depends on garbage.
+    """
+    if INPUT_REGION_BASE <= address < INPUT_REGION_END:
+        return 0
+    return seed
+
+
 def _fill_page(uc, page_base: int, seed: int) -> None:
-    """Map one page and fill it with its address-and-seed pattern."""
+    """Map one page and fill it, input memory from its address alone."""
     uc.mem_map(page_base, PAGE)
-    uc.mem_write(page_base, _fill(page_base, seed))
+    uc.mem_write(page_base, _fill(page_base, _fill_seed_for(page_base, seed)))
 
 
 def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int) -> None:
@@ -445,6 +480,13 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
     loader.write_sections(uc)
 
     uc.mem_map(STACK_TOP - STACK_SIZE, STACK_SIZE)
+    # The stack is uninitialised memory: a function that reads a local it
+    # never wrote reads whatever was there. Unicorn zero-fills a fresh
+    # mapping, which is the same in both seeds, so the two-seed check could
+    # not see such a read at all (F22). Filling it from the seed makes a
+    # garbage-dependent result differ between the seeds, which is exactly
+    # what the check excludes.
+    uc.mem_write(STACK_TOP - STACK_SIZE, _stack_garbage(seed))
     uc.mem_map(SENTINEL & ~(PAGE - 1), PAGE)
     # The trap page holds no code; a call to an import lands here and is caught
     # by the code hook before it can execute. Mapping it keeps that a caught
