@@ -457,6 +457,33 @@ follow.
 7. Claims and verdicts as events; `elenchus verify` and `--replay`.
 8. Measurement on val; then the end-to-end protocol; then test, once.
 
+## V0's first run, and the first false refutation (F15)
+
+The first V0 pass on the real corpus did what V0 is for: it surfaced a
+harness flaw the fixtures never could. Of a 50-pair sample, the completed
+pairs agreed except one - `lua_upvaluejoin` - which was refuted on "written
+memory differs". Since the pair is the same function at two optimisation
+levels, that was a false refutation, the one thing the design forbids.
+
+The cause was risk 9, exactly as written but not yet coded around. The
+function writes into the binary's own `.rdata` - a static string, the Lua
+version banner - and -O0 and -O3 place that data at different addresses
+(0x25264b000 against 0x202be8000), with different surrounding bytes. The
+harness recorded those writes and compared them, so two placements of the
+same global read as a difference and refuted a true claim.
+
+The fix codes the rule the design already stated: the harness no longer
+records writes into the binary's own image, only writes to memory it handed
+out - argument buffers and the arena, which sit at the same address in both
+versions and are the function's matchable effect. A miniature of the bug is
+now a fixture (`record`, which writes a global array) and a test, so it
+cannot return.
+
+This narrows the blind spot to its stated v1 edge and no further: a function
+whose only effect is on globals still survives a claim it should not, until
+item 6 below compares those writes by image offset. Zero false refutations
+holds again on the fixtures; the next real V0 pass is where it is retested.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
@@ -494,12 +521,17 @@ and never by loosening the rule that a true claim is never refuted.
    8 mod 16 at entry (the return address just pushed). MinGW emits movups so
    nothing faults today (measured), but MSVC (v2) and hand-tuned SSE would,
    and getting entry alignment exactly right removes that as a variable.
-6. **Global state.** A function that reads a global sees each binary's own
-   initialised data, which is the same source; a function that only *writes*
-   globals is the recorded blind spot, since a stripped Q's global cannot be
-   matched to K's. Writes to the binary's own data sections could be compared
-   by their offset from the image base, which is stable across the twins even
-   when the address is not - a way to close part of the blind spot.
+6. **Global state - the full fix for risk 9 (F15).** Today a write into the
+   binary's own image is excluded, so a global write never refutes but never
+   confirms either. The way to compare it: read each binary's data sections
+   before the run, and record an image write as (section, offset-from-section
+   -start) rather than an absolute address, which is stable across the twins
+   when the layout matches. Two versions are then compared on those offsets -
+   *but only when the layout lines up*: -O0 and -O3 may drop unused data,
+   reorder it or merge strings, and a mismatched offset must make the input
+   inconclusive, never refuted. This widens coverage (global-writing
+   functions become judgeable) while keeping the one rule, and it is how the
+   blind spot F15 narrowed is properly closed.
 7. **Float tolerance.** Float returns are compared bit-for-bit. Neither build
    uses -ffast-math, so this should hold; calibration on true pairs will show
    whether it does, and if not a per-type tolerance goes in compare, recorded

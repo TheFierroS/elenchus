@@ -211,3 +211,13 @@ def test_the_first_refutation_stops_the_comparison(env):
     assert result.verdict is Verdict.REFUTED
     # It stopped at the first refuting input, not run all four.
     assert len(result.inputs) == result.refuting_input + 1
+
+
+def test_a_write_to_a_global_does_not_refute(env):
+    """record(i, v) writes into a global array, which lives at a different
+    address in the -O0 and -O3 binaries. That write is the function's own
+    global state, not a comparable effect (docs/verifier.md, risk 9): the
+    harness excludes writes into the image, so the pair survives. This is the
+    false refutation V0 found on lua_upvaluejoin, in miniature."""
+    result = compare_named(env, "record", "record", [[0, 42], [3, 7], [9, 100]])
+    assert result.verdict is Verdict.SURVIVED

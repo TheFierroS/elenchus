@@ -406,9 +406,21 @@ def run(loader: Loader, address: int, placement: Placement, args,
         mapped.add(page)
         return True
 
+    image_end = loader.base + loader.size
+
     def on_write(uc, access, addr, size, value, _):
-        if not (STACK_TOP - STACK_SIZE <= addr < STACK_TOP):
-            written.add(addr & ~(PAGE - 1))
+        # The stack is the function's own; the binary's own image is its
+        # global and static data, which -O0 and -O3 place at different
+        # addresses with different contents, so a write there cannot be
+        # matched between the twins (docs/verifier.md, risk 9). Only writes to
+        # memory the harness handed out - argument buffers and the arena, at
+        # the same address in both versions - are the function's observable
+        # effect and are recorded.
+        if STACK_TOP - STACK_SIZE <= addr < STACK_TOP:
+            return
+        if loader.base <= addr < image_end:
+            return
+        written.add(addr & ~(PAGE - 1))
 
     def on_code(uc, addr, size, _):
         # A call to an import lands on its trap address (see Loader). Catch it

@@ -132,6 +132,16 @@ int bump(int k) {
     return k * 2;
 }
 
+/* Writes into a global array - the array lives in the binary's own data, at
+ * a different address at -O0 and -O3, so the write must be excluded from the
+ * comparison (risk 9). The return still agrees. */
+static int global_table[8];
+
+int record(int index, int value) {
+    global_table[index & 7] = value;
+    return global_table[index & 7] + 1;
+}
+
 /* --- -O3, a saved XMM register, and the shadow space ------------------ */
 
 /*
