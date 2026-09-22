@@ -231,3 +231,38 @@ def test_a_pointer_return_does_not_refute(env):
     opus_strerror, and six more, all pointer returns)."""
     result = compare_named(env, "banner", "banner", [[], [], []])
     assert result.verdict is Verdict.SURVIVED
+
+
+def test_a_float_return_is_masked_to_its_width():
+    """XMM0 is 128 bits; a 4-byte float defines only the low 32. Two runs
+    whose low 32 bits agree but whose upper bits differ must not refute - the
+    float analogue of masking a narrow integer return (F21). Built by hand so
+    the upper bits differ exactly."""
+    from elenchus.emulation.abi import placement
+    from elenchus.emulation.compare import _stable_return
+    from elenchus.emulation.harness import Outcome, Status
+
+    fplace = placement({"return": {"kind": "float", "size": 4}, "params": [],
+                        "variadic": False})
+    low = 0x4F82A000
+    a = Outcome(Status.COMPLETED, ret_float_bits=0x00000000_00000000 | low)
+    b = Outcome(Status.COMPLETED, ret_float_bits=0x4F82A000_00000000 | low)
+    # low 32 identical, upper differ: masked to 4 bytes they agree
+    assert _stable_return(a, b, fplace) == ("float", low)
+
+
+def test_a_double_return_uses_all_64_bits():
+    """A double defines the low 64; masking must not throw those away."""
+    from elenchus.emulation.abi import placement
+    from elenchus.emulation.compare import _stable_return
+    from elenchus.emulation.harness import Outcome, Status
+
+    dplace = placement({"return": {"kind": "float", "size": 8}, "params": [],
+                        "variadic": False})
+    bits = 0x400921FB54442D18            # pi as a double
+    a = Outcome(Status.COMPLETED, ret_float_bits=bits)
+    b = Outcome(Status.COMPLETED, ret_float_bits=bits)
+    assert _stable_return(a, b, dplace) == ("float", bits)
+
+    c = Outcome(Status.COMPLETED, ret_float_bits=bits ^ 1)   # differ in a low bit
+    assert _stable_return(a, c, dplace) is None              # a real difference

@@ -80,9 +80,15 @@ def _stable_return(a, b, placement: Placement):
         # compare here - the function's effect is in the memory it wrote.
         return "pointer"
     if ret.kind == "float":
-        if a.ret_float_bits != b.ret_float_bits:
+        # XMM0 is 128 bits; a float defines its low 32, a double its low 64.
+        # -O0 and -O3 leave the upper bits however they happen to, so the
+        # return is compared masked to the type's width, the float analogue of
+        # masking RAX for a narrow integer (F21). Without this a float return
+        # that agrees in value refutes on the undefined upper bits.
+        mask = (1 << (ret.size * 8)) - 1
+        if (a.ret_float_bits & mask) != (b.ret_float_bits & mask):
             return None
-        return ("float", a.ret_float_bits)
+        return ("float", a.ret_float_bits & mask)
     masked_a = a.ret_int & ret.mask
     masked_b = b.ret_int & ret.mask
     if masked_a != masked_b:

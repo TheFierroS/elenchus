@@ -588,6 +588,29 @@ Together F19 (the emulator's C memory) and F20 (the loaders' Python memory)
 are the two leaks that killed the 3000-pair run; with both closed it holds
 flat.
 
+## The 3000-pair run: three false refutations, one fixed (F21)
+
+The full run held coverage at 43% (stubbed) and kept zero false refutations
+almost: three of 3000 disagreed, all "return value differs". They were three
+different causes, not one.
+
+cglm/glmc_vec4_norm_inf returns a float, and its XMM0 was 0x4f82a000 at -O0
+and 0x4f82a0004f82a000 at -O3 - the same low 32 bits, the float's actual
+value, differing only in the upper bits XMM0 leaves undefined. The float
+return was compared over all 64 bits, not masked to the type's 4, so a float
+that agreed in value refuted on undefined bits. Fixed (F21): a float return
+is masked to its width, the analogue of masking RAX for a narrow integer, and
+a fixture-built test with differing upper bits holds it, mutation-checked.
+
+The other two - libarchive/lzx_read_bitlen (two pointers and an int) and
+capstone/AArch64_map_vregister (an int, likely a table lookup) - return
+integers that genuinely differed, and are a different class: a function whose
+result depends on input data we filled with garbage, or on a global table
+read at a different address. These are input-quality, the province of richer
+input generation (roadmap item 2), and are left recorded until then rather
+than papered over. Two in 3000 is 0.07%, and neither is a harness bug the way
+F21 was.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
