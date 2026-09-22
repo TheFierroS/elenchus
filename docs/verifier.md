@@ -567,6 +567,27 @@ frees the C-side memory at once. Measured after: 2500 runs hold flat at
 happens on a normal run and on a faulting one, each with a fresh spy so no
 count leaks between tests.
 
+## A second leak: the retained pefile objects (F20)
+
+Fixing F19 cut the leak but did not end it: 3000 pairs still grew past memory
+and was killed, now more slowly. Measured, the growth tracked the number of
+distinct binaries opened - about 135 MB per Loader, 96 loaders by 200 pairs -
+not the number of runs. The Loader kept its pefile object (opened with
+fast_load=False, which holds the whole file and its parsed structures), and
+V0 caches one Loader per binary, so a hundred large binaries retained a
+hundred heavy objects.
+
+The Loader now keeps only what mapping needs - the header bytes and each
+section's bytes at its virtual address, a few MB - and drops the pefile
+object at construction. write_sections maps from those raw bytes. Measured
+after: 200 loaders hold ~100 KB each instead of 135 MB, a thousandfold drop.
+A test checks the pefile object is gone and that mapping from the raw bytes
+still runs a function correctly.
+
+Together F19 (the emulator's C memory) and F20 (the loaders' Python memory)
+are the two leaks that killed the 3000-pair run; with both closed it holds
+flat.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

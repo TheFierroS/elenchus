@@ -258,3 +258,23 @@ def test_a_faulting_run_still_releases(fixture):
         unicorn.Uc.release_handle = real
     assert out.status is Status.FAULT
     assert seen == [1]
+
+
+def test_the_loader_does_not_retain_the_pefile_object():
+    """A Loader keeps only the raw bytes it needs to map, not the pefile
+    object, which for a large binary is 100+ MB; over V0's ~100 distinct
+    binaries retaining every one leaked gigabytes (F20)."""
+    loader = Loader(FIXTURES / "cases_O3.dll")
+    assert not hasattr(loader, "pe")           # the heavy object is gone
+    assert isinstance(loader._header, bytes)
+    assert all(isinstance(d, bytes) for _, d in loader._sections)
+
+
+def test_a_loader_still_maps_correctly_from_raw_bytes(fixture):
+    """Dropping the pefile object must not change what gets mapped: add3 still
+    runs and returns the right value from the saved section bytes."""
+    loader, sigs = fixture
+    f = sigs["add3"]
+    out = run(loader, f.address, placement(f.abi), [7, 5, 2], budget=50_000)
+    assert out.status is Status.COMPLETED
+    assert (out.ret_int & placement(f.abi).ret.mask) == 24

@@ -124,13 +124,27 @@ class Loader:
     """
 
     def __init__(self, path: str | Path):
-        self.pe = pefile.PE(str(path), fast_load=False)
-        self.base = self.pe.OPTIONAL_HEADER.ImageBase
-        self.size = (self.pe.OPTIONAL_HEADER.SizeOfImage + PAGE - 1) & ~(PAGE - 1)
-        # slot address -> (dll, name), and trap address -> name.
-        self.slots, self.traps = self._import_traps()
+        pe = pefile.PE(str(path), fast_load=False)
+        self.base = pe.OPTIONAL_HEADER.ImageBase
+        self.size = (pe.OPTIONAL_HEADER.SizeOfImage + PAGE - 1) & ~(PAGE - 1)
+        self.slots, self.traps = self._import_traps(pe)
 
-    def _import_traps(self) -> tuple[dict, dict]:
+        # Keep only what mapping needs - the header and each section's bytes at
+        # its virtual address - as plain bytes, and drop the pefile object.
+        # A PE parsed with fast_load=False holds the whole file and its parsed
+        # structures, 100+ MB for a large binary; over V0's ~100 distinct
+        # binaries, retaining every pefile object leaked gigabytes (F20). The
+        # raw bytes are a few MB and are all write_sections ever reads.
+        self._header = bytes(pe.header)
+        self._sections = [
+            (section.VirtualAddress, section.get_data())
+            for section in pe.sections
+            if section.get_data()
+        ]
+        pe.close()
+        del pe
+
+    def _import_traps(self, pe) -> tuple[dict, dict]:
         """Assign each named import a trap address and record both directions.
 
         slots maps the import-address-table slot to (dll, name); the slot is
@@ -139,10 +153,10 @@ class Loader:
         the code hook can name what was called.
         """
         slots, traps = {}, {}
-        if not hasattr(self.pe, "DIRECTORY_ENTRY_IMPORT"):
+        if not hasattr(pe, "DIRECTORY_ENTRY_IMPORT"):
             return slots, traps
         index = 0
-        for entry in self.pe.DIRECTORY_ENTRY_IMPORT:
+        for entry in pe.DIRECTORY_ENTRY_IMPORT:
             dll = entry.dll.decode(errors="replace")
             for imp in entry.imports:
                 if not imp.name:
@@ -158,16 +172,15 @@ class Loader:
         """Copy the headers and every section into an emulator's memory, then
         point every import slot at its trap.
 
-        A section's raw data can be shorter than its virtual size (.bss holds
+        Uses the raw bytes kept at construction, not a pefile object. A
+        section's raw data can be shorter than its virtual size (.bss holds
         zeros with no file bytes); the mapping is already zero, so copying the
         raw bytes over it leaves the rest zero. After the sections are in, the
         import slots are overwritten with trap addresses (see _import_traps).
         """
-        uc.mem_write(self.base, self.pe.header)
-        for section in self.pe.sections:
-            data = section.get_data()
-            if data:
-                uc.mem_write(self.base + section.VirtualAddress, data)
+        uc.mem_write(self.base, self._header)
+        for virtual_address, data in self._sections:
+            uc.mem_write(self.base + virtual_address, data)
         for slot, (_dll, _name, trap) in self.slots.items():
             uc.mem_write(slot, struct.pack("<Q", trap))
 
