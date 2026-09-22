@@ -524,6 +524,29 @@ and future, is covered because the bound sits in the Machine they all go
 through, not in each stub. 16 MiB is far past any real single transfer and
 past the page-map limit, so nothing legitimate is affected.
 
+## Pointer returns refuted true claims (F18)
+
+The first 500-pair run found eight false refutations, all "return value
+differs", all on functions whose names give them away: utf8proc_version,
+opus_strerror, pagetype_caption, opj_mct_get_mct_norms and four more. Every
+one returns a pointer - checked in the signatures, six of six `return
+pointer` - into the binary's own image or the heap: a version string, an
+error message, a static table. That address is at a different value in -O0
+and -O3, the same way a global's address is (F15), and the harness compared
+the returned RAX as an integer and refuted a true claim.
+
+This is F15's sibling on the return side, and the design's own rule - a
+pointer is never compared by value - simply had not been applied to the
+return. A returned pointer now has its own kind in the placement, and
+compare does not compare it, exactly as it does not compare void; its mask is
+zero as a second guard, so even read as an integer nothing of it is
+compared. The function's effect is judged by the memory it wrote, not the
+address it handed back. A pointer-returning fixture (`banner`, returning a
+.rdata string) and a test hold it, mutation-checked against both guards.
+
+All eight V0 disagreements were this one cause; with it fixed the next real
+pass is where zero false refutations is retested at scale.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

@@ -79,7 +79,7 @@ class Return:
         A char defines 8 bits of RAX, an int 32, a long 64; the rest is
         whatever was last in the register and differs between -O0 and -O3.
         """
-        if self.kind == "void" or self.size == 0:
+        if self.kind in ("void", "pointer") or self.size == 0:
             return 0
         return (1 << (self.size * 8)) - 1
 
@@ -151,9 +151,16 @@ def placement(abi: dict) -> Placement:
         ret = Return("float", ret_abi["size"])
     elif ret_abi["kind"] == "void":
         ret = Return("void", 0)
+    elif ret_abi["kind"] == "pointer":
+        # A returned pointer is an address into the binary's own image or the
+        # heap, at a different value in -O0 and -O3 the same way a global's
+        # address is (F18, the return sibling of F15). It is never compared by
+        # value; the function's effect is seen in the memory it wrote, not in
+        # the address it handed back.
+        ret = Return("pointer", 8)
     else:
-        # int, pointer, enum resolved to its underlying integer: all read
-        # from RAX, masked to the width the type defines.
+        # int, enum resolved to its underlying integer: read from RAX, masked
+        # to the width the type defines.
         ret = Return("int", ret_abi["size"] or 8)
 
     return Placement(tuple(args), ret, stack_offset)

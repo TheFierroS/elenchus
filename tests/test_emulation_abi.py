@@ -94,9 +94,13 @@ def test_a_float_return_comes_from_xmm0(sigs):
     assert placement(sigs["fma3"]).ret.size == 4
 
 
-def test_a_pointer_return_is_a_full_eight_byte_integer(sigs):
+def test_a_pointer_return_is_its_own_kind_not_compared(sigs):
+    """duplicate returns char*. A returned pointer is an address that differs
+    between -O0 and -O3 (F18), so it has its own kind and is not compared by
+    value - the function's effect is in the memory it wrote."""
     ret = placement(sigs["duplicate"]).ret
-    assert ret.kind == "int" and ret.size == 8
+    assert ret.kind == "pointer"
+    assert ret.mask == 0                # nothing of it is compared
 
 
 # ---------------------------------------------------- what it declines

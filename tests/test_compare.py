@@ -221,3 +221,13 @@ def test_a_write_to_a_global_does_not_refute(env):
     false refutation V0 found on lua_upvaluejoin, in miniature."""
     result = compare_named(env, "record", "record", [[0, 42], [3, 7], [9, 100]])
     assert result.verdict is Verdict.SURVIVED
+
+
+def test_a_pointer_return_does_not_refute(env):
+    """banner() returns a pointer into .rdata, at a different address in the
+    -O0 and -O3 binaries. The returned pointer is not compared by value (F18),
+    so the pair survives - the return sibling of the global-write fix (F15).
+    This is the class of false refutation V0 found (utf8proc_version,
+    opus_strerror, and six more, all pointer returns)."""
+    result = compare_named(env, "banner", "banner", [[], [], []])
+    assert result.verdict is Verdict.SURVIVED

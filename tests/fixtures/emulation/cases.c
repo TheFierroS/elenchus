@@ -142,6 +142,13 @@ int record(int index, int value) {
     return global_table[index & 7] + 1;
 }
 
+/* Returns a pointer into the binary's own .rdata - a static string. Its
+ * address differs at -O0 and -O3, so the returned pointer must not be
+ * compared by value (F18). */
+const char *banner(void) {
+    return "elenchus fixture banner v1";
+}
+
 /* --- -O3, a saved XMM register, and the shadow space ------------------ */
 
 /*

@@ -74,6 +74,11 @@ def _stable_return(a, b, placement: Placement):
     ret = placement.ret
     if ret.kind == "void":
         return "void"
+    if ret.kind == "pointer":
+        # A returned pointer is an address that differs between -O0 and -O3
+        # (F18); its value is never compared. Like void, there is nothing to
+        # compare here - the function's effect is in the memory it wrote.
+        return "pointer"
     if ret.kind == "float":
         if a.ret_float_bits != b.ret_float_bits:
             return None
