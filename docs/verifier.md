@@ -688,6 +688,30 @@ properly needs a *valid* context, which means calling its initialiser first;
 that is the constructor-chain work, the next item on the roadmap, and it is
 how these move from inconclusive to actually verified.
 
+## A stub's writes were invisible (F25)
+
+F24 raised coverage to 47% but left rhash_ripemd160_final refuted, and under
+*both* input fills - so it was not the invented data after all. Following it
+down: the context buffer came out **byte for byte identical** in the two
+versions, so both had done the same work; the difference was only that -O3
+wrote the 20-byte digest into the caller's buffer and -O0 wrote nothing. And
+the import trace said why: -O0 called memcpy, -O3 had inlined it.
+
+The harness records writes from Unicorn's write hook, which fires for
+emulated instructions. A stub writes through the emulator's API instead, and
+that does not fire the hook - so every effect produced by a stub was
+invisible. A function whose output is written by memcpy looked as if it
+produced nothing, while the build that inlined the copy looked as if it did,
+and the pair was refuted. This was not one function: memcpy, memset, strcpy,
+calloc - every stub that writes - had its effects dropped.
+
+The write rule is now one function that both the hook and Machine.write go
+through, so a stub's write counts exactly like the function's own, across
+whole pages the write spans. Two tests hold it, mutation-checked.
+
+This is the deepest bug the verifier has had: not a false difference it
+invented, but a real effect it could not see.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

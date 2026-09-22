@@ -367,11 +367,12 @@ class Machine:
     function had not reached yet.
     """
 
-    def __init__(self, uc, mapped, seed, arena, input_variant=0):
+    def __init__(self, uc, mapped, seed, arena, input_variant=0, record=None):
         self._uc = uc
         self._mapped = mapped
         self._seed = seed
         self._input_variant = input_variant
+        self._record = record
         self.arena = arena
 
     def arg(self, index: int) -> int:
@@ -401,6 +402,14 @@ class Machine:
             _ensure_mapped(self._uc, self._mapped, address, len(data),
                            self._seed, self._input_variant)
         self._uc.mem_write(address, data)
+        # A stub writes through the emulator's API, which does not fire the
+        # write hook, so its effect would otherwise be invisible: a -O0 build
+        # calling memcpy to fill the caller's buffer looked as if it wrote
+        # nothing, while the -O3 build that inlined the copy looked as if it
+        # wrote, and the pair was refuted (F25). Recording here makes a stub's
+        # writes count exactly like the function's own.
+        if self._record is not None and data:
+            self._record(address, len(data))
 
     def set_return(self, value: int) -> None:
         from unicorn.x86_const import UC_X86_REG_RAX
@@ -420,7 +429,7 @@ class Machine:
         return size
 
 
-def _run_stub(uc, stub, mapped, seed, arena, input_variant=0) -> None:
+def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None) -> None:
     """Run a stub in place of the call, then return to the caller.
 
     The call pushed a return address and jumped to the trap; the stub does
@@ -430,7 +439,7 @@ def _run_stub(uc, stub, mapped, seed, arena, input_variant=0) -> None:
     """
     from unicorn.x86_const import UC_X86_REG_RIP, UC_X86_REG_RSP
 
-    stub(Machine(uc, mapped, seed, arena, input_variant))
+    stub(Machine(uc, mapped, seed, arena, input_variant, record))
 
     rsp = uc.reg_read(UC_X86_REG_RSP)
     return_address = int.from_bytes(uc.mem_read(rsp, 8), "little")
@@ -537,19 +546,30 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
 
     image_end = loader.base + loader.size
 
-    def on_write(uc, access, addr, size, value, _):
-        # The stack is the function's own; the binary's own image is its
-        # global and static data, which -O0 and -O3 place at different
-        # addresses with different contents, so a write there cannot be
-        # matched between the twins (docs/verifier.md, risk 9). Only writes to
-        # memory the harness handed out - argument buffers and the arena, at
-        # the same address in both versions - are the function's observable
-        # effect and are recorded.
+    def record_write(addr, size):
+        """Record the pages a write touches, if it is an observable effect.
+
+        The stack is the function's own; the binary's own image is its global
+        and static data, which -O0 and -O3 place at different addresses with
+        different contents, so a write there cannot be matched between the
+        twins (docs/verifier.md, risk 9). Only writes to memory the harness
+        handed out - argument buffers and the arena, at the same address in
+        both versions - are the function's observable effect.
+
+        Both the emulator's write hook and a stub's Machine.write go through
+        here, so a stub's effect counts exactly like the function's own (F25).
+        """
         if STACK_TOP - STACK_SIZE <= addr < STACK_TOP:
             return
         if loader.base <= addr < image_end:
             return
-        written.add(addr & ~(PAGE - 1))
+        first = addr & ~(PAGE - 1)
+        last = (addr + max(size, 1) - 1) & ~(PAGE - 1)
+        for page in range(first, last + PAGE, PAGE):
+            written.add(page)
+
+    def on_write(uc, access, addr, size, value, _):
+        record_write(addr, size)
 
     def on_code(uc, addr, size, _):
         # Runs once per instruction (the hook is already here for imports), so
@@ -569,7 +589,7 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             uc.emu_stop()
             return
         try:
-            _run_stub(uc, stub, mapped, seed, arena, input_variant)
+            _run_stub(uc, stub, mapped, seed, arena, input_variant, record_write)
         except StubDeclined as exc:
             state["status"] = Status.IMPORT_WITHOUT_STUB
             state["detail"] = f"{name}: {exc}"

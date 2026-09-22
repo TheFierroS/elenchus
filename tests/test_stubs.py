@@ -601,3 +601,33 @@ def test_a_reasonable_size_still_works():
     m = FakeMachine(args=[0x1000, 0x41, 5], memory=b"\x00" * 8, base=0x1000)
     memset(m)
     assert m.read(0x1000, 5) == b"AAAAA"
+
+
+def test_a_stub_write_is_recorded_as_an_effect(fixture):
+    """copy(d, s, n) is a memcpy wrapper: at -O0 the copy is a call the stub
+    serves, and the stub writes through the emulator's API, which does not
+    fire the write hook. Without recording it the function looked as if it
+    wrote nothing, while an inlined -O3 copy looked as if it wrote - and the
+    pair was refuted (F25). The write must be visible."""
+    loader, sigs = fixture
+    f = sigs["copy"]
+    out = run(loader, f.address, placement(f.abi),
+              [BUF, BUF + 0x1000, 16], stub_resolver=resolver)
+    assert out.status is Status.COMPLETED
+    assert (BUF & ~0xFFF) in out.writes          # the destination page is there
+    written = out.writes[BUF & ~0xFFF][BUF & 0xFFF:][:16]
+    assert len(written) == 16                     # and holds the copied bytes
+
+
+def test_a_memcpy_wrapper_survives_its_twin_with_the_write_seen():
+    """copy at -O0 (a served memcpy) against -O3 (inlined): with the stub's
+    write recorded, both show the same effect and the pair survives."""
+    o0 = Loader(FIXTURES / "cases_O0.dll")
+    o3 = Loader(FIXTURES / "cases_O3.dll")
+    s0 = {f.name: f for f in ground_truth(FIXTURES / "cases_O0.dll")}
+    s3 = {f.name: f for f in ground_truth(FIXTURES / "cases_O3.dll")}
+    result = compare(o0, s0["copy"].address, o3, s3["copy"].address,
+                     placement(s3["copy"].abi),
+                     [[BUF, BUF + 0x1000, 16], [BUF, BUF + 0x1000, 32]],
+                     stub_resolver=resolver)
+    assert result.verdict is Verdict.SURVIVED
