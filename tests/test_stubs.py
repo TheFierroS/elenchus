@@ -631,3 +631,95 @@ def test_a_memcpy_wrapper_survives_its_twin_with_the_write_seen():
                      [[BUF, BUF + 0x1000, 16], [BUF, BUF + 0x1000, 32]],
                      stub_resolver=resolver)
     assert result.verdict is Verdict.SURVIVED
+
+
+# --------------------------------------------------- runtime state, locks
+
+
+from elenchus.emulation.stubs import (  # noqa: E402
+    LOCKS,
+    RUNTIME_STATE,
+    TERMINATION,
+    errno_location,
+    iob_func,
+    lock_noop,
+    lock_true,
+    mb_cur_max,
+    terminates,
+)
+
+
+def test_errno_returns_a_zeroed_location():
+    """A function that reads errno sees no error, the path worth verifying."""
+    m = ArenaMachine(args=[])
+    errno_location(m)
+    assert m.returned != 0
+    assert m.read(m.returned, 4) == b"\x00\x00\x00\x00"
+
+
+def test_the_same_runtime_state_comes_back_every_call():
+    """errno is one location per run: a function that stores and reads back
+    must see what it stored."""
+    m = ArenaMachine(args=[])
+    errno_location(m)
+    first = m.returned
+    m.write(first, (5).to_bytes(4, "little"))
+    errno_location(m)
+    assert m.returned == first
+    assert m.read(first, 4) == (5).to_bytes(4, "little")
+
+
+def test_different_runtime_names_get_different_blocks():
+    m = ArenaMachine(args=[])
+    errno_location(m)
+    errno = m.returned
+    iob_func(m)
+    assert m.returned != errno
+
+
+def test_mb_cur_max_is_one_not_zero():
+    """The C locale's multibyte width is 1; zero would make a parser that
+    divides or loops by it behave absurdly."""
+    m = ArenaMachine(args=[])
+    mb_cur_max(m)
+    assert m.read(m.returned, 4) == (1).to_bytes(4, "little")
+
+
+def test_abort_declines_rather_than_returning():
+    """Reaching abort is an error path, not behaviour worth comparing: the
+    input is inconclusive, never refuted."""
+    from elenchus.emulation.harness import StubDeclined
+    m = ArenaMachine(args=[])
+    with pytest.raises(StubDeclined):
+        terminates(m)
+
+
+def test_every_termination_name_declines():
+    from elenchus.emulation.harness import StubDeclined
+    for name, stub in TERMINATION.items():
+        m = ArenaMachine(args=[])
+        with pytest.raises(StubDeclined):
+            stub(m)
+
+
+def test_a_lock_is_a_no_op_with_one_thread():
+    m = ArenaMachine(args=[0x1000])
+    lock_noop(m)
+    assert m.returned == 0
+
+
+def test_a_one_time_initialiser_declines_rather_than_skipping_the_work():
+    """InitOnceExecuteOnce would have to run its callback for the guarded
+    initialisation to happen. Returning success without running it would let
+    a function continue with uninitialised state, so it declines."""
+    from elenchus.emulation.harness import StubDeclined
+    m = ArenaMachine(args=[0x1000, 0x2000, 0, 0])
+    with pytest.raises(StubDeclined):
+        lock_true(m)
+
+
+def test_the_new_families_are_in_the_resolver():
+    for name in ("_errno", "__iob_func", "localeconv", "abort",
+                 "EnterCriticalSection", "_lock"):
+        assert resolver(name) is not None, name
+    assert set(STUBS) >= set(RUNTIME_STATE) | set(TERMINATION) | set(LOCKS)

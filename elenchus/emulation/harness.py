@@ -97,6 +97,7 @@ class Status(Enum):
     COMPLETED = "completed"
     UNSUPPORTED_INSTRUCTION = "unsupported instruction"
     IMPORT_WITHOUT_STUB = "import without a stub"
+    STUB_DECLINED = "stub declined the call"
     BUDGET_EXHAUSTED = "budget exhausted"
     TIMED_OUT = "timed out"
     TOO_MUCH_MEMORY = "mapped too much memory"
@@ -325,6 +326,10 @@ class Arena:
     def __init__(self):
         self.next = ARENA_BASE
         self.blocks = {}          # address -> {"size", "live"}
+        # Per-name blocks for the C runtime's own state - errno, the stdio
+        # table - so a function that reads one twice in a run sees the same
+        # location, and one that stores into it reads back what it stored.
+        self.runtime_state = {}
 
     def allocate(self, size):
         if size == 0:
@@ -591,7 +596,12 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         try:
             _run_stub(uc, stub, mapped, seed, arena, input_variant, record_write)
         except StubDeclined as exc:
-            state["status"] = Status.IMPORT_WITHOUT_STUB
+            # The stub exists but cannot serve this call faithfully - a free
+            # of a pointer the arena never handed out, a size past the sanity
+            # bound. Distinct from having no stub at all: one says write a
+            # stub, the other says this call was beyond the one we have, and
+            # mixing them made the histogram ask for stubs already written.
+            state["status"] = Status.STUB_DECLINED
             state["detail"] = f"{name}: {exc}"
             uc.emu_stop()
 

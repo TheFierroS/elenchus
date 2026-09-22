@@ -313,6 +313,149 @@ def _sign(a: bytes, b: bytes) -> int:
     return 0
 
 
+# --- C runtime state: errno, stdio handles, locale -------------------------
+
+# The runtime keeps small pieces of state a program reaches through a
+# function that returns a pointer to it: errno, the stdio stream table, the
+# locale's multibyte width. A real program's state lives in the CRT; here the
+# arena hands out a zeroed block per name, the same block every time within a
+# run, so a function that reads *_errno() sees a consistent zero and a
+# function that stores into it can read back what it stored.
+#
+# Zero is the right value for all of these: errno zero is "no error", and a
+# zeroed locale field is the C locale's. A function that branches on them
+# takes the no-error path, which is the path worth verifying.
+
+_RUNTIME_STATE_SIZE = 64        # enough for the small structs these return
+
+
+def _runtime_state(m, name: str, size: int = _RUNTIME_STATE_SIZE) -> int:
+    """The address of a per-name zeroed block, allocated once per run."""
+    cache = m.arena.runtime_state
+    if name not in cache:
+        address = m.arena.allocate(size)
+        m.write(address, b"\x00" * size)
+        cache[name] = address
+    return cache[name]
+
+
+def errno_location(m) -> None:
+    """int *_errno(void). A pointer to the run's errno, zero to begin with."""
+    m.set_return(_runtime_state(m, "errno", 8))
+
+
+def iob_func(m) -> None:
+    """FILE *__iob_func(void). The stdio stream table.
+
+    Zeroed: a function that checks a stream for null takes the null path,
+    which is honest - there are no open streams here - and a function that
+    writes to one ends up at an unstubbed import instead, inconclusive.
+    """
+    m.set_return(_runtime_state(m, "iob", 256))
+
+
+def mb_cur_max(m) -> None:
+    """int *___mb_cur_max_func(void). The locale's multibyte width.
+
+    The C locale's value is 1, not zero: a parser that divides or loops by it
+    would behave absurdly at zero, and 1 is what a default locale gives.
+    """
+    address = _runtime_state(m, "mb_cur_max", 8)
+    m.write(address, (1).to_bytes(4, "little"))
+    m.set_return(address)
+
+
+def lc_codepage(m) -> None:
+    """int *___lc_codepage_func(void). Zero is the default codepage."""
+    m.set_return(_runtime_state(m, "lc_codepage", 8))
+
+
+def localeconv(m) -> None:
+    """struct lconv *localeconv(void). A zeroed lconv.
+
+    Its fields are pointers to strings; zero means null, and a function that
+    dereferences one faults, which is inconclusive rather than wrong.
+    """
+    m.set_return(_runtime_state(m, "lconv", 128))
+
+
+RUNTIME_STATE = {
+    "_errno": errno_location,
+    "__errno_location": errno_location,
+    "__iob_func": iob_func,
+    "___mb_cur_max_func": mb_cur_max,
+    "___lc_codepage_func": lc_codepage,
+    "localeconv": localeconv,
+}
+
+
+# --- termination: abort, assert --------------------------------------------
+
+def terminates(m) -> None:
+    """abort(), _assert(...), exit(...): the function is not coming back.
+
+    A build that reaches abort is on an error path - a failed assertion, an
+    invalid argument - and what it does there is not behaviour worth
+    comparing: the two versions may reach it at different points, and neither
+    result is the function's proper output. Declining makes the input
+    inconclusive, which is exactly right, and never refutes.
+    """
+    raise StubDeclined("the function reached a termination call")
+
+
+TERMINATION = {
+    "abort": terminates,
+    "_assert": terminates,
+    "_wassert": terminates,
+    "exit": terminates,
+    "_exit": terminates,
+    "quick_exit": terminates,
+    "terminate": terminates,
+}
+
+
+# --- locks: single-threaded, so they do nothing ----------------------------
+
+# Nothing here runs more than one thread, so a critical section is never
+# contended and a one-time initialiser always runs its callback exactly once
+# - which is what these do. Each is a no-op returning success, so a function
+# that guards its work with a lock gets to do the work.
+
+def lock_noop(m) -> None:
+    """InitializeCriticalSection, EnterCriticalSection, _lock and friends:
+    nothing to do with one thread. Returns zero."""
+    m.set_return(0)
+
+
+def lock_true(m) -> None:
+    """A lock call whose caller checks for success: TryEnter, InitOnce.
+
+    InitOnceExecuteOnce takes a callback and would have to call it for the
+    guarded initialisation to happen; running an arbitrary callback is beyond
+    what this stub does faithfully, so it declines rather than returning a
+    success that skipped the work.
+    """
+    raise StubDeclined("a one-time initialiser's callback is not run")
+
+
+LOCKS = {
+    "InitializeCriticalSection": lock_noop,
+    "InitializeCriticalSectionAndSpinCount": lock_noop,
+    "DeleteCriticalSection": lock_noop,
+    "EnterCriticalSection": lock_noop,
+    "LeaveCriticalSection": lock_noop,
+    "AcquireSRWLockShared": lock_noop,
+    "AcquireSRWLockExclusive": lock_noop,
+    "ReleaseSRWLockShared": lock_noop,
+    "ReleaseSRWLockExclusive": lock_noop,
+    "_lock": lock_noop,
+    "_unlock": lock_noop,
+    "_lock_file": lock_noop,
+    "_unlock_file": lock_noop,
+    "InitOnceExecuteOnce": lock_true,
+}
+
+
 CSTRING = {
     "strlen": strlen,
     "strcmp": strcmp,
@@ -343,7 +486,8 @@ def _merge(*families):
     return merged
 
 
-STUBS = _merge(BLOCK_MEMORY, ALLOCATION, CSTRING)
+STUBS = _merge(BLOCK_MEMORY, ALLOCATION, CSTRING, RUNTIME_STATE, TERMINATION,
+               LOCKS)
 
 
 def resolver(name):
