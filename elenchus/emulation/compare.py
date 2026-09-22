@@ -96,6 +96,28 @@ def _stable_return(a, b, placement: Placement):
     return ("int", masked_a)
 
 
+def _mask_image_pointers(content: bytes, page: int, ranges) -> bytes:
+    """Blank any 8-byte value in `content` that is an address in `ranges`.
+
+    A function that writes a pointer to one of its own globals writes an
+    address, and that address differs between -O0 and -O3 exactly as a
+    global's address does (F15) and a returned pointer's does (F18). The
+    value is not data the two versions should agree on, so each aligned
+    8-byte word that falls inside either binary's image is blanked before
+    the comparison. Everything else - the real data - still compares.
+
+    Only image addresses are blanked, not every large number: a pointer into
+    an input buffer or the arena is at the same address in both versions and
+    stays comparable.
+    """
+    out = bytearray(content)
+    for offset in range(0, len(out) - 7, 8):
+        value = int.from_bytes(out[offset:offset + 8], "little")
+        if any(low <= value < high for low, high in ranges):
+            out[offset:offset + 8] = b"\x00" * 8
+    return bytes(out)
+
+
 def _stable_writes(a, b):
     """The pages both seeds of one version wrote identically.
 
@@ -111,7 +133,7 @@ def _stable_writes(a, b):
     return stable
 
 
-def _judge(q_a, q_b, k_a, k_b, placement: Placement) -> InputResult:
+def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputResult:
     """Compare the two versions on one input, each already run twice."""
     # Any run that did not complete makes the input inconclusive. Carry the
     # first non-completed status exactly, so the caller buckets on the enum
@@ -137,6 +159,11 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement) -> InputResult:
 
     q_writes = _stable_writes(q_a, q_b)
     k_writes = _stable_writes(k_a, k_b)
+    if image_ranges:
+        q_writes = {p: _mask_image_pointers(c, p, image_ranges)
+                    for p, c in q_writes.items()}
+        k_writes = {p: _mask_image_pointers(c, p, image_ranges)
+                    for p, c in k_writes.items()}
     if q_writes != k_writes:
         pages = sorted(set(q_writes) | set(k_writes))
         differing = [hex(p) for p in pages if q_writes.get(p) != k_writes.get(p)]
@@ -178,6 +205,12 @@ def compare(q_loader: Loader, q_address: int,
     resolver, so a claim is judged against one set of stubs. Passed None -
     the default - every import is inconclusive, which is layer A of V0.
     """
+    # Both binaries' image ranges, so a written pointer into either one can be
+    # recognised as an address rather than compared as data (F23).
+    image_ranges = (
+        (q_loader.base, q_loader.base + q_loader.size),
+        (k_loader.base, k_loader.base + k_loader.size),
+    )
     results = []
     judged_any = False
     peak = 0
@@ -193,7 +226,7 @@ def compare(q_loader: Loader, q_address: int,
         peak = max(peak, q_a.instructions, q_b.instructions,
                    k_a.instructions, k_b.instructions)
 
-        result = _judge(q_a, q_b, k_a, k_b, placement)
+        result = _judge(q_a, q_b, k_a, k_b, placement, image_ranges)
         results.append(result)
         if result.verdict is Verdict.REFUTED:
             return Comparison(Verdict.REFUTED, results, refuting_input=index,

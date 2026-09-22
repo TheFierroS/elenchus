@@ -145,8 +145,17 @@ int record(int index, int value) {
 /* Returns a pointer into the binary's own .rdata - a static string. Its
  * address differs at -O0 and -O3, so the returned pointer must not be
  * compared by value (F18). */
+__attribute__((noinline))
 const char *banner(void) {
     return "elenchus fixture banner v1";
+}
+
+/* Writes the address of a global into the caller's buffer. The address is
+ * different at -O0 and -O3, so the written pointer value must not be
+ * compared as data (F23); the count written beside it must. */
+void publish(const char **out, int *count) {
+    out[0] = banner();
+    count[0] = 2;
 }
 
 /* --- -O3, a saved XMM register, and the shadow space ------------------ */

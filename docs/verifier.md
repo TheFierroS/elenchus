@@ -638,6 +638,29 @@ the fix disabled (count_nonzero counts non-zero bytes, and random fill has
 almost none zero); it was sharpened to `sum`, whose result depends on the
 bytes themselves, before it caught the mutation.
 
+## A written pointer is an address too (F23)
+
+Fixing the fills (F22) raised coverage to 44.8% and cut "nothing to compare"
+from 3.4% to 0.8%, and it changed which pairs disagreed: the three that
+remained were now all "written memory differs" - rhash_ripemd160_final, FLAC
+cuesheet, lexbor style_mutation_init.
+
+Read byte by byte, the difference was a pointer. lexbor's buffer held
+...02000000 identically in both versions with four bytes before it differing:
+one 64-bit value, 0x298695_0e0 against 0x20605_6020 - the address of a global,
+different in the two builds because their image bases are. The function
+writes the address of something of its own into the caller's buffer, and we
+compared that address as data.
+
+This is the third sibling: F15 excluded writes *into* the image, F18 excluded
+a *returned* pointer, and a pointer *written into a buffer* was still
+compared. Now, before written pages are compared, each aligned 8-byte word
+that falls inside either binary's image is blanked - only image addresses,
+so a pointer into an input buffer or the arena, which sits at the same
+address in both versions, still compares, and so does all real data. A
+fixture that writes a global's address beside a plain count (`publish`) and
+a unit test of the mask hold it, mutation-checked.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

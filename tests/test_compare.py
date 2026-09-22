@@ -266,3 +266,31 @@ def test_a_double_return_uses_all_64_bits():
 
     c = Outcome(Status.COMPLETED, ret_float_bits=bits ^ 1)   # differ in a low bit
     assert _stable_return(a, c, dplace) is None              # a real difference
+
+
+def test_a_written_pointer_into_the_image_does_not_refute(env):
+    """publish(out, count) writes the address of a global string into the
+    caller's buffer, and that address differs between the -O0 and -O3
+    binaries. The written pointer value is an address, not data, so it is
+    masked before comparison (F23) - the third sibling of F15 (global writes)
+    and F18 (returned pointers). The count written beside it still compares.
+    This is the class V0 found: rhash_ripemd160_final, FLAC cuesheet,
+    lexbor style_mutation_init."""
+    result = compare_named(env, "publish", "publish", [[BUF, BUF + 0x1000]])
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_masking_only_blanks_image_addresses():
+    """The mask must not blank ordinary data that happens to be large, nor
+    pointers into the input buffers, which are at the same address in both
+    versions."""
+    from elenchus.emulation.compare import _mask_image_pointers
+    image = [(0x140000000, 0x140100000)]
+    inside = (0x140005000).to_bytes(8, "little")
+    outside = (0x2000000000000).to_bytes(8, "little")      # a buffer address
+    data = (12345).to_bytes(8, "little")
+    content = inside + outside + data
+    masked = _mask_image_pointers(content, 0, image)
+    assert masked[0:8] == b"\x00" * 8                      # the image pointer
+    assert masked[8:16] == outside                         # buffer pointer kept
+    assert masked[16:24] == data                           # plain data kept
