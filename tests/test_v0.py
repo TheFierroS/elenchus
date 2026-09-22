@@ -161,3 +161,22 @@ def test_generated_inputs_let_a_pointer_function_run(env):
                          json.dumps(s3["count_nonzero"].abi))   # no inputs= : generated
     assert result.bucket == Bucket.COMPLETED
     assert result.agreement == Bucket.AGREED
+
+
+def test_a_completed_pair_carries_its_instruction_count(env):
+    """V0 records how many instructions a finisher took, so the report can
+    show where the real budget sits."""
+    result = run_pair(env, "add3")
+    assert result.bucket == Bucket.COMPLETED
+    assert 0 < result.instructions < 100        # add3 is a handful of instructions
+
+
+def test_the_report_computes_instruction_percentiles():
+    from elenchus.emulation.v0 import PairResult, V0Report
+    report = V0Report(layer="bare")
+    for n in (4, 5, 6, 10, 1000):
+        report.add(PairResult("p", "f", Bucket.COMPLETED, Bucket.AGREED,
+                              instructions=n))
+    median, p90, p99, top = report.instruction_percentiles()
+    assert median in (5, 6)          # middle of the five
+    assert top == 1000               # the outlier is visible as the max

@@ -146,6 +146,9 @@ class Comparison:
     verdict: Verdict
     inputs: list = field(default_factory=list)   # InputResult per vector
     refuting_input: int | None = None            # index of the first refutation
+    max_instructions: int = 0                    # the longest run behind it,
+    #                                              so V0 can see where the real
+    #                                              budget sits
 
 
 def compare(q_loader: Loader, q_address: int,
@@ -166,6 +169,7 @@ def compare(q_loader: Loader, q_address: int,
     """
     results = []
     judged_any = False
+    peak = 0
     for index, args in enumerate(input_vectors):
         q_a = run(q_loader, q_address, placement, args, seed=SEED_A,
                   budget=budget, stub_resolver=stub_resolver)
@@ -175,13 +179,16 @@ def compare(q_loader: Loader, q_address: int,
                   budget=budget, stub_resolver=stub_resolver)
         k_b = run(k_loader, k_address, placement, args, seed=SEED_B,
                   budget=budget, stub_resolver=stub_resolver)
+        peak = max(peak, q_a.instructions, q_b.instructions,
+                   k_a.instructions, k_b.instructions)
 
         result = _judge(q_a, q_b, k_a, k_b, placement)
         results.append(result)
         if result.verdict is Verdict.REFUTED:
-            return Comparison(Verdict.REFUTED, results, refuting_input=index)
+            return Comparison(Verdict.REFUTED, results, refuting_input=index,
+                              max_instructions=peak)
         if result.verdict is Verdict.SURVIVED:
             judged_any = True
 
     return Comparison(Verdict.SURVIVED if judged_any else Verdict.INCONCLUSIVE,
-                      results)
+                      results, max_instructions=peak)

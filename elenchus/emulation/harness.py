@@ -384,7 +384,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
     uc.reg_write(UC_X86_REG_RSP, rsp)
     _load_arguments(uc, placement, args, rsp)
 
-    state = {"status": None, "detail": ""}
+    state = {"status": None, "detail": "", "count": 0}
     mapped: set = set()          # pages the harness filled on first touch
     written: set = set()
     arena = Arena()              # fresh per run: both versions allocate alike
@@ -423,6 +423,10 @@ def run(loader: Loader, address: int, placement: Placement, args,
         written.add(addr & ~(PAGE - 1))
 
     def on_code(uc, addr, size, _):
+        # Runs once per instruction (the hook is already here for imports), so
+        # it also counts them: how many a function took is what V0 reads to
+        # set the real budget.
+        state["count"] += 1
         # A call to an import lands on its trap address (see Loader). Catch it
         # here and either run a stub in the emulator's place, or end the run
         # naming the import.
@@ -451,16 +455,19 @@ def run(loader: Loader, address: int, placement: Placement, args,
         uc.emu_start(address, SENTINEL, count=budget)
     except UcError as exc:
         status = state["status"] or Status.FAULT
-        return Outcome(status, detail=state["detail"] or str(exc))
+        return Outcome(status, detail=state["detail"] or str(exc),
+                       instructions=state["count"])
 
     if state["status"] is not None:
-        return Outcome(state["status"], detail=state["detail"])
+        return Outcome(state["status"], detail=state["detail"],
+                       instructions=state["count"])
 
     if uc.reg_read(UC_X86_REG_RIP) != SENTINEL:
-        return Outcome(Status.BUDGET_EXHAUSTED)
+        return Outcome(Status.BUDGET_EXHAUSTED, instructions=state["count"])
 
     writes = {page: bytes(uc.mem_read(page, PAGE)) for page in sorted(written)}
     return Outcome(Status.COMPLETED,
                    ret_int=uc.reg_read(UC_X86_REG_RAX),
                    ret_float_bits=_read_xmm0_low(uc),
+                   instructions=state["count"],
                    writes=writes)

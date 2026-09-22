@@ -78,6 +78,7 @@ class PairResult:
     bucket: str
     agreement: str | None = None        # AGREED / DISAGREED, if completed
     detail: str = ""
+    instructions: int = 0               # the longest run, when completed
 
 
 @dataclass
@@ -87,11 +88,13 @@ class V0Report:
     agreement: Counter = field(default_factory=Counter)
     imports_missing: Counter = field(default_factory=Counter)
     disagreements: list = field(default_factory=list)   # PairResult, for reading
+    completed_instructions: list = field(default_factory=list)  # per completed pair
 
     def add(self, result: PairResult):
         self.buckets[result.bucket] += 1
         if result.bucket == Bucket.COMPLETED:
             self.agreement[result.agreement] += 1
+            self.completed_instructions.append(result.instructions)
             if result.agreement == Bucket.DISAGREED:
                 self.disagreements.append(result)
         elif result.bucket == Bucket.IMPORT_MISSING:
@@ -100,6 +103,21 @@ class V0Report:
     @property
     def total(self):
         return sum(self.buckets.values())
+
+    def instruction_percentiles(self):
+        """Where completed pairs' longest runs fall: (median, p90, p99, max).
+
+        This is what sets the real budget - if every finisher is under some
+        number, the budget comes down to fit and a spin is caught far sooner.
+        """
+        counts = sorted(self.completed_instructions)
+        if not counts:
+            return None
+
+        def pct(p):
+            return counts[min(len(counts) - 1, int(len(counts) * p))]
+
+        return pct(0.50), pct(0.90), pct(0.99), counts[-1]
 
 
 def sample_pairs(conn, split="train", count=3000, seed=0):
@@ -166,9 +184,11 @@ def bucket_pair(o0_loader, o0_addr, o3_loader, o3_addr, abi_json,
 
     if result.verdict is Verdict.REFUTED:
         return PairResult("", "", Bucket.COMPLETED, Bucket.DISAGREED,
-                          detail=_first_refute_reason(result))
+                          detail=_first_refute_reason(result),
+                          instructions=result.max_instructions)
     if result.verdict is Verdict.SURVIVED:
-        return PairResult("", "", Bucket.COMPLETED, Bucket.AGREED)
+        return PairResult("", "", Bucket.COMPLETED, Bucket.AGREED,
+                          instructions=result.max_instructions)
 
     # Inconclusive: nothing could be judged. Name the commonest reason, which
     # is the bucket V0 reports - a missing stub, the budget, an instruction.
@@ -223,6 +243,11 @@ def _print_report(report: V0Report):
         disagreed = report.agreement.get(Bucket.DISAGREED, 0)
         print(f"  of completed: {agreed} agreed, {disagreed} DISAGREED "
               f"(false refutations to investigate)")
+        pcts = report.instruction_percentiles()
+        if pcts:
+            median, p90, p99, top = pcts
+            print(f"  instructions of finishers: median {median}, p90 {p90}, "
+                  f"p99 {p99}, max {top}")
     if report.imports_missing:
         print("  imports to stub next (top 15):")
         for name, n in report.imports_missing.most_common(15):
