@@ -492,8 +492,10 @@ def build_parser():
                     help="how many true pairs to sample")
     v0.add_argument("--seed", type=int, default=0,
                     help="the sample seed, recorded with the result")
-    v0.add_argument("--budget", type=int, default=5_000_000,
+    v0.add_argument("--budget", type=int, default=5_000,
                     help="instruction budget per run")
+    v0.add_argument("--out", default=None,
+                    help="write the full result to this JSON file")
     v0.set_defaults(func=cmd_verify_v0)
 
     check = sub.add_parser("check", help="run consistency checks on the database")

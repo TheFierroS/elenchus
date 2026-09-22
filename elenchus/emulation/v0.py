@@ -36,7 +36,12 @@ from elenchus.emulation.inputs import input_vectors
 # Lowered from the 5M ceiling to 500k after the first pass: real functions
 # that finish do so in far fewer, and a lower budget turns a 5M-instruction
 # spin from most of the running time into a quick budget-exhausted verdict.
-V0_BUDGET = 500_000
+# The instruction budget. Measured, not guessed: on the sample, completed
+# pairs finish with a p90 of ~300 instructions, and lowering the budget from
+# 500k to 5k left coverage unchanged (30%/32% either way) while halving the
+# time - so nothing legitimate needs 5k-500k instructions, and a run that
+# reaches 5k is a garbage-fed loop, caught sooner as budget-exhausted.
+V0_BUDGET = 5_000
 
 # How many input vectors per pair. Generated from the reference signature by
 # inputs.input_vectors - real buffers for pointers, boundary values for
@@ -258,7 +263,24 @@ def _print_report(report: V0Report):
         print(f"      DISAGREED {d.package}/{d.name}: {d.detail}")
 
 
+def _report_dict(report):
+    return {
+        "layer": report.layer,
+        "total": report.total,
+        "buckets": dict(report.buckets),
+        "agreement": dict(report.agreement),
+        "imports_missing": dict(report.imports_missing.most_common()),
+        "instruction_percentiles": report.instruction_percentiles(),
+        "disagreements": [
+            {"package": d.package, "name": d.name, "detail": d.detail}
+            for d in report.disagreements
+        ],
+    }
+
+
 def cmd_verify_v0(args):
+    import json as _json
+
     from elenchus.db import connect
 
     conn = connect(args.db)
@@ -273,6 +295,15 @@ def cmd_verify_v0(args):
     print(f"\ncoverage: bare {100 * bare_done / total:.1f}%, "
           f"stubbed {100 * stub_done / total:.1f}%  "
           f"(the stubs are worth {100 * (stub_done - bare_done) / total:.1f} points)")
+
+    if args.out:
+        payload = {
+            "count": args.count, "seed": args.seed, "budget": args.budget,
+            "bare": _report_dict(bare), "stubbed": _report_dict(stubbed),
+        }
+        with open(args.out, "w") as f:
+            _json.dump(payload, f, indent=1)
+        print(f"\nwritten to {args.out}")
     return 0
 
 
