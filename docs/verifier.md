@@ -882,6 +882,74 @@ less accurate, because the verdict is inconclusive either way.
 
 Zero false refutations in all four configurations.
 
+## Two tiers: refutation and corroboration - protocol
+
+Written before the code. The related work (docs/related-work.md) says plainly
+where our remaining 38% goes and how everyone else got past it: BLEX starts
+execution at any uncovered instruction, PEM flips branch outcomes to force a
+function past its own input checks. Both reach near-full coverage by giving up
+natural execution, and both are explicit that what they then measure is
+similarity, not equivalence - BLEX says so in as many words.
+
+We cannot give that up: the whole value here is a verdict, and a verdict rests
+on a refutation that is never wrong. So the two are separated rather than
+merged.
+
+**Tier 1, refutation.** Exactly what exists today. The function runs from its
+entry, on arguments the input generator produced, along whatever path it
+actually takes. A difference seen here is the functions' own and refutes the
+claim. Nothing in this tier changes, and its rules - the two seeds, the two
+input fills, the pointer masks - continue to hold.
+
+**Tier 2, corroboration.** The function is run again with one or more branch
+outcomes forced. Such a path is *infeasible*: no real input would take it. So
+
+  - a **difference** on a forced path proves nothing and **can never refute**;
+  - an **agreement** on a forced path is evidence that the two functions do the
+    same thing, collected from code tier 1 could not reach.
+
+That asymmetry is the whole design. It lets us take the coverage trick from
+the literature without taking the cost that comes with it.
+
+**A verdict gains a strength.** `survived` stops being one thing:
+
+| verdict | meaning |
+|---|---|
+| survived (feasible) | agreed on paths the function really takes |
+| survived (forced) | agreed only on forced paths - weaker, and said so |
+| refuted | differed on a feasible path |
+| inconclusive | neither tier could judge |
+
+A pair that today reports "inconclusive, the function faulted" can report
+"agreed on 12 forced paths covering most of its instructions", which is worth
+less than a feasible survival and much more than silence.
+
+**Which branch to force.** If the two versions force *different* predicates,
+the comparison is meaningless. We cannot know which predicate in -O0
+corresponds to which in -O3, but PEM's answer is that we do not have to: rank
+each version's predicates by *dynamic selectivity* - the distance |x - y| at
+the comparison - and pick at the same rank in each. Their argument is that
+optimisations remove, duplicate and move predicates but do not invent them, so
+the extremes of that ranking are the part most likely to survive; they measure
+it holding over 80% of the time, and sample the ranked list from a U-shaped
+Beta so both ends are favoured. We take the mechanism as theirs and will
+measure the parameters here (F28's lesson).
+
+**Selectivity needs the compared values**, which means decoding the compare
+that set the flags - so capstone joins unicorn in the `verify` extra. The
+decode is cached per address and only runs when predicate recording is asked
+for, so tier 1 pays nothing.
+
+**Built in three measured steps**, one at a time:
+
+1. *Record* predicate instances during a run - address, instruction count,
+   both targets, which way it went, selectivity. No behaviour change; the
+   measurement is what the ranking will be built on.
+2. *Force* a chosen outcome at a chosen instruction count, and check the run
+   goes where it was told.
+3. *Judge* with the two tiers, and measure what corroboration is worth
+   against the false-refutation count, which must stay at zero.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

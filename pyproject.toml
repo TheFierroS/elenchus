@@ -53,6 +53,11 @@ ml = [
 # Kept separate like the model side, so scanning does not pull it in.
 verify = [
     "unicorn>=2.1",
+    # Decoding the compare that set the flags is what dynamic selectivity
+    # needs, and a conditional jump's target is what forcing one needs
+    # (docs/verifier.md, two tiers). Only used when predicate recording is
+    # asked for, so an ordinary run never pays for it.
+    "capstone>=5.0",
 ]
 
 [project.scripts]
