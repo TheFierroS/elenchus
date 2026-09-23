@@ -813,6 +813,36 @@ Kept because it is free: it never refutes, it falls back when it fails, and
 where it applies the function is verified on a context its own library
 built, rather than declined.
 
+## A bounded fill and chunked mapping (F27)
+
+The first thing taken from the related work (docs/related-work.md). PEM folds
+invalid addresses into one bounded random block rather than materialising
+memory, and names the two properties such a model must hold:
+equivalence-preserving, so two equivalent runs read the same bytes at the same
+addresses, and difference-revealing, so two different addresses read different
+ones. A constant fill holds the first and fails the second; ours held both but
+built each page in a Python loop, which was most of what a lost walk cost
+(F16), and was the reason the page budget had to be cut to 2 MiB.
+
+The fill is now a window into a cached block of 1021 pages, chosen by the
+address modulo the block's size: 22x faster, both properties intact. 1021 is
+prime deliberately - a block size sharing a factor with the stride between
+input buffers would give two different pointer arguments identical bytes, and
+a test holds that sixteen consecutive buffers stay distinct.
+
+Measuring the rest of a lost walk turned up something better. The cost was
+never mostly the fill: Unicorn's mapping grows faster than linearly in the
+number of separate regions, so 4096 pages mapped one at a time take 19
+seconds where the same 16 MiB in 64-page chunks takes 53 ms. Memory is now
+mapped a chunk at a time, clamped away from the null guard and falling back to
+a single page where a chunk would overlap something already there. A walk
+moves forward anyway, so the neighbours a chunk brings are usually the ones it
+wants next.
+
+Together: the budget rises from 2 MiB to 16 MiB and the worst case falls from
+about 390 ms to 33 ms. Eight times the memory at a twelfth of the cost, which
+should take most of the 2.6% lost to "mapped too much memory" with it.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

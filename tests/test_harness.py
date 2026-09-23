@@ -194,13 +194,45 @@ def _from_float_bits(bits):
     return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
 
 
-def test_the_page_limit_is_small_enough_to_catch_a_lost_walk():
-    """A function chasing a garbage pointer maps a fresh page per step; the
-    limit caps that at 2 MiB, well under what a real function touches, so the
-    lost walk stops quickly as inconclusive instead of mapping 16 MiB slowly
-    (F16, the cause of the first V0 pass's time)."""
-    from elenchus.emulation.harness import UNMAPPED_FILL_LIMIT
-    assert UNMAPPED_FILL_LIMIT <= 512
+def test_the_memory_budget_is_bounded_but_generous():
+    """A lost walk has to stop somewhere, but the bound is no longer set by
+    what filling costs: pages are mapped in chunks, so 16 MiB now costs less
+    than 2 MiB did page by page (F27). The budget is a real ceiling on a
+    runaway walk, not a workaround for a slow fill."""
+    from elenchus.emulation.harness import CHUNK, PAGE, UNMAPPED_FILL_LIMIT
+    assert UNMAPPED_FILL_LIMIT * PAGE >= 16 * 1024 * 1024
+    assert CHUNK % PAGE == 0 and CHUNK > PAGE
+
+
+def test_a_chunk_holds_what_the_pages_would_have_held():
+    """Whether a page arrives alone or inside a chunk must not change what the
+    function reads there."""
+    from elenchus.emulation.harness import CHUNK, PAGE, _chunk_fill, _fill
+    base = 0x30_0000_0000
+    chunk = _chunk_fill(base, CHUNK, 7)
+    for i in range(0, CHUNK // PAGE, 7):
+        assert chunk[i * PAGE:(i + 1) * PAGE] == _fill(base + i * PAGE, 7)
+
+
+def test_the_fill_is_equivalence_preserving_and_difference_revealing():
+    """The two properties a memory model used this way must hold
+    (docs/related-work.md): the same address must always give the same bytes,
+    and different addresses must give different ones - a constant fill would
+    hold the first and fail the second."""
+    from elenchus.emulation.harness import PAGE, _fill
+    assert _fill(0x1000, 3) == _fill(0x1000, 3)          # preserving
+    assert _fill(0x1000, 3) != _fill(0x1000 + PAGE, 3)   # revealing
+    assert _fill(0x1000, 3) != _fill(0x1000, 4)          # and across seeds
+
+
+def test_input_buffers_do_not_alias_in_the_block():
+    """The block is finite, so an address wraps; the stride between input
+    buffers must not share a factor with it, or two pointer arguments would
+    read identical bytes."""
+    from elenchus.emulation.harness import _fill
+    from elenchus.emulation.inputs import BUFFER_BASE, BUFFER_STRIDE
+    seen = {_fill(BUFFER_BASE + i * BUFFER_STRIDE, 0) for i in range(16)}
+    assert len(seen) == 16
 
 
 def test_a_slow_run_times_out_rather_than_hanging(fixture):

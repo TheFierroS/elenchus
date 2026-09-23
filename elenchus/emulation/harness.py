@@ -43,7 +43,10 @@ GOLDEN = 0x9E3779B97F4A7C15          # an odd constant, for a spread-out fill
 STACK_TOP = 0x0000_7FF0_0000_0000
 STACK_SIZE = 0x0010_0000             # 1 MiB
 SENTINEL = 0x0000_0000_0000_1000     # return address; not a real code page
-UNMAPPED_FILL_LIMIT = 512            # pages the harness maps on first touch
+CHUNK = 64 * 4096                    # 256 KiB mapped per first touch: one
+#                                      region instead of 64, which is where
+#                                      Unicorn's cost actually lies.
+UNMAPPED_FILL_LIMIT = 4096           # pages the harness maps on first touch
 #                                      before calling it a lost walk. 2 MiB is
 #                                      already far more than a real function
 #                                      touches; a garbage pointer chased
@@ -116,14 +119,51 @@ class Outcome:
     instructions: int = 0
 
 
+# The content a page gets is a window into one bounded random block, indexed
+# by the page's address modulo the block's size, after PEM's probabilistic
+# memory model (docs/related-work.md). A memory model used this way has to
+# hold two properties, and naming them is worth more than the code:
+#
+#   equivalence-preserving - two equivalent runs must see the same bytes at
+#     the same addresses, or two builds of one function would diverge for a
+#     reason that is ours, not theirs;
+#   difference-revealing - two different addresses must see different bytes,
+#     or two genuinely different functions could read the same thing
+#     everywhere and look alike.
+#
+# A constant fill holds the first and fails the second. Generating bytes from
+# the address held both but cost a Python loop per page, which was most of the
+# time a lost walk spent (F16). A cached block holds both and costs a slice.
+#
+# GAMMA must not share a factor with the stride between input buffers, or two
+# different pointer arguments would land on the same window and read identical
+# bytes. 1021 is prime and 1021 pages is ~4 MiB, so buffers a megabyte apart
+# (256 pages) stay distinct for the first 1021 of them.
+GAMMA_PAGES = 1021
+GAMMA = GAMMA_PAGES * PAGE
+
+_FILL_BLOCKS: dict[int, bytes] = {}
+
+
+def _fill_block(seed: int) -> bytes:
+    """The random block a fill draws from, one per seed, generated once.
+
+    random.Random with a string seed is reproducible across runs and machines,
+    so a verdict stays replayable.
+    """
+    block = _FILL_BLOCKS.get(seed)
+    if block is None:
+        import random
+        block = random.Random(f"elenchus-fill-{seed}").randbytes(GAMMA)
+        _FILL_BLOCKS[seed] = block
+    return block
+
+
 def _fill(page_base: int, seed: int) -> bytes:
-    """The bytes a freshly mapped page holds: a function of its address, and
-    of the seed for uninitialised memory (seed 0 means input memory)."""
-    out = bytearray()
-    for offset in range(0, PAGE, 8):
-        word = ((page_base + offset) * GOLDEN + seed) & 0xFFFFFFFFFFFFFFFF
-        out += struct.pack("<Q", word)
-    return bytes(out)
+    """The bytes a freshly mapped page holds: a window into the seed's block
+    chosen by the page's address (seed 0 means input memory)."""
+    offset = page_base % GAMMA
+    return _fill_block(seed)[offset:offset + PAGE]
 
 
 class Loader:
@@ -284,11 +324,46 @@ def _fill_seed_for(address: int, seed: int, input_variant: int = 0) -> int:
     return seed
 
 
-def _fill_page(uc, page_base: int, seed: int, input_variant: int = 0) -> None:
-    """Map one page and fill it, input memory by its address and variant."""
-    uc.mem_map(page_base, PAGE)
-    uc.mem_write(page_base,
-                 _fill(page_base, _fill_seed_for(page_base, seed, input_variant)))
+def _chunk_fill(base: int, size: int, seed: int) -> bytes:
+    """The bytes for a whole chunk, page by page from the seed's block.
+
+    Built by concatenating each page's window so a page holds exactly what it
+    would have held had it been mapped alone: whether a page arrives on its
+    own or inside a chunk must not change what the function reads.
+    """
+    return b"".join(_fill(base + offset, seed)
+                    for offset in range(0, size, PAGE))
+
+
+def _fill_page(uc, page_base: int, seed: int, input_variant: int = 0) -> int:
+    """Map a chunk around a touched page and fill it. Returns pages mapped.
+
+    Mapping one page per fault is what a lost walk does thousands of times,
+    and Unicorn's cost grows faster than linearly in the number of separate
+    regions: measured, 4096 single pages take 19 s where the same 16 MiB in
+    64-page chunks takes 53 ms. A walk also tends to move forward, so the
+    neighbours it maps are usually the ones it wants next.
+
+    The chunk is clamped away from the null guard, and if it would overlap
+    something already mapped - the image, the stack - the single page is
+    mapped instead, which is rare and correct.
+    """
+    fill_seed = _fill_seed_for(page_base, seed, input_variant)
+    start = page_base & ~(CHUNK - 1)
+    if start < NULL_GUARD:
+        start = page_base                      # keep the guard page unmapped
+        size = PAGE
+    else:
+        size = CHUNK
+    from unicorn import UcError
+    try:
+        uc.mem_map(start, size)
+    except UcError:
+        # Something in that range is already mapped; fall back to the page.
+        start, size = page_base, PAGE
+        uc.mem_map(start, size)
+    uc.mem_write(start, _chunk_fill(start, size, fill_seed))
+    return start, size // PAGE
 
 
 def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int,
@@ -300,8 +375,8 @@ def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int,
     last = (address + size - 1) & ~(PAGE - 1)
     for page in range(first, last + PAGE, PAGE):
         if page not in mapped:
-            _fill_page(uc, page, seed, input_variant)
-            mapped.add(page)
+            start, count = _fill_page(uc, page, seed, input_variant)
+            mapped.update(start + i * PAGE for i in range(count))
 
 
 ARENA_BASE = 0x0000_3000_0000_0000
@@ -549,8 +624,8 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             state["status"] = Status.TOO_MUCH_MEMORY
             uc.emu_stop()
             return False
-        _fill_page(uc, page, seed, input_variant)
-        mapped.add(page)
+        start, count = _fill_page(uc, page, seed, input_variant)
+        mapped.update(start + i * PAGE for i in range(count))
         return True
 
     image_end = loader.base + loader.size
