@@ -779,6 +779,40 @@ count must stay zero through all three. A chain that turns an inconclusive
 pair into a refuted one is a bug in the chaining, not a discovery, and is
 investigated as such.
 
+## What the chain was actually worth (F26)
+
+The constructor chain was built to answer the largest remaining bucket, and
+measured on 500 pairs it moves coverage 0.6 points: 53.0% stubbed to 53.6%
+chained, from 16 pairs where both sides had an initialiser, 7 of which could
+not run it and fell back. Two rounds of work for half a point.
+
+The first round *cost* 0.8 points, because a chain that failed lost a pair
+that had been judged before. A chain is an attempt to improve, not a
+precondition; it now falls back to the unchained run.
+
+The second round asked why it applied so rarely, and the measurement broke
+the assumption the design was built on. Across 26,285 context-taking
+functions in train, a name match finds an initialiser for 3.1%. The
+`X_init(ctx)` shape - the one the design pictured, from hash APIs - is
+uncommon in C libraries; of the initialisers a name match does find, 275
+take no arguments because they *return* the context (cJSON_CreateObject,
+xmlNewDoc), and 266 want a second pointer of their own, which the chain
+still refuses since filling it is the problem it exists to avoid. Accepting
+the returning shape moved it from 13 pairs to 16.
+
+**The lesson is about where the remaining coverage is.** What blocks it is
+not architecture: faults (17.4%), stub declines (8.8%, of which 19 are an
+abort or assert the function reaches because a precondition we cannot know
+was violated), and exhausted budgets (7.2%) are all one thing - a function
+given data that means nothing to it. Producing data that *does* mean
+something requires knowing the library's own contract, and that contract is
+not in the binary. The chain reaches the small part of it that naming
+conventions expose, and no more.
+
+Kept because it is free: it never refutes, it falls back when it fails, and
+where it applies the function is verified on a context its own library
+built, rather than declined.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

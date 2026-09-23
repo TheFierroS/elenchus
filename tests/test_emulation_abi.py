@@ -106,14 +106,43 @@ def test_a_pointer_return_is_its_own_kind_not_compared(sigs):
 # ---------------------------------------------------- what it declines
 
 
-def test_a_by_value_struct_argument_is_declined(sigs):
-    with pytest.raises(Undecidable, match="struct"):
-        placement(sigs["pair_sum"])
+def test_a_small_struct_argument_rides_in_a_register(sigs):
+    """pair_sum(struct pair) takes 8 bytes, which Win64 passes by value in one
+    integer register - the struct's own bytes."""
+    p = placement(sigs["pair_sum"])
+    arg = p.args[0]
+    assert isinstance(arg, IntArg)
+    assert arg.register == "rcx" and arg.size == 8
 
 
-def test_a_struct_return_is_declined(sigs):
-    with pytest.raises(Undecidable, match="struct"):
-        placement(sigs["make_big"])
+def test_a_large_struct_argument_travels_by_reference(sigs):
+    """big_sum(struct big) takes 24 bytes: too large for a register, so the
+    caller passes a pointer to its copy."""
+    p = placement(sigs["big_sum"])
+    arg = p.args[0]
+    assert isinstance(arg, IntArg)
+    assert arg.register == "rcx" and arg.size == 8      # an address
+
+
+def test_a_large_struct_return_uses_a_hidden_first_argument(sigs):
+    """make_big(int) returns 24 bytes, which come back written into space the
+    caller provides: its address goes in RCX and the declared int moves to
+    RDX."""
+    p = placement(sigs["make_big"])
+    assert p.hidden_return
+    assert len(p.args) == 2                              # hidden + the int
+    assert p.args[0].register == "rcx" and p.args[0].size == 8
+    assert p.args[1].register == "rdx"
+    assert p.ret.kind == "pointer"                       # RAX is that address
+    assert p.ret.mask == 0                               # so it is not compared
+
+
+def test_an_incomplete_struct_is_still_declined():
+    """A forward declaration with no size cannot be placed at all."""
+    with pytest.raises(Undecidable, match="unknown size"):
+        placement({"return": {"kind": "void", "size": 0},
+                   "params": [{"kind": "struct", "size": 0}],
+                   "variadic": False})
 
 
 def test_a_variadic_function_is_declined(sigs):

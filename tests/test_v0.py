@@ -75,9 +75,13 @@ def test_a_nonterminating_function_buckets_as_budget(env):
     assert result.bucket == Bucket.BUDGET
 
 
-def test_a_by_value_struct_is_signature_declined(env):
+def test_a_by_value_struct_is_now_placed_not_declined(env):
+    """Win64's aggregate rules are mechanical, so a by-value struct is placed
+    rather than declined: pair_sum's 8 bytes ride in a register, and the pair
+    is judged like any other."""
     result = run_pair(env, "pair_sum")
-    assert result.bucket == Bucket.SIGNATURE_DECLINED
+    assert result.bucket == Bucket.COMPLETED
+    assert result.agreement == Bucket.AGREED
 
 
 def test_a_variadic_function_is_signature_declined(env):

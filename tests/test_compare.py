@@ -352,3 +352,37 @@ def test_a_real_difference_still_refutes_through_both_fills(env):
 def test_a_true_pair_still_survives_through_both_fills(env):
     result = compare_named(env, "sum", "sum", [[BUF, 9], [BUF, 3]])
     assert result.verdict is Verdict.SURVIVED
+
+
+# ------------------------------------------- by-value aggregates (Win64)
+
+
+def test_a_register_sized_struct_pair_survives(env):
+    """pair_sum(struct pair) takes its 8 bytes in a register; the two builds
+    compute the same sum from the same bytes."""
+    result = compare_named(env, "pair_sum", "pair_sum", [[0], [0x2A0000001]])
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_a_by_reference_struct_pair_survives(env):
+    """big_sum(struct big) receives a pointer to a 24-byte copy; both builds
+    read the same buffer and agree."""
+    result = compare_named(env, "big_sum", "big_sum", [[BUF]])
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_an_aggregate_return_is_compared_by_the_memory_it_wrote(env):
+    """make_big(int) writes its 24 bytes into the caller's space, and that
+    memory - not the address RAX hands back - is what is compared."""
+    result = compare_named(env, "make_big", "make_big", [[BUF, 7], [BUF, 0]])
+    assert result.verdict is Verdict.SURVIVED
+
+
+def test_two_different_aggregate_functions_are_still_refuted(env):
+    """The aggregate rules must not blunt anything: pair_sum against a
+    different function under pair_sum's signature is refuted."""
+    o0, o3, s0, s3 = env
+    result = compare(o0, s0["pair_sum"].address, o3, s3["low_byte"].address,
+                     placement(s3["pair_sum"].abi),
+                     [[5], [0x100000007], [0x2A0000001]])
+    assert result.verdict is Verdict.REFUTED

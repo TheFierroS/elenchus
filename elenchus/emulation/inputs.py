@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import random
 
+from elenchus.emulation.abi import aggregate_in_register, returns_through_hidden_pointer
+
 # Buffers for pointer arguments live here, far from the image, the stack, the
 # arena and the traps, each argument's buffer its own well-separated slot so
 # two pointers passed together never overlap.
@@ -98,9 +100,27 @@ def input_vectors(abi, count=6, seed=0):
     # Per-parameter candidate values, and a fixed buffer address for pointers.
     per_param = []
     buffer_index = 0
+
+    if returns_through_hidden_pointer(abi.get("return")):
+        # An aggregate too large for a register comes back written into space
+        # the caller provides, whose address leads the arguments (abi.py).
+        # It gets a buffer of its own, before the declared parameters.
+        per_param.append(("fixed", [BUFFER_BASE]))
+        buffer_index = 1
+
     for p in params:
         kind, size = p["kind"], p["size"]
-        if kind == "pointer":
+        if kind in ("struct", "union") and not aggregate_in_register(size):
+            # Passed by reference: the argument is the address of a copy, and
+            # the buffer's fill pattern is that copy's contents.
+            address = BUFFER_BASE + buffer_index * BUFFER_STRIDE
+            buffer_index += 1
+            per_param.append(("fixed", [address]))
+        elif kind in ("struct", "union"):
+            # Small enough to ride in a register: its bytes are the value, so
+            # integer patterns of that width do as well as anything.
+            per_param.append(("cycle", _int_values(size or 8, False, rng, extra=3)))
+        elif kind == "pointer":
             address = BUFFER_BASE + buffer_index * BUFFER_STRIDE
             buffer_index += 1
             per_param.append(("fixed", [address]))

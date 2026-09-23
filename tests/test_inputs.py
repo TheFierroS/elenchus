@@ -91,3 +91,28 @@ def test_integer_values_fit_their_width():
 
 def test_none_signature_gives_no_vectors():
     assert input_vectors(None) == []
+
+
+def test_a_by_reference_struct_gets_a_buffer():
+    """big_sum(struct big) takes 24 bytes by reference, so its argument is a
+    buffer address whose fill pattern is the struct's contents."""
+    vectors = input_vectors(sig("big_sum"))
+    assert all(v[0] == BUFFER_BASE for v in vectors)
+
+
+def test_a_register_sized_struct_gets_values_not_an_address():
+    """pair_sum(struct pair) is 8 bytes in a register: its bytes are the
+    value, so it varies like an integer rather than pointing at a buffer."""
+    vectors = input_vectors(sig("pair_sum"))
+    firsts = {v[0] for v in vectors}
+    assert len(firsts) > 1                      # it varies
+    assert BUFFER_BASE not in firsts            # not a buffer address
+
+
+def test_a_hidden_return_pointer_leads_the_arguments():
+    """make_big(int) returns 24 bytes: the caller's space leads, then the
+    declared int."""
+    vectors = input_vectors(sig("make_big"))
+    assert all(len(v) == 2 for v in vectors)    # hidden + the int
+    assert all(v[0] == BUFFER_BASE for v in vectors)
+    assert len({v[1] for v in vectors}) > 1     # the int still varies

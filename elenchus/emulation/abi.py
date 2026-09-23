@@ -90,14 +90,41 @@ class Placement:
     args: tuple = field(default_factory=tuple)   # IntArg | FloatArg, in order
     ret: Return = field(default_factory=lambda: Return("void", 0))
     stack_bytes: int = 0                          # stack space for spilled args
+    hidden_return: bool = False                   # a leading pointer to space
+    #                                               for an aggregate return
+
+
+# Win64 passes an aggregate of 1, 2, 4 or 8 bytes in one register, by value;
+# any other size travels by reference, the caller having made a copy. A return
+# follows the same sizes, and a larger one comes back through a hidden first
+# pointer argument the caller supplies.
+REGISTER_AGGREGATE_SIZES = (1, 2, 4, 8)
+
+
+def aggregate_in_register(size: int) -> bool:
+    """Whether an aggregate of `size` bytes rides in a register by value."""
+    return size in REGISTER_AGGREGATE_SIZES
+
+
+def returns_through_hidden_pointer(ret_abi) -> bool:
+    """Whether a return needs the caller to pass space for it.
+
+    A struct or union larger than a register comes back written into memory
+    the caller provides, whose address goes in the first argument register
+    and pushes every declared argument one place along.
+    """
+    if ret_abi is None:
+        return False
+    return (ret_abi.get("kind") in ("struct", "union")
+            and not aggregate_in_register(ret_abi.get("size", 0)))
 
 
 def _decline_if_unsupported(kind, size):
-    if kind in ("struct", "union"):
-        # By-value aggregates: 1/2/4/8 bytes go in a register, larger by
-        # reference, and returns above 8 bytes use a hidden pointer. Declined
-        # in v1 until the harness lays out their bytes (docs/verifier.md).
-        raise Undecidable(f"by-value {kind} of {size} bytes")
+    if kind in ("struct", "union") and size == 0:
+        # An incomplete type - a forward declaration with no definition here.
+        # Its size decides how it travels, and without one it cannot be
+        # placed.
+        raise Undecidable(f"{kind} of unknown size")
     if kind == "float" and size > 8:
         # long double is MinGW's 80-bit x87 type in 16 bytes, passed by
         # reference on Win64. Declined until the harness handles it.
@@ -124,11 +151,24 @@ def placement(abi: dict) -> Placement:
     slot = 0                 # the next of the four register slots, by position
     stack_offset = 0         # bytes above the shadow space for spilled args
 
+    ret_abi = abi.get("return") or {"kind": "void", "size": 0}
+    _decline_if_unsupported(ret_abi["kind"], ret_abi["size"])
+    hidden_return = returns_through_hidden_pointer(ret_abi)
+    if hidden_return:
+        # The caller provides space for the return value and passes its
+        # address first, pushing every declared argument one place along.
+        args.append(IntArg(INT_REGISTERS[0], None, 8, False))
+        slot = 1
+
     for param in abi.get("params", []):
         kind = param["kind"]
         size = param["size"]
         _decline_if_unsupported(kind, size)
         is_float = kind == "float"
+        # An aggregate of 1/2/4/8 bytes rides in a register by value; any
+        # other size travels as a pointer to a copy the caller made.
+        by_reference = (kind in ("struct", "union")
+                        and not aggregate_in_register(size))
 
         if slot < 4:
             register = (FLOAT_REGISTERS if is_float else INT_REGISTERS)[slot]
@@ -141,12 +181,13 @@ def placement(abi: dict) -> Placement:
 
         if is_float:
             args.append(FloatArg(register, on_stack, size))
+        elif by_reference:
+            # The argument is the address of the copy, so eight bytes.
+            args.append(IntArg(register, on_stack, 8, False))
         else:
             signed = bool(param.get("signed"))
             args.append(IntArg(register, on_stack, size or 8, signed))
 
-    ret_abi = abi.get("return") or {"kind": "void", "size": 0}
-    _decline_if_unsupported(ret_abi["kind"], ret_abi["size"])
     if ret_abi["kind"] == "float":
         ret = Return("float", ret_abi["size"])
     elif ret_abi["kind"] == "void":
@@ -158,9 +199,18 @@ def placement(abi: dict) -> Placement:
         # value; the function's effect is seen in the memory it wrote, not in
         # the address it handed back.
         ret = Return("pointer", 8)
+    elif ret_abi["kind"] in ("struct", "union"):
+        if hidden_return:
+            # RAX comes back holding the hidden pointer the caller passed -
+            # an address, not data, and the same reasoning as F18: the value
+            # is not compared, the memory it points at is.
+            ret = Return("pointer", 8)
+        else:
+            # A small aggregate rides home in RAX, its bytes the value.
+            ret = Return("int", ret_abi["size"])
     else:
         # int, enum resolved to its underlying integer: read from RAX, masked
         # to the width the type defines.
         ret = Return("int", ret_abi["size"] or 8)
 
-    return Placement(tuple(args), ret, stack_offset)
+    return Placement(tuple(args), ret, stack_offset, hidden_return)
