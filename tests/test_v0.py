@@ -68,11 +68,16 @@ def test_a_partial_family_still_reports_the_missing_import(env):
     assert result.detail in {"strlen", "malloc"}
 
 
-def test_a_nonterminating_function_buckets_as_budget(env):
+def test_a_nonterminating_function_is_rescued_by_forcing(env):
+    """spin loops forever on any input, so the first tier only ever watches
+    the budget run out. Forcing the loop's own branch takes both builds out
+    of it, where they agree - counted apart as a forced survival, never
+    folded in with a feasible one (docs/verifier.md, two tiers)."""
     o0, o3, s0, s3 = env
     result = bucket_pair(o0, s0["spin"].address, o3, s3["spin"].address,
                          json.dumps(s3["spin"].abi), inputs=[[5]], budget=50_000)
-    assert result.bucket == Bucket.BUDGET
+    assert result.bucket == Bucket.COMPLETED_FORCED
+    assert result.agreement == Bucket.AGREED
 
 
 def test_a_by_value_struct_is_now_placed_not_declined(env):

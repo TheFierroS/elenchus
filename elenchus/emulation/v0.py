@@ -52,6 +52,7 @@ V0_INPUT_COUNT = 6
 
 class Bucket:
     COMPLETED = "completed"
+    COMPLETED_FORCED = "completed only on forced paths"
     UNSUPPORTED = "unsupported instruction"
     IMPORT_MISSING = "import without a stub"
     STUB_DECLINED = "stub declined the call"
@@ -265,6 +266,12 @@ def bucket_pair(o0_loader, o0_addr, o3_loader, o3_addr, abi_json,
                      budget=budget, stub_resolver=resolver,
                      q_prepare=o0_chain, k_prepare=o3_chain)
 
+    if result.verdict is Verdict.SURVIVED and result.forced_only:
+        # Agreed, but only where a branch was forced: real evidence, from
+        # code the first tier could not reach, and weaker than a feasible
+        # survival - so it is counted apart rather than folded in
+        # (docs/verifier.md, two tiers).
+        return PairResult("", "", Bucket.COMPLETED_FORCED, Bucket.AGREED)
     if result.verdict is Verdict.REFUTED:
         return PairResult("", "", Bucket.COMPLETED, Bucket.DISAGREED,
                           detail=_first_refute_reason(result),
@@ -408,6 +415,7 @@ def cmd_verify_v0(args):
     bare_done = bare.buckets.get(Bucket.COMPLETED, 0)
     stub_done = stubbed.buckets.get(Bucket.COMPLETED, 0)
     chain_done = chained.buckets.get(Bucket.COMPLETED, 0)
+    forced_done = chained.buckets.get(Bucket.COMPLETED_FORCED, 0)
     total = bare.total or 1
     print(f"\ncoverage: bare {100 * bare_done / total:.1f}%, "
           f"stubbed {100 * stub_done / total:.1f}%, "
@@ -416,6 +424,10 @@ def cmd_verify_v0(args):
           f"points, the chains {100 * (chain_done - stub_done) / total:.1f} "
           f"({chained.chains_found} pairs had an initialiser on both sides, "
           f"{chained.chains_abandoned} of those fell back when it failed)")
+    if forced_done:
+        print(f"  a further {100 * forced_done / total:.1f}% agreed only where "
+              f"a branch was forced - real evidence from code the first tier "
+              f"cannot reach, and weaker than a feasible survival")
 
     if args.out:
         payload = {

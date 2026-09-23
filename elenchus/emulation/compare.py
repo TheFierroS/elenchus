@@ -197,6 +197,12 @@ class Comparison:
     max_instructions: int = 0                    # the longest run behind it,
     #                                              so V0 can see where the real
     #                                              budget sits
+    # The second tier (docs/verifier.md): agreements seen on paths reached by
+    # forcing a branch. Such a path is infeasible, so it can corroborate but
+    # never refute, and a survival that rests only on it is weaker and says so.
+    forced_attempts: int = 0
+    forced_agreements: int = 0
+    forced_only: bool = False
 
 
 def _combine_variants(per_variant) -> InputResult:
@@ -225,11 +231,60 @@ def _combine_variants(per_variant) -> InputResult:
     return per_variant[0]
 
 
+# How many branches to try forcing per input. Each attempt costs another
+# eight runs, so this is small and will be measured rather than guessed.
+FORCED_ATTEMPTS = 4
+
+
+def _forced_agreement(q_loader, q_address, k_loader, k_address, placement,
+                      args, budget, stub_resolver, q_prepare, k_prepare,
+                      image_ranges, seed) -> tuple[int, int]:
+    """Run both versions with corresponding branches forced, and count.
+
+    Returns (attempts, agreements). A difference here is discarded: the path
+    does not exist for any real input, so a difference on it is not the
+    functions' and cannot refute. An agreement is evidence, collected from
+    code the first tier could not reach.
+    """
+    from elenchus.emulation.forced import corresponding_flips
+
+    def record(loader, address, prepare):
+        return run(loader, address, placement, args, seed=SEED_A,
+                   budget=budget, stub_resolver=stub_resolver,
+                   input_variant=VARIANT_A, prepare=prepare,
+                   record_predicates=True)
+
+    q_seen = record(q_loader, q_address, q_prepare)
+    k_seen = record(k_loader, k_address, k_prepare)
+
+    attempts = agreements = 0
+    for q_force, k_force in corresponding_flips(
+            q_seen.predicates, k_seen.predicates, FORCED_ATTEMPTS, seed):
+        attempts += 1
+        runs = [
+            run(loader, address, placement, args, seed=run_seed, budget=budget,
+                stub_resolver=stub_resolver, input_variant=variant,
+                prepare=prepare, force=force)
+            for loader, address, prepare, force in (
+                (q_loader, q_address, q_prepare, q_force),
+                (k_loader, k_address, k_prepare, k_force))
+            for run_seed in (SEED_A, SEED_B)
+            for variant in (VARIANT_A,)
+        ]
+        judged = _judge(runs[0], runs[1], runs[2], runs[3], placement,
+                        image_ranges)
+        if judged.verdict is Verdict.SURVIVED:
+            agreements += 1
+    return attempts, agreements
+
+
 def compare(q_loader: Loader, q_address: int,
             k_loader: Loader, k_address: int,
             placement: Placement, input_vectors,
             budget: int = 5_000_000, stub_resolver=None,
-            q_prepare=None, k_prepare=None) -> Comparison:
+            q_prepare=None, k_prepare=None,
+            force_when_unjudged: bool = True,
+            forcing_seed: int = 1) -> Comparison:
     """Test whether Q behaves as K across the given inputs.
 
     Each side is run twice per input, at SEED_A and SEED_B, so a
@@ -279,5 +334,30 @@ def compare(q_loader: Loader, q_address: int,
         if result.verdict is Verdict.SURVIVED:
             judged_any = True
 
-    return Comparison(Verdict.SURVIVED if judged_any else Verdict.INCONCLUSIVE,
-                      results, max_instructions=peak)
+    if judged_any:
+        return Comparison(Verdict.SURVIVED, results, max_instructions=peak)
+
+    # The first tier could judge nothing: the function faulted on the data we
+    # invented, or ran out of budget in a loop that data sent it round, or
+    # refused to work at all on a context it did not build. That is where the
+    # unjudged pairs are, and it is what the second tier is for - run it again
+    # with a branch forced, and count the agreements (docs/verifier.md).
+    attempts = agreements = 0
+    for args in input_vectors if force_when_unjudged else ():
+        made, agreed = _forced_agreement(
+            q_loader, q_address, k_loader, k_address, placement, args, budget,
+            stub_resolver, q_prepare, k_prepare, image_ranges, forcing_seed)
+        attempts += made
+        agreements += agreed
+        if agreements:
+            break              # one corroborated input is enough to report
+
+    if agreements:
+        # Survived, but only on paths no real input takes. Weaker than a
+        # feasible survival, and the flag is how a caller says so rather than
+        # quietly treating the two as the same thing.
+        return Comparison(Verdict.SURVIVED, results, max_instructions=peak,
+                          forced_attempts=attempts,
+                          forced_agreements=agreements, forced_only=True)
+    return Comparison(Verdict.INCONCLUSIVE, results, max_instructions=peak,
+                      forced_attempts=attempts)

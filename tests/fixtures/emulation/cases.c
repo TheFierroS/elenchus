@@ -200,6 +200,18 @@ unsigned pool_total(const struct accum *a) {
     return a->total + a->count;
 }
 
+/* The shape the verifier actually meets: a function that cannot proceed on a
+ * context it did not build, and faults rather than returning quietly. The
+ * first tier can judge nothing here - both builds fault - while forcing the
+ * check makes both do the same real work. */
+void guarded_store(const struct accum *a, unsigned *out) {
+    if (a->magic != 0xACC0FFEE) {
+        *(volatile int *)0 = 1;        /* no context: this cannot continue */
+        return;
+    }
+    out[0] = a->total + a->count;
+}
+
 void accum_final(struct accum *a, unsigned *out) {
     if (a->magic != 0xACC0FFEE) return;      /* uninitialised: do nothing */
     out[0] = a->total + a->count;

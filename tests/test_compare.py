@@ -146,10 +146,10 @@ def env():
     return loaders_and_sigs()
 
 
-def compare_named(env, q_name, k_name, inputs):
+def compare_named(env, q_name, k_name, inputs, **options):
     o0, o3, s0, s3 = env
     return compare(o0, s0[q_name].address, o3, s3[k_name].address,
-                   placement(s3[k_name].abi), inputs)
+                   placement(s3[k_name].abi), inputs, **options)
 
 
 def test_the_same_function_at_two_levels_survives(env):
@@ -386,3 +386,59 @@ def test_two_different_aggregate_functions_are_still_refuted(env):
                      placement(s3["pair_sum"].abi),
                      [[5], [0x100000007], [0x2A0000001]])
     assert result.verdict is Verdict.REFUTED
+
+
+# ------------------------------------------------ the second tier (forced)
+
+
+def test_forcing_rescues_a_pair_the_first_tier_cannot_judge(env):
+    """guarded_store faults on a context we invented - the shape of the pairs
+    the verifier cannot judge. The first tier sees two faults and gives up;
+    forced past the check both builds do the same real work, and the pair
+    survives on forced paths only, which the verdict says plainly."""
+    pytest.importorskip("capstone")
+    result = compare_named(env, "guarded_store", "guarded_store",
+                           [[BUF, BUF + 0x1000]])
+    assert result.verdict is Verdict.SURVIVED
+    assert result.forced_only
+    assert result.forced_agreements >= 1
+
+
+def test_without_forcing_that_pair_stays_unjudged(env):
+    """The same pair with the second tier switched off: this is what the
+    forcing is worth, and the contrast is the measurement."""
+    result = compare_named(env, "guarded_store", "guarded_store",
+                           [[BUF, BUF + 0x1000]], force_when_unjudged=False)
+    assert result.verdict is Verdict.INCONCLUSIVE
+
+
+def test_a_forced_difference_never_refutes(env):
+    """The rule the whole design rests on. Two genuinely different functions,
+    both of which the first tier cannot judge, must not be refuted by what
+    they do on a path no real input takes: a difference we caused by forcing
+    is not the functions'."""
+    pytest.importorskip("capstone")
+    o0, o3, s0, s3 = env
+    result = compare(o0, s0["guarded_store"].address, o3,
+                     s3["accum_final"].address,
+                     placement(s3["guarded_store"].abi), [[BUF, BUF + 0x1000]])
+    assert result.verdict is not Verdict.REFUTED
+
+
+def test_a_feasible_survival_is_not_marked_forced(env):
+    """A pair the first tier judged must not be weakened by a flag meant for
+    the second."""
+    result = compare_named(env, "sum", "sum", [[BUF, 9]])
+    assert result.verdict is Verdict.SURVIVED
+    assert not result.forced_only
+    assert result.forced_attempts == 0          # the second tier never ran
+
+
+def test_a_real_difference_is_still_refuted_before_any_forcing(env):
+    """The second tier only runs where the first gave up, so it cannot blunt
+    a refutation."""
+    o0, o3, s0, s3 = env
+    result = compare(o0, s0["add3"].address, o3, s3["mix64"].address,
+                     placement(s3["add3"].abi), [[1, 2, 3], [7, 5, 2]])
+    assert result.verdict is Verdict.REFUTED
+    assert result.forced_attempts == 0
