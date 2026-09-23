@@ -852,6 +852,36 @@ sixteen times the memory at a fifth of the cost. A test asserts the touch
 count rather than the page count, so raising the chunk again cannot quietly
 shrink the walk.
 
+## Measuring the two knobs F27 left open (F28)
+
+F27 changed two things at once - what the fill contains and how memory is
+mapped - and the run that followed was worse on both counts it was meant to
+improve: coverage 54.2% to 52.0%, and then, after the touch budget was fixed,
+a run of 15m40 against 7m22. Changing two things and measuring the pair is
+how that happens; this scanned them separately, 150 pairs, four
+configurations.
+
+| fill | touches | coverage | time |
+|---|---|---|---|
+| random | 128 | 54.7% | 142 s |
+| random | 512 | 54.7% | 249 s |
+| arithmetic | 128 | **57.3%** | **134 s** |
+| arithmetic | 512 | 57.3% | 368 s |
+
+Both knobs point one way. **The arithmetic fill beats random by 2.6 points**,
+which is the reverse of what was assumed when PEM's random block was copied:
+their idea - one bounded block, indexed by address - is right and is kept, but
+their *content* is worse here. A borrowed idea is worth having; a borrowed
+parameter has to be measured on the corpus it will run on.
+
+**And 128 touches judge exactly the same pairs as 512, in a third of the
+time.** A walk that has reached 128 separate places has already lost its way;
+letting it reach 512 buys nothing and costs 234 seconds. F16's lesson stands
+and was briefly forgotten: stopping a lost walk early is both faster and no
+less accurate, because the verdict is inconclusive either way.
+
+Zero false refutations in all four configurations.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

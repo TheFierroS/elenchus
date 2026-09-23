@@ -204,7 +204,7 @@ def test_the_budget_bounds_touches_not_pages():
     only catches a walk that is lost."""
     from elenchus.emulation.harness import CHUNK, PAGE, UNMAPPED_FILL_LIMIT
     touches = UNMAPPED_FILL_LIMIT // (CHUNK // PAGE)
-    assert touches >= 512
+    assert touches >= 128
     assert CHUNK % PAGE == 0 and CHUNK > PAGE
 
 
@@ -434,3 +434,15 @@ def test_a_constructor_returning_null_abandons_the_chain(fixture):
                        [0], True))
     assert out.status is Status.CHAIN_FAILED
     assert "null" in out.detail
+
+
+def test_the_fill_is_cheap_enough_for_a_whole_budget(fixture):
+    """The budget exists to stop a lost walk, so reaching it must be cheap -
+    filling it was most of what a walk cost before chunking (F16, F27)."""
+    import time
+
+    from elenchus.emulation.harness import CHUNK, PAGE, UNMAPPED_FILL_LIMIT, _chunk_fill
+    started = time.time()
+    for i in range(UNMAPPED_FILL_LIMIT // (CHUNK // PAGE)):
+        _chunk_fill(0x30_0000_0000 + i * CHUNK, CHUNK, 1)
+    assert time.time() - started < 0.5      # the whole budget, well under

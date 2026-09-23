@@ -53,7 +53,12 @@ CHUNK = 16 * 4096                    # 64 KiB mapped per first touch: one
 # this kept the budget at 4096 pages, which with a 64-page chunk allowed only
 # 64 touches, and cost 2.2 points of coverage (F27). Measured, 512 touches of
 # 16 pages is 32 MiB and 83 ms, against 2 MiB and 390 ms before.
-UNMAPPED_FILL_LIMIT = 512 * 16       # pages: 512 touches of CHUNK each
+UNMAPPED_FILL_LIMIT = 128 * 16       # pages: 128 touches of CHUNK each.
+#                                      Measured: 128 and 512 touches judge
+#                                      exactly the same pairs, and 128 runs in
+#                                      134 s where 512 takes 368 s. A walk
+#                                      that has reached 128 separate places
+#                                      has already lost its way (F28).
 #                                      before calling it a lost walk. 2 MiB is
 #                                      already far more than a real function
 #                                      touches; a garbage pointer chased
@@ -153,15 +158,25 @@ _FILL_BLOCKS: dict[int, bytes] = {}
 
 
 def _fill_block(seed: int) -> bytes:
-    """The random block a fill draws from, one per seed, generated once.
+    """The block a fill draws from, one per seed, generated once.
 
-    random.Random with a string seed is reproducible across runs and machines,
-    so a verdict stays replayable.
+    The words are arithmetic in the offset rather than random. PEM uses random
+    bytes; measured on this corpus over 150 pairs, the arithmetic pattern
+    judges 57.3% of pairs against 54.7% for random - 2.6 points, and the same
+    zero false refutations either way (F28). A borrowed idea is worth having;
+    a borrowed parameter has to be measured here.
+
+    Why it would be better is a guess: a function that reads a length or an
+    index from its own input gets a value related to where it read it, so
+    walking one step forward gives a related value rather than an unrelated
+    one, and the walk stays in the arena rather than scattering.
     """
     block = _FILL_BLOCKS.get(seed)
     if block is None:
-        import random
-        block = random.Random(f"elenchus-fill-{seed}").randbytes(GAMMA)
+        out = bytearray()
+        for offset in range(0, GAMMA, 8):
+            out += struct.pack("<Q", (offset * GOLDEN + seed) & 0xFFFFFFFFFFFFFFFF)
+        block = bytes(out)
         _FILL_BLOCKS[seed] = block
     return block
 
