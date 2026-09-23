@@ -446,3 +446,86 @@ def test_the_fill_is_cheap_enough_for_a_whole_budget(fixture):
     for i in range(UNMAPPED_FILL_LIMIT // (CHUNK // PAGE)):
         _chunk_fill(0x30_0000_0000 + i * CHUNK, CHUNK, 1)
     assert time.time() - started < 0.5      # the whole budget, well under
+
+
+# ------------------------------------------- branches: recording and forcing
+
+
+def test_a_run_records_the_branches_it_took(fixture):
+    """The second tier ranks branches to choose one to force, so a run has to
+    be able to say which it took, where each could have gone, and how close
+    the comparison came (docs/verifier.md, two tiers)."""
+    pytest.importorskip("capstone")
+    loader, sigs = fixture
+    f = sigs["accum_final"]
+    out = run(loader, f.address, placement(f.abi), [BUF, BUF + 0x1000],
+              budget=50_000, record_predicates=True)
+    assert out.status is Status.COMPLETED
+    assert out.predicates                       # it checks its magic
+    first = out.predicates[0]
+    assert first.branch.target != first.branch.fall_through
+    assert first.selectivity is not None        # the compare was readable
+
+
+def test_recording_is_off_by_default(fixture):
+    """An ordinary run must pay nothing for capstone."""
+    loader, sigs = fixture
+    out = run(loader, sigs["accum_final"].address,
+              placement(sigs["accum_final"].abi), [BUF, BUF + 0x1000],
+              budget=50_000)
+    assert out.predicates == ()
+
+
+def test_forcing_a_branch_takes_the_function_past_its_own_check(fixture):
+    """accum_final does nothing on a context whose magic we did not write -
+    the shape of every hash finaliser, parser and allocator we cannot reach.
+    Forcing that check the other way makes it do its work, which is the whole
+    point of the second tier: coverage the first tier cannot have."""
+    pytest.importorskip("capstone")
+    loader, sigs = fixture
+    f = sigs["accum_final"]
+    place = placement(f.abi)
+
+    plain = run(loader, f.address, place, [BUF, BUF + 0x1000], budget=50_000,
+                record_predicates=True)
+    assert not plain.writes                     # refused, as it should
+
+    check = plain.predicates[0]
+    forced = run(loader, f.address, place, [BUF, BUF + 0x1000], budget=50_000,
+                 force={check.count: check.branch.other(check.taken)})
+    assert forced.status is Status.COMPLETED
+    assert forced.writes                        # now it produced something
+
+
+def test_a_forced_run_shares_one_budget(fixture):
+    """Forcing splits a call into several starts; each must not get a fresh
+    allowance, or a forced run could outrun the budget entirely."""
+    pytest.importorskip("capstone")
+    loader, sigs = fixture
+    f = sigs["accum_final"]
+    place = placement(f.abi)
+    plain = run(loader, f.address, place, [BUF, BUF + 0x1000], budget=50_000,
+                record_predicates=True)
+    check = plain.predicates[0]
+    forced = run(loader, f.address, place, [BUF, BUF + 0x1000], budget=20,
+                 force={check.count: check.branch.other(check.taken)})
+    assert forced.instructions <= 20 + 1
+
+
+def test_selectivity_is_read_even_before_the_page_is_mapped():
+    """-O3 checks a context with `cmp [rcx], imm` as its first instruction,
+    so the compare is read before anything has touched that page. What an
+    unmapped page will hold is already decided by its address, so it is
+    computed rather than missed - and both builds then report the same
+    distance, which is what makes the ranking correspond."""
+    pytest.importorskip("capstone")
+    distances = {}
+    for level in ("O0", "O3"):
+        loader = Loader(FIXTURES / f"cases_{level}.dll")
+        sigs = {f.name: f for f in ground_truth(FIXTURES / f"cases_{level}.dll")}
+        f = sigs["accum_final"]
+        out = run(loader, f.address, placement(f.abi), [BUF, BUF + 0x1000],
+                  budget=50_000, record_predicates=True)
+        distances[level] = out.predicates[0].selectivity
+    assert distances["O0"] is not None
+    assert distances["O0"] == distances["O3"]

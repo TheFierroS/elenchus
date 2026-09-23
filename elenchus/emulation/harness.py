@@ -34,6 +34,7 @@ from pathlib import Path
 import pefile
 
 from elenchus.emulation.abi import FLOAT_REGISTERS, Placement
+from elenchus.emulation.branches import PredicateInstance, selectivity
 
 PAGE = 0x1000
 GOLDEN = 0x9E3779B97F4A7C15          # an odd constant, for a spread-out fill
@@ -129,6 +130,9 @@ class Outcome:
     writes: dict = field(default_factory=dict)   # page base -> bytes it holds
     detail: str = ""                 # the import name, the faulting address...
     instructions: int = 0
+    # The conditional jumps this run took, when recording was asked for: what
+    # the second tier ranks to choose a branch to force (docs/verifier.md).
+    predicates: tuple = ()
 
 
 # The content a page gets is a window into one bounded random block, indexed
@@ -553,7 +557,8 @@ def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None) -> No
 def run(loader: Loader, address: int, placement: Placement, args,
         seed: int = 1, budget: int = 5_000_000, stub_resolver=None,
         timeout_us: int = DEFAULT_TIMEOUT_US,
-        input_variant: int = 0, prepare=None) -> Outcome:
+        input_variant: int = 0, prepare=None,
+        record_predicates: bool = False, force=None) -> Outcome:
     """Run one function and return what it produced.
 
     args are integers positioned by `placement`: an integer, a pointer's
@@ -569,9 +574,21 @@ def run(loader: Loader, address: int, placement: Placement, args,
     from unicorn import UC_ARCH_X86, UC_MODE_64, Uc
 
     uc = Uc(UC_ARCH_X86, UC_MODE_64)
+    # The run's mutable state lives here rather than inside the body, so what
+    # a recorded run saw can be attached however the body exited - a run that
+    # faulted still took branches on the way, and those are worth keeping.
+    state = {"status": None, "detail": "", "count": 0,
+             "predicates": [],     # PredicateInstance, in the order seen
+             "pending": None,      # a branch whose outcome is not known yet
+             "selectivity": None,  # the last compare's distance
+             "resume_at": None}    # where a forced branch is being sent
     try:
-        return _run_in(uc, loader, address, placement, args, seed, budget,
-                       stub_resolver, timeout_us, input_variant, prepare)
+        outcome = _run_in(uc, loader, address, placement, args, seed, budget,
+                          stub_resolver, timeout_us, input_variant, prepare,
+                          state, record_predicates, force)
+        if record_predicates:
+            outcome.predicates = tuple(state["predicates"])
+        return outcome
     finally:
         # Unicorn holds C-side memory (every mapped page, the hooks) that is
         # not freed when the Python object is collected, and the hook closures
@@ -585,8 +602,97 @@ def run(loader: Loader, address: int, placement: Placement, args,
             pass
 
 
+def _decoder_over(uc):
+    """A Decoder reading code out of an emulator's memory."""
+    from elenchus.emulation.branches import Decoder
+    return Decoder(lambda address, size: bytes(uc.mem_read(address, size)))
+
+
+def _register_reader(uc):
+    """Read a register by capstone's name for it, or None if it has none."""
+    from unicorn import x86_const
+
+    def read(name):
+        constant = getattr(x86_const, f"UC_X86_REG_{name.upper()}", None)
+        return None if constant is None else uc.reg_read(constant)
+    return read
+
+
+def _safe_read(uc, address: int, width: int, seed: int = 0,
+               input_variant: int = 0):
+    """The bytes at `address`, whether or not they have been mapped yet.
+
+    Selectivity is read in the code hook, before the instruction executes -
+    which is while its operands still hold the values compared, but also
+    before a first touch has mapped anything. A compare against memory the
+    function has not read yet (`cmp [rcx], imm` as its first instruction, the
+    -O3 shape of a context check) would otherwise have no selectivity at all.
+
+    What an unmapped page will hold is already decided by its address, so it
+    is computed rather than waited for. Reading does not map: the instruction
+    itself will, a moment later, through the ordinary path.
+    """
+    try:
+        return bytes(uc.mem_read(address, width))
+    except Exception:                           # noqa: BLE001 - not yet mapped
+        out = bytearray()
+        offset = address
+        while len(out) < width:
+            page = offset & ~(PAGE - 1)
+            within = offset - page
+            chunk = _fill(page, _fill_seed_for(page, seed, input_variant))
+            take = min(width - len(out), PAGE - within)
+            out += chunk[within:within + take]
+            offset += take
+        return bytes(out)
+
+
+def _watch_branch(uc, addr, size, state, decoder, force,
+                  seed=0, input_variant=0) -> None:
+    """Record the branch at `addr`, and force it if this instance was chosen.
+
+    A conditional jump's outcome is not known until the next instruction
+    runs, so the jump is held as pending and resolved when the next address
+    arrives: it went to the target, or it fell through.
+
+    Forcing is {instruction count: destination}, the destination taken from a
+    recording run, so the caller names exactly which instance of a jump in a
+    loop it means. Unicorn cannot be redirected from inside a hook reliably,
+    so the run is stopped here and resumed at the destination by execute().
+    """
+    pending = state["pending"]
+    if pending is not None:
+        state["pending"] = None
+        count, branch, distance = pending
+        if addr in (branch.target, branch.fall_through):
+            state["predicates"].append(
+                PredicateInstance(count, branch, addr == branch.target,
+                                  distance))
+
+    if force and state["count"] in force:
+        state["resume_at"] = force[state["count"]]
+        return
+
+    branch = decoder.branch_at(addr, size)
+    if branch is not None:
+        state["pending"] = (state["count"], branch, state["selectivity"])
+        state["selectivity"] = None
+        return
+
+    compare = decoder.compare_at(addr, size)
+    if compare is not None:
+        # How close this comparison came to going the other way, read before
+        # the instruction executes - which is while its operands still hold
+        # the values being compared.
+        state["selectivity"] = selectivity(
+            compare, _register_reader(uc),
+            lambda address, width: _safe_read(uc, address, width, seed,
+                                              input_variant))
+
+
 def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
-            timeout_us, input_variant=0, prepare=None):
+            timeout_us, input_variant=0, prepare=None, state=None,
+            record_predicates=False, force=None):
     """The body of one run, on an already-created emulator; run() owns its
     lifetime and releases it. Split out so every return path is covered by
     run()'s finally without repeating the cleanup."""
@@ -628,7 +734,10 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         uc.reg_write(UC_X86_REG_RSP, rsp)
         _load_arguments(uc, call_placement, call_args, rsp)
 
-    state = {"status": None, "detail": "", "count": 0}
+    # Branch watching - recording predicate instances, and forcing one - is
+    # off unless asked for, so an ordinary run never touches capstone.
+    watching = record_predicates or bool(force)
+    decoder = _decoder_over(uc) if watching else None
     mapped: set = set()          # pages the harness filled on first touch
     written: set = set()
     arena = Arena()              # fresh per run: both versions allocate alike
@@ -682,6 +791,12 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         # it also counts them: how many a function took is what V0 reads to
         # set the real budget.
         state["count"] += 1
+        if watching:
+            _watch_branch(uc, addr, size, state, decoder, force, seed,
+                          input_variant)
+            if state["resume_at"] is not None:
+                uc.emu_stop()
+                return
         # A call to an import lands on its trap address (see Loader). Catch it
         # here and either run a stub in the emulator's place, or end the run
         # naming the import.
@@ -719,17 +834,32 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         the same budget, timeout and hooks.
         """
         frame(call_placement, call_args)
-        try:
-            uc.emu_start(call_address, SENTINEL, timeout=timeout_us,
-                         count=budget)
-        except UcError:
-            return state["status"] or Status.FAULT
-        if state["status"] is not None:
-            return state["status"]
-        if uc.reg_read(UC_X86_REG_RIP) != SENTINEL:
-            return (Status.BUDGET_EXHAUSTED if state["count"] >= budget
-                    else Status.TIMED_OUT)
-        return None
+        entry = call_address
+        while True:
+            # The budget belongs to the call, not to a segment of it: a forced
+            # branch splits one call into several emu_start calls, and each
+            # must not hand the function a fresh allowance.
+            remaining = budget - state["count"]
+            if remaining <= 0:
+                return Status.BUDGET_EXHAUSTED
+            try:
+                uc.emu_start(entry, SENTINEL, timeout=timeout_us,
+                             count=remaining)
+            except UcError:
+                return state["status"] or Status.FAULT
+            if state["status"] is not None:
+                return state["status"]
+            if state["resume_at"] is not None:
+                # A branch was forced: carry on from where it was sent. The
+                # jump itself never executed, which is the point.
+                entry = state["resume_at"]
+                state["resume_at"] = None
+                state["pending"] = None
+                continue
+            if uc.reg_read(UC_X86_REG_RIP) != SENTINEL:
+                return (Status.BUDGET_EXHAUSTED if state["count"] >= budget
+                        else Status.TIMED_OUT)
+            return None
 
     call_args = args
     if prepare is not None:
@@ -768,26 +898,10 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         state["status"] = None
         state["detail"] = ""
 
-    try:
-        frame(placement, call_args)
-        uc.emu_start(address, SENTINEL, timeout=timeout_us, count=budget)
-    except UcError as exc:
-        status = state["status"] or Status.FAULT
-        return Outcome(status, detail=state["detail"] or str(exc),
+    failure = execute(address, placement, call_args)
+    if failure is not None:
+        return Outcome(failure, detail=state["detail"],
                        instructions=state["count"])
-
-    if state["status"] is not None:
-        return Outcome(state["status"], detail=state["detail"],
-                       instructions=state["count"])
-
-    if uc.reg_read(UC_X86_REG_RIP) != SENTINEL:
-        # emu_start returned without reaching the sentinel: either the
-        # instruction budget ran out or the wall-clock timeout fired. They are
-        # told apart by whether the count reached the budget - a timeout stops
-        # mid-budget on elapsed time, not instruction count.
-        if state["count"] >= budget:
-            return Outcome(Status.BUDGET_EXHAUSTED, instructions=state["count"])
-        return Outcome(Status.TIMED_OUT, instructions=state["count"])
 
     writes = {page: bytes(uc.mem_read(page, PAGE)) for page in sorted(written)}
     return Outcome(Status.COMPLETED,
