@@ -183,6 +183,23 @@ void accum_peek(const struct accum *a, unsigned *out) {
     out[0] = a->total;
 }
 
+/* The other constructor shape: it builds the context and hands it back,
+ * the way cJSON_CreateObject or xmlNewDoc do, rather than filling a buffer
+ * the caller passes. The chain takes its return value as the context. */
+static struct accum pool_slot;
+
+struct accum *pool_create(void) {
+    pool_slot.magic = 0xACC0FFEE;
+    pool_slot.total = 11;
+    pool_slot.count = 1;
+    return &pool_slot;
+}
+
+unsigned pool_total(const struct accum *a) {
+    if (a->magic != 0xACC0FFEE) return 0;
+    return a->total + a->count;
+}
+
 void accum_final(struct accum *a, unsigned *out) {
     if (a->magic != 0xACC0FFEE) return;      /* uninitialised: do nothing */
     out[0] = a->total + a->count;

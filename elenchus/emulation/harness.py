@@ -634,13 +634,21 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
                     else Status.TIMED_OUT)
         return None
 
+    call_args = args
     if prepare is not None:
         # The initialiser runs first, in this same emulator, so the context
         # the function under test receives is one the library built rather
         # than bytes we invented (docs/verifier.md, constructor chains). Each
         # version runs its own initialiser, so a context that holds a pointer
         # into its own binary stays valid.
-        prepare_address, prepare_placement, prepare_args = prepare
+        #
+        # Two shapes: an in-place initialiser fills the buffer the function
+        # will be given, and the arguments stand; a constructor returns the
+        # context it built, and that return value becomes the function's first
+        # argument, because the buffer we would have passed is not the context
+        # it made.
+        prepare_address, prepare_placement, prepare_args = prepare[:3]
+        context_from_return = len(prepare) > 3 and prepare[3]
         failure = execute(prepare_address, prepare_placement, prepare_args)
         if failure is not None:
             # A half-built context is not a context: abandon the chain rather
@@ -649,13 +657,22 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
                            detail=f"initialiser: {failure.value}"
                                   f"{': ' + state['detail'] if state['detail'] else ''}",
                            instructions=state["count"])
+        if context_from_return:
+            context = uc.reg_read(UC_X86_REG_RAX)
+            if context == 0:
+                # The constructor failed - out of memory, bad arguments - and
+                # a null context is not one to test on.
+                return Outcome(Status.CHAIN_FAILED,
+                               detail="the constructor returned null",
+                               instructions=state["count"])
+            call_args = [context] + list(args[1:])
         # What the initialiser wrote is setup, not the function's effect.
         written.clear()
         state["status"] = None
         state["detail"] = ""
 
     try:
-        frame(placement, args)
+        frame(placement, call_args)
         uc.emu_start(address, SENTINEL, timeout=timeout_us, count=budget)
     except UcError as exc:
         status = state["status"] or Status.FAULT

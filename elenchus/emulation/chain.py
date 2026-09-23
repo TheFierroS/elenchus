@@ -26,6 +26,10 @@ import json
 # The last segment a constructor's name ends in, where the function under
 # test has something else (final, free, destroy, process...). Ordered by how
 # specific they are; an exact-name match against any of them qualifies.
+# How an initialiser hands the context over.
+IN_PLACE = "in-place"        # init(ctx, ...): fills the caller's buffer
+RETURNS = "returns"          # ctx = create(): hands back a pointer of its own
+
 CONSTRUCTOR_SUFFIXES = (
     "init", "new", "create", "setup", "start", "open", "alloc",
     "initialize", "initialise", "init_static", "reset",
@@ -67,7 +71,8 @@ def _first_param(abi) -> dict | None:
 
 
 def _chainable_signature(abi) -> bool:
-    """Whether an initialiser's signature is one the chain can call.
+    """Whether an initialiser's signature is one the chain can call *and* that
+    fills the context in place - the first parameter.
 
     It must take the context pointer first, and nothing after it that would
     need invented data of its own - integers are fine (a size, a flag), a
@@ -80,6 +85,27 @@ def _chainable_signature(abi) -> bool:
     if not params or params[0]["kind"] != "pointer":
         return False
     return all(p["kind"] == "int" for p in params[1:])
+
+
+def _returns_context(abi) -> bool:
+    """Whether an initialiser *returns* the context instead of filling one.
+
+    Many C libraries build their context and hand it back - cJSON_CreateObject,
+    xmlNewDoc - rather than writing into a caller's buffer. Measured on the
+    corpus, 275 of the initialisers a name match finds take no arguments at
+    all and are this shape, the largest group after those already chained.
+
+    Only the no-argument form qualifies: a constructor that takes arguments
+    would need invented data for them, which is the problem the chain exists
+    to avoid. Integers are allowed after none, the way they are for the
+    in-place form.
+    """
+    if abi is None or abi.get("variadic"):
+        return False
+    ret = (abi.get("return") or {})
+    if ret.get("kind") != "pointer":
+        return False
+    return all(p["kind"] == "int" for p in (abi.get("params") or []))
 
 
 def find_initialiser(name: str, abi, siblings):
@@ -106,11 +132,12 @@ def find_initialiser(name: str, abi, siblings):
             continue
         sibling_abi = (json.loads(sibling_abi_json)
                        if isinstance(sibling_abi_json, str) else sibling_abi_json)
-        if not _chainable_signature(sibling_abi):
-            continue
-        if _first_param(sibling_abi) != context:
-            continue                    # a different context type: not ours
-        found.append((sibling_name, sibling_abi))
+        if _chainable_signature(sibling_abi):
+            if _first_param(sibling_abi) != context:
+                continue                # a different context type: not ours
+            found.append((sibling_name, sibling_abi, IN_PLACE))
+        elif _returns_context(sibling_abi):
+            found.append((sibling_name, sibling_abi, RETURNS))
 
     if len(found) != 1:
         return None

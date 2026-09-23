@@ -368,3 +368,33 @@ def test_a_chain_whose_initialiser_fails_is_reported(fixture):
               prepare=(spin.address, placement(spin.abi), [5]))
     assert out.status is Status.CHAIN_FAILED
     assert "initialiser" in out.detail
+
+
+def test_a_constructor_that_returns_the_context_is_used(fixture):
+    """pool_create() builds a context and hands it back, the shape most C
+    libraries use (cJSON_CreateObject, xmlNewDoc). The chain takes its return
+    value as the function's first argument: pool_total then sees a valid
+    context and computes, where on an invented one it returns zero."""
+    loader, sigs = fixture
+    create, total = sigs["pool_create"], sigs["pool_total"]
+    place = placement(total.abi)
+
+    plain = run(loader, total.address, place, [BUF], budget=50_000)
+    chained = run(loader, total.address, place, [BUF], budget=50_000,
+                  prepare=(create.address, placement(create.abi), [], True))
+    assert plain.status is chained.status is Status.COMPLETED
+    assert (plain.ret_int & place.ret.mask) == 0          # invented context
+    assert (chained.ret_int & place.ret.mask) == 12       # 11 + 1, the real one
+
+
+def test_a_constructor_returning_null_abandons_the_chain(fixture):
+    """A constructor that fails hands back null, and a null context is not
+    one to test on: the chain is abandoned rather than used."""
+    loader, sigs = fixture
+    total = sigs["pool_total"]
+    # is_odd(0) returns 0 - standing in for a constructor that returned null.
+    out = run(loader, total.address, placement(total.abi), [BUF], budget=50_000,
+              prepare=(sigs["is_odd"].address, placement(sigs["is_odd"].abi),
+                       [0], True))
+    assert out.status is Status.CHAIN_FAILED
+    assert "null" in out.detail

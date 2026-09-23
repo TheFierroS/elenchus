@@ -133,3 +133,47 @@ def test_chainable_signature_rules():
     assert not _chainable_signature(abi([]))                 # nothing at all
     assert not _chainable_signature(abi([POINTER, POINTER]))
     assert not _chainable_signature(None)
+
+
+# ------------------------------------------------------- the returning shape
+
+
+def test_a_constructor_that_returns_the_context_is_accepted():
+    """Most C libraries hand the context back rather than filling a buffer:
+    cJSON_CreateObject, xmlNewDoc. Measured on the corpus, 275 of the
+    initialisers a name match finds are this shape."""
+    found = find_initialiser(
+        "pool_total", abi([POINTER]),
+        [("pool_create", json.dumps(abi([], ret=POINTER)))])
+    assert found is not None
+    assert found[0] == "pool_create"
+    assert found[2] == "returns"
+
+
+def test_a_returning_constructor_that_wants_a_pointer_is_refused():
+    """cJSON_Parse(const char *text) returns a context but needs invented data
+    for its own argument, which is the problem the chain exists to avoid. A
+    single pointer of the *context's own type* is still the in-place shape and
+    is allowed; a second one is not."""
+    assert find_initialiser(
+        "doc_free", abi([POINTER]),
+        [("doc_create", json.dumps(abi([OTHER_POINTER], ret=POINTER)))]) is None
+    assert find_initialiser(
+        "doc_free", abi([POINTER]),
+        [("doc_create", json.dumps(abi([POINTER, POINTER], ret=POINTER)))]) is None
+
+
+def test_a_returning_constructor_may_take_integers():
+    found = find_initialiser(
+        "pool_total", abi([POINTER]),
+        [("pool_create", json.dumps(abi([INT], ret=POINTER)))])
+    assert found is not None and found[2] == "returns"
+
+
+def test_both_shapes_at_once_are_ambiguous():
+    """pool_init fills a buffer and pool_create returns one: two ways to make
+    a context, so neither is chosen."""
+    assert find_initialiser(
+        "pool_total", abi([POINTER]),
+        [("pool_init", json.dumps(abi([POINTER]))),
+         ("pool_create", json.dumps(abi([], ret=POINTER)))]) is None

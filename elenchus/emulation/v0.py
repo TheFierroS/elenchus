@@ -102,6 +102,7 @@ class V0Report:
     disagreements: list = field(default_factory=list)   # PairResult, for reading
     completed_instructions: list = field(default_factory=list)  # per completed pair
     chains_found: int = 0               # pairs where both sides had an initialiser
+    chains_abandoned: int = 0           # chains that failed and fell back
 
     def add(self, result: PairResult):
         self.buckets[result.bucket] += 1
@@ -214,24 +215,29 @@ def chain_for(name, abi_json, siblings):
     integers - a size or a flag an initialiser takes, where zero is the
     plainest choice and the same on both sides.
     """
-    from elenchus.emulation.chain import find_initialiser
+    from elenchus.emulation.chain import RETURNS, find_initialiser
 
     abi = json.loads(abi_json)
     lookup = [(n, a) for n, _addr, a in siblings]
     found = find_initialiser(name, abi, lookup)
     if found is None:
         return None
-    init_name, init_abi = found
+    init_name, init_abi, shape = found
     address = next(addr for n, addr, _a in siblings if n == init_name)
     try:
         init_place = placement(init_abi)
     except Undecidable:
         return None
-    # The context is the first input vector's first argument - the same
-    # buffer the function under test will be handed.
-    context = BUFFER_BASE
-    args = [context] + [0] * (len(init_abi.get("params", [])) - 1)
-    return (address, init_place, args)
+
+    params = init_abi.get("params") or []
+    if shape is RETURNS:
+        # A constructor that hands the context back takes no pointer of its
+        # own; any integers it takes get zero, the plainest value and the
+        # same on both sides. The harness takes its return as the context.
+        return (address, init_place, [0] * len(params), True)
+    # An in-place initialiser fills the buffer the function will be given,
+    # which is the first input vector's first argument.
+    return (address, init_place, [BUFFER_BASE] + [0] * (len(params) - 1))
 
 
 def bucket_pair(o0_loader, o0_addr, o3_loader, o3_addr, abi_json,
@@ -325,6 +331,17 @@ def run_v0(conn, count=3000, seed=0, budget=V0_BUDGET, split="train"):
                                  o3["address"], o0["abi"], resolver=res,
                                  budget=budget,
                                  o0_chain=chains[0], o3_chain=chains[1])
+            if (result.bucket == Bucket.CHAIN_FAILED
+                    and chains[0] is not None):
+                # A chain is an attempt to improve, not a precondition. If the
+                # initialiser cannot run, fall back to testing the function
+                # unchained rather than losing a pair that was judged before:
+                # the first run of the chained layer cost 0.8 points by
+                # turning completed pairs into chain failures.
+                result = bucket_pair(o0_loader, o0["address"], o3_loader,
+                                     o3["address"], o0["abi"], resolver=res,
+                                     budget=budget)
+                report.chains_abandoned += 1
             result.package, result.name = package, name
             report.add(result)
     return bare, stubbed, chained
@@ -368,6 +385,7 @@ def _report_dict(report):
         "stubs_declined": dict(report.stubs_declined.most_common()),
         "instruction_percentiles": report.instruction_percentiles(),
         "chains_found": report.chains_found,
+        "chains_abandoned": report.chains_abandoned,
         "disagreements": [
             {"package": d.package, "name": d.name, "detail": d.detail}
             for d in report.disagreements
@@ -396,7 +414,8 @@ def cmd_verify_v0(args):
           f"chained {100 * chain_done / total:.1f}%")
     print(f"  the stubs are worth {100 * (stub_done - bare_done) / total:.1f} "
           f"points, the chains {100 * (chain_done - stub_done) / total:.1f} "
-          f"({chained.chains_found} pairs had an initialiser on both sides)")
+          f"({chained.chains_found} pairs had an initialiser on both sides, "
+          f"{chained.chains_abandoned} of those fell back when it failed)")
 
     if args.out:
         payload = {
