@@ -839,9 +839,18 @@ a single page where a chunk would overlap something already there. A walk
 moves forward anyway, so the neighbours a chunk brings are usually the ones it
 wants next.
 
-Together: the budget rises from 2 MiB to 16 MiB and the worst case falls from
-about 390 ms to 33 ms. Eight times the memory at a twelfth of the cost, which
-should take most of the 2.6% lost to "mapped too much memory" with it.
+The first version of this got the budget wrong and the measurement caught it.
+It kept the limit at 4096 *pages* while making a touch map 64 of them, so a
+walk that used to get 512 distinct touches now got 64: coverage fell 2.2
+points and "mapped too much memory" more than doubled, 2.6% to 5.6%, from a
+change meant to reduce it. What the budget has to bound is touches, not
+pages - a function reaches few separate places, a lost walk reaches many.
+
+Measured by region count, 512 touches of 16 pages is 32 MiB and 83 ms, where
+2 MiB page by page was 390 ms. So: a 16-page chunk, a budget of 512 touches,
+sixteen times the memory at a fifth of the cost. A test asserts the touch
+count rather than the page count, so raising the chunk again cannot quietly
+shrink the walk.
 
 ## Hardening - the core is built, these make it stronger
 

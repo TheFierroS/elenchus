@@ -194,13 +194,17 @@ def _from_float_bits(bits):
     return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
 
 
-def test_the_memory_budget_is_bounded_but_generous():
-    """A lost walk has to stop somewhere, but the bound is no longer set by
-    what filling costs: pages are mapped in chunks, so 16 MiB now costs less
-    than 2 MiB did page by page (F27). The budget is a real ceiling on a
-    runaway walk, not a workaround for a slow fill."""
+def test_the_budget_bounds_touches_not_pages():
+    """What the budget has to bound is how many *distinct places* a lost walk
+    reaches, and a touch now maps a whole chunk. Keeping the budget in pages
+    while raising the chunk size silently cut the walk from 512 touches to 64
+    and cost 2.2 points of coverage (F27); this holds the touches.
+
+    A real function reaches far fewer than 512 separate places, so the bound
+    only catches a walk that is lost."""
     from elenchus.emulation.harness import CHUNK, PAGE, UNMAPPED_FILL_LIMIT
-    assert UNMAPPED_FILL_LIMIT * PAGE >= 16 * 1024 * 1024
+    touches = UNMAPPED_FILL_LIMIT // (CHUNK // PAGE)
+    assert touches >= 512
     assert CHUNK % PAGE == 0 and CHUNK > PAGE
 
 

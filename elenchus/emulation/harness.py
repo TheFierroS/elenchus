@@ -43,10 +43,17 @@ GOLDEN = 0x9E3779B97F4A7C15          # an odd constant, for a spread-out fill
 STACK_TOP = 0x0000_7FF0_0000_0000
 STACK_SIZE = 0x0010_0000             # 1 MiB
 SENTINEL = 0x0000_0000_0000_1000     # return address; not a real code page
-CHUNK = 64 * 4096                    # 256 KiB mapped per first touch: one
-#                                      region instead of 64, which is where
+CHUNK = 16 * 4096                    # 64 KiB mapped per first touch: one
+#                                      region instead of 16, which is where
 #                                      Unicorn's cost actually lies.
-UNMAPPED_FILL_LIMIT = 4096           # pages the harness maps on first touch
+#
+# The budget is in pages, but what it has to bound is the number of *distinct
+# touches* a lost walk makes, and a touch now costs CHUNK. Set so that the
+# walk gets the same 512 touches it had before chunking: the first version of
+# this kept the budget at 4096 pages, which with a 64-page chunk allowed only
+# 64 touches, and cost 2.2 points of coverage (F27). Measured, 512 touches of
+# 16 pages is 32 MiB and 83 ms, against 2 MiB and 390 ms before.
+UNMAPPED_FILL_LIMIT = 512 * 16       # pages: 512 touches of CHUNK each
 #                                      before calling it a lost walk. 2 MiB is
 #                                      already far more than a real function
 #                                      touches; a garbage pointer chased
