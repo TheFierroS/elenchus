@@ -723,3 +723,64 @@ def test_the_new_families_are_in_the_resolver():
                  "EnterCriticalSection", "_lock"):
         assert resolver(name) is not None, name
     assert set(STUBS) >= set(RUNTIME_STATE) | set(TERMINATION) | set(LOCKS)
+
+
+# --------------------------------------------------- stream output
+
+
+from elenchus.emulation.stubs import (  # noqa: E402
+    STREAM_OUTPUT,
+    stream_flush_ok,
+    stream_write_char,
+    stream_write_ok,
+    stream_write_size,
+)
+
+
+def test_fputc_returns_the_character_not_an_error():
+    """A caller that checks fputc's return against EOF must see success, or
+    it takes an error path it would never take in practice."""
+    m = ArenaMachine(args=[ord("A"), 0x1000])
+    stream_write_char(m)
+    assert m.returned == ord("A")
+
+
+def test_fputc_truncates_to_a_byte():
+    m = ArenaMachine(args=[0x141, 0x1000])
+    stream_write_char(m)
+    assert m.returned == 0x41
+
+
+def test_fputs_reports_success_non_negative():
+    m = ArenaMachine(args=[0x1000, 0x2000])
+    stream_write_ok(m)
+    assert m.returned >= 0
+
+
+def test_fwrite_returns_the_element_count():
+    """A caller checking `fwrite(p, size, n, f) == n` continues on success."""
+    m = ArenaMachine(args=[0x1000, 4, 25, 0x2000])
+    stream_write_size(m)
+    assert m.returned == 25
+
+
+def test_fflush_succeeds():
+    m = ArenaMachine(args=[0x1000])
+    stream_flush_ok(m)
+    assert m.returned == 0
+
+
+def test_the_stream_family_is_in_the_resolver():
+    for name in ("fputc", "puts", "fprintf", "fwrite", "fflush", "putchar"):
+        assert resolver(name) is not None, name
+    assert set(STUBS) >= set(STREAM_OUTPUT)
+
+
+def test_a_stream_write_is_not_an_observable_effect():
+    """These swallow what they are given: nothing is written to emulated
+    memory, so the comparison is unaffected by output the verifier cannot
+    see either way."""
+    m = ArenaMachine(args=[ord("x"), 0x1000])
+    before = dict(m.byte)
+    stream_write_char(m)
+    assert m.byte == before

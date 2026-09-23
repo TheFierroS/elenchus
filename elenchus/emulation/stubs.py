@@ -456,6 +456,63 @@ LOCKS = {
 }
 
 
+# --- stream output: fputc, fputs, printf and friends -----------------------
+
+# A function that logs, prints or writes to a stream is doing something real,
+# but not something this verifier can compare: the stream is outside the
+# emulated world, both versions write the same bytes to a place we do not
+# model, and a function that cannot write at all takes an error path it would
+# never take in practice. So these swallow what they are given and report
+# success, letting the function get on with its actual work.
+#
+# What they must not do is pretend to fail: returning EOF would send a caller
+# down error handling and change what the function computes.
+
+def stream_write_char(m) -> None:
+    """int fputc(int c, FILE *f) / putchar(int c): the character, on success."""
+    m.set_return(m.arg(0) & 0xFF)
+
+
+def stream_write_ok(m) -> None:
+    """int fputs / puts / fprintf / printf: a non-negative count on success.
+
+    The exact count a real printf returns depends on formatting we do not
+    perform; a caller that compares it against its own expectation would
+    diverge, so this returns 0 - non-negative, meaning success, and the same
+    in both versions.
+    """
+    m.set_return(0)
+
+
+def stream_write_size(m) -> None:
+    """size_t fwrite(const void *p, size_t size, size_t n, FILE *f).
+
+    Returns n, the element count, which is what a successful fwrite returns:
+    a caller checking `fwrite(...) == n` continues on its success path.
+    """
+    m.set_return(m.arg(2))
+
+
+def stream_flush_ok(m) -> None:
+    """int fflush / fclose: zero on success."""
+    m.set_return(0)
+
+
+STREAM_OUTPUT = {
+    "fputc": stream_write_char,
+    "putc": stream_write_char,
+    "putchar": stream_write_char,
+    "_fputc_nolock": stream_write_char,
+    "fputs": stream_write_ok,
+    "puts": stream_write_ok,
+    "fprintf": stream_write_ok,
+    "printf": stream_write_ok,
+    "vfprintf": stream_write_ok,
+    "fwrite": stream_write_size,
+    "fflush": stream_flush_ok,
+}
+
+
 CSTRING = {
     "strlen": strlen,
     "strcmp": strcmp,
@@ -487,6 +544,7 @@ def _merge(*families):
 
 
 STUBS = _merge(BLOCK_MEMORY, ALLOCATION, CSTRING, RUNTIME_STATE, TERMINATION,
+               STREAM_OUTPUT,
                LOCKS)
 
 

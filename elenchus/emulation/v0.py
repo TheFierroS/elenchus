@@ -96,6 +96,7 @@ class V0Report:
     buckets: Counter = field(default_factory=Counter)
     agreement: Counter = field(default_factory=Counter)
     imports_missing: Counter = field(default_factory=Counter)
+    stubs_declined: Counter = field(default_factory=Counter)
     disagreements: list = field(default_factory=list)   # PairResult, for reading
     completed_instructions: list = field(default_factory=list)  # per completed pair
 
@@ -108,6 +109,8 @@ class V0Report:
                 self.disagreements.append(result)
         elif result.bucket == Bucket.IMPORT_MISSING:
             self.imports_missing[result.detail] += 1
+        elif result.bucket == Bucket.STUB_DECLINED:
+            self.stubs_declined[result.detail] += 1
 
     @property
     def total(self):
@@ -261,6 +264,11 @@ def _print_report(report: V0Report):
         print("  imports to stub next (top 15):")
         for name, n in report.imports_missing.most_common(15):
             print(f"      {name:24} {n:6}")
+    if report.stubs_declined:
+        print("  stubs that declined (top 10) - a stub exists but could not"
+              " serve the call:")
+        for name, n in report.stubs_declined.most_common(10):
+            print(f"      {name:40} {n:6}")
     for d in report.disagreements[:20]:
         print(f"      DISAGREED {d.package}/{d.name}: {d.detail}")
 
@@ -272,6 +280,7 @@ def _report_dict(report):
         "buckets": dict(report.buckets),
         "agreement": dict(report.agreement),
         "imports_missing": dict(report.imports_missing.most_common()),
+        "stubs_declined": dict(report.stubs_declined.most_common()),
         "instruction_percentiles": report.instruction_percentiles(),
         "disagreements": [
             {"package": d.package, "name": d.name, "detail": d.detail}
@@ -331,6 +340,7 @@ def _inconclusive_bucket(comparison):
     """
     statuses = Counter()
     import_names = Counter()
+    declined = Counter()
     for r in comparison.inputs:
         if r.status is None:
             statuses[None] += 1
@@ -339,6 +349,11 @@ def _inconclusive_bucket(comparison):
         if r.status is Status.IMPORT_WITHOUT_STUB:
             name = r.detail.get("detail", "")
             import_names[name.split(":")[0].strip()] += 1
+        elif r.status is Status.STUB_DECLINED:
+            # Keep the whole "name: reason" so the histogram says which stub
+            # refused and why - free of an unknown pointer is a different
+            # thing to fix from a size past the sanity bound.
+            declined[r.detail.get("detail", "")] += 1
 
     ranked = [s for s in statuses if s is not None]
     if not ranked:
@@ -349,4 +364,6 @@ def _inconclusive_bucket(comparison):
     detail = ""
     if status is Status.IMPORT_WITHOUT_STUB and import_names:
         detail = import_names.most_common(1)[0][0]
+    elif status is Status.STUB_DECLINED and declined:
+        detail = declined.most_common(1)[0][0]
     return PairResult("", "", bucket, detail=detail)
