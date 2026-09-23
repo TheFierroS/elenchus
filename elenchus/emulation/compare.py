@@ -231,9 +231,22 @@ def _combine_variants(per_variant) -> InputResult:
     return per_variant[0]
 
 
-# How many branches to try forcing per input. Each attempt costs another
-# eight runs, so this is small and will be measured rather than guessed.
-FORCED_ATTEMPTS = 4
+# What the second tier is allowed to spend, measured rather than chosen
+# (F29). Each attempt costs four runs, and each input two recording runs on
+# top, so a pair the first tier could not judge costs
+# FORCED_INPUTS * (2 + 4 * FORCED_ATTEMPTS) runs. Scanned over 150 pairs:
+#
+#   attempts  1 -> 4.0% forced agreement, 2 -> 5.3%, 4 -> 5.3%
+#   inputs    1 -> 5.3%,                  2 -> 5.3%, 6 -> 5.3%
+#
+# Two attempts is where the gain stops. And the number of inputs changes it
+# not at all: if forcing is going to work on a pair, it works on the first
+# input, and the other five only cost time - 477 s against 319 s for exactly
+# the same result. The first version spent 6 inputs and 4 attempts, and the
+# 500-pair run took 27 minutes, nineteen of them in the kernel mapping images
+# for runs that changed nothing.
+FORCED_ATTEMPTS = 2
+FORCED_INPUTS = 1
 
 
 def _forced_agreement(q_loader, q_address, k_loader, k_address, placement,
@@ -343,7 +356,7 @@ def compare(q_loader: Loader, q_address: int,
     # unjudged pairs are, and it is what the second tier is for - run it again
     # with a branch forced, and count the agreements (docs/verifier.md).
     attempts = agreements = 0
-    for args in input_vectors if force_when_unjudged else ():
+    for args in (input_vectors[:FORCED_INPUTS] if force_when_unjudged else ()):
         made, agreed = _forced_agreement(
             q_loader, q_address, k_loader, k_address, placement, args, budget,
             stub_resolver, q_prepare, k_prepare, image_ranges, forcing_seed)

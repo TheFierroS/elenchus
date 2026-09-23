@@ -950,6 +950,33 @@ for, so tier 1 pays nothing.
 3. *Judge* with the two tiers, and measure what corroboration is worth
    against the false-refutation count, which must stay at zero.
 
+## What forcing is worth, and what it costs (F29)
+
+The second tier works. On 500 pairs it moved 8.0% from unjudged to agreed -
+and it drew from exactly the buckets it was aimed at: faults 18.6% to 15.2%,
+exhausted budgets 5.8% to 4.2%. Zero false refutations, which the asymmetry
+guarantees and the run confirms. The constructor chain bought 0.6 points for
+two rounds of work; this bought 8.
+
+The first version also took 27 minutes where the run before it took 5, and
+nineteen of those minutes were kernel time - mapping an image per run, for
+runs that turned out to change nothing. Scanned over 150 pairs:
+
+| attempts | inputs | forced agreement | time |
+|---|---|---|---|
+| 1 | 1 | 4.0% | 274 s |
+| 2 | 1 | **5.3%** | **319 s** |
+| 4 | 1 | 5.3% | 322 s |
+| 2 | 6 | 5.3% | 477 s |
+| 4 | 6 | 5.3% | 482 s |
+
+Two findings. A third attempt buys nothing, so two is the budget. And **the
+number of inputs changes the gain not at all**: if forcing is going to work
+on a pair it works on the first input, and the other five only cost time.
+That is worth understanding rather than just using - the input decides which
+path the function takes to the check, but the check is the same check, and
+forcing it is the same act whichever way it was reached.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
