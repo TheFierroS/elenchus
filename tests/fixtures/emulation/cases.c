@@ -153,6 +153,42 @@ const char *banner(void) {
 /* Writes the address of a global into the caller's buffer. The address is
  * different at -O0 and -O3, so the written pointer value must not be
  * compared as data (F23); the count written beside it must. */
+/* --- a context that must be initialised: the constructor-chain case ----- */
+
+/*
+ * accum_final refuses to produce a result unless the context carries the
+ * magic its initialiser writes - the shape of a real hash or parser context.
+ * Given invented bytes it writes nothing and the two builds may differ;
+ * chained after accum_init it computes and writes, and both builds agree.
+ */
+struct accum { unsigned magic; unsigned total; unsigned count; };
+
+void accum_init(struct accum *a) {
+    a->magic = 0xACC0FFEE;
+    a->total = 0;
+    a->count = 0;
+}
+
+void accum_add(struct accum *a, unsigned v) {
+    if (a->magic != 0xACC0FFEE) return;
+    a->total += v;
+    a->count++;
+}
+
+/* Reads the context and writes only the output: chained, the pages it is
+ * recorded as writing must be the output's alone, which is how a test can
+ * tell that the initialiser's own writes were cleared. */
+void accum_peek(const struct accum *a, unsigned *out) {
+    if (a->magic != 0xACC0FFEE) return;
+    out[0] = a->total;
+}
+
+void accum_final(struct accum *a, unsigned *out) {
+    if (a->magic != 0xACC0FFEE) return;      /* uninitialised: do nothing */
+    out[0] = a->total + a->count;
+    a->magic = 0;
+}
+
 void publish(const char **out, int *count) {
     out[0] = banner();
     count[0] = 2;

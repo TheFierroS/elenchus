@@ -313,3 +313,58 @@ def test_the_stack_garbage_is_deterministic():
     """Same seed, same bytes - a verdict has to be replayable."""
     from elenchus.emulation.harness import _stack_garbage
     assert _stack_garbage(7) == _stack_garbage(7)
+
+
+def test_without_a_chain_an_uninitialised_context_produces_nothing(fixture):
+    """accum_final checks a magic its initialiser writes, and does nothing
+    without it - the shape of a real hash finaliser given invented bytes."""
+    loader, sigs = fixture
+    f = sigs["accum_final"]
+    out = run(loader, f.address, placement(f.abi), [BUF, BUF + 0x1000],
+              budget=50_000)
+    assert out.status is Status.COMPLETED
+    assert not out.writes                     # it refused to produce anything
+
+
+def test_a_chained_initialiser_makes_the_function_work(fixture):
+    """Chained after accum_init the context is valid, so accum_final computes
+    and writes its result (docs/verifier.md, constructor chains)."""
+    loader, sigs = fixture
+    init, final = sigs["accum_init"], sigs["accum_final"]
+    out = run(loader, final.address, placement(final.abi),
+              [BUF, BUF + 0x1000], budget=50_000,
+              prepare=(init.address, placement(init.abi), [BUF]))
+    assert out.status is Status.COMPLETED
+    assert out.writes                          # now it produced a result
+
+
+def test_the_initialisers_own_writes_are_not_the_functions_effect(fixture):
+    """accum_init writes the context; that is setup, not what the function
+    under test produced. If the initialiser's writes were kept, a context the
+    two builds fill differently would look like a difference in the function.
+
+    accum_add writes the context and nothing else, so chained after
+    accum_init its *own* effect is the context page - and the setup writes
+    must not add anything beyond it. Compared against a run with no chain,
+    the recorded pages must be the same set."""
+    loader, sigs = fixture
+    init, peek = sigs["accum_init"], sigs["accum_peek"]
+    chained = run(loader, peek.address, placement(peek.abi),
+                  [BUF, BUF + 0x1000], budget=50_000,
+                  prepare=(init.address, placement(init.abi), [BUF]))
+    # accum_peek reads the context and writes only the output, so the output
+    # page is the whole of its effect. The context page the initialiser wrote
+    # must not be among them.
+    assert set(chained.writes) == {(BUF + 0x1000) & ~0xFFF}
+
+
+def test_a_chain_whose_initialiser_fails_is_reported(fixture):
+    """If the initialiser cannot complete, the chain is abandoned and the run
+    says so rather than testing the function on a half-built context."""
+    loader, sigs = fixture
+    final, spin = sigs["accum_final"], sigs["spin"]
+    out = run(loader, final.address, placement(final.abi),
+              [BUF, BUF + 0x1000], budget=5_000,
+              prepare=(spin.address, placement(spin.abi), [5]))
+    assert out.status is Status.CHAIN_FAILED
+    assert "initialiser" in out.detail

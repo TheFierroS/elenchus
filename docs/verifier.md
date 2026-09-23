@@ -712,6 +712,73 @@ whole pages the write spans. Two tests hold it, mutation-checked.
 This is the deepest bug the verifier has had: not a false difference it
 invented, but a real effect it could not see.
 
+## Constructor chains - protocol
+
+Written before the code. The 500-pair run after the stub families says where
+the remaining coverage goes, and it is one thing in three disguises:
+
+| bucket / decline | share | why |
+|---|---|---|
+| fault | 17.6% | a function walks a structure we filled with invented bytes |
+| abort, _assert | 19 of 46 declines | a precondition we violated - an assertion the function never fails in practice |
+| free of a bad pointer | 10 of 46 | a pointer that came out of our invented bytes |
+| a size past the sanity bound | 6 of 46 | a count that came out of our invented bytes |
+
+All of it is the same cause: **a function that takes a context expects that
+context to have been built by its own initialiser, and we hand it noise.**
+rhash_ripemd160_final wants a context from rhash_ripemd160_init; a parser
+wants a state from parser_new. Given noise they take paths that mean nothing,
+and the verifier can only decline.
+
+**The chain.** Before calling the function under test, call its initialiser,
+so the context it receives is one the library built:
+
+```
+rhash_ripemd160_init(ctx)        the initialiser, run first
+rhash_ripemd160_final(ctx, out)  the function under test
+```
+
+**Each side runs its own initialiser.** Q's context is built by the
+initialiser in Q's binary, K's by the one in K's. The alternative - build one
+context and hand it to both - is unsafe: a context can hold a pointer into
+the binary that made it (a function pointer, a table), and that address does
+not exist on the other side, so the other version faults and a true claim is
+refuted. Two initialisers, two contexts, same inputs: the comparison stays
+honest.
+
+**Finding the initialiser, cautiously.** A candidate must satisfy all of:
+
+- same package and same source file as the function under test;
+- a name that is the function's name with its last segment replaced by
+  `init`, `new`, `create`, `setup`, `start`, `open` or `alloc` - so
+  `rhash_ripemd160_final` looks for `rhash_ripemd160_init`, and a prefix
+  match alone is not enough;
+- a first parameter of the same resolved type as the function's first
+  parameter (the context), and that parameter a pointer;
+- a signature the harness can place, and no more than that one pointer
+  argument plus integers, so the chain call needs no invented data of its own.
+
+If none fits, or more than one fits, **no chain is run** and the function is
+tested as it is today. A wrong initialiser would write a wrong context, and a
+wrong context is worse than noise: it looks valid.
+
+**Both sides must succeed.** If either initialiser does not run to completion
+- it calls an unstubbed import, it faults - the chain is abandoned and the
+claim is inconclusive for that input, never refuted. A context half-built is
+not a context.
+
+**What it does not do.** A function whose context needs more than an
+initialiser - a parser that must be fed data, a socket that must be connected
+- is still out of reach, and stays inconclusive. This closes the common case,
+not every case.
+
+**Measured how.** V0 gains a third layer, `chained`, on the same sample: the
+same pairs, the stubs, and a chain where one is found. The three layers -
+bare, stubbed, chained - say what each is worth, and the false-refutation
+count must stay zero through all three. A chain that turns an inconclusive
+pair into a refuted one is a bug in the chaining, not a discovery, and is
+investigated as such.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

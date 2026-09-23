@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from elenchus.emulation.abi import Undecidable, placement
 from elenchus.emulation.compare import Verdict, compare
 from elenchus.emulation.harness import Status
-from elenchus.emulation.inputs import input_vectors
+from elenchus.emulation.inputs import BUFFER_BASE, input_vectors
 
 # The starting instruction budget. V0 measures whether it is right: a pair
 # that does not finish under it is budget-exhausted, and the distribution of
@@ -55,6 +55,7 @@ class Bucket:
     UNSUPPORTED = "unsupported instruction"
     IMPORT_MISSING = "import without a stub"
     STUB_DECLINED = "stub declined the call"
+    CHAIN_FAILED = "the initialiser did not complete"
     BUDGET = "budget exhausted"
     TIMED_OUT = "timed out"
     TOO_MUCH_MEMORY = "mapped too much memory"
@@ -73,6 +74,7 @@ _STATUS_BUCKET = {
     Status.UNSUPPORTED_INSTRUCTION: Bucket.UNSUPPORTED,
     Status.IMPORT_WITHOUT_STUB: Bucket.IMPORT_MISSING,
     Status.STUB_DECLINED: Bucket.STUB_DECLINED,
+    Status.CHAIN_FAILED: Bucket.CHAIN_FAILED,
     Status.BUDGET_EXHAUSTED: Bucket.BUDGET,
     Status.TIMED_OUT: Bucket.TIMED_OUT,
     Status.TOO_MUCH_MEMORY: Bucket.TOO_MUCH_MEMORY,
@@ -99,6 +101,7 @@ class V0Report:
     stubs_declined: Counter = field(default_factory=Counter)
     disagreements: list = field(default_factory=list)   # PairResult, for reading
     completed_instructions: list = field(default_factory=list)  # per completed pair
+    chains_found: int = 0               # pairs where both sides had an initialiser
 
     def add(self, result: PairResult):
         self.buckets[result.bucket] += 1
@@ -171,8 +174,69 @@ def sample_pairs(conn, split="train", count=3000, seed=0):
     return identities[:count]
 
 
+def siblings_by_file(conn, split="train"):
+    """Every function's neighbours, keyed by (package, decl_file, opt_level).
+
+    The constructor chain needs to know what else lives in a function's own
+    source file, with its address and signature, so an initialiser can be
+    found and called. One query, indexed in memory, rather than a query per
+    pair.
+    """
+    index = {}
+    for row in conn.execute("""
+        SELECT cb.package   AS package,
+               cb.opt_level AS opt_level,
+               gt.decl_file AS decl_file,
+               gt.name      AS name,
+               gt.address   AS address,
+               gt.abi       AS abi
+        FROM ground_truth gt
+        JOIN corpus_binaries cb ON cb.binary_id = gt.binary_id
+        JOIN dataset_split ds   ON ds.package = cb.package
+        WHERE cb.stripped = 1
+          AND ds.split = ?
+          AND cb.opt_level IN ('O0', 'O3')
+          AND gt.decl_file IS NOT NULL
+          AND gt.abi IS NOT NULL
+    """, (split,)):
+        key = (row["package"], row["decl_file"], row["opt_level"])
+        index.setdefault(key, []).append(
+            (row["name"], row["address"], row["abi"]))
+    return index
+
+
+def chain_for(name, abi_json, siblings):
+    """The (address, placement, args) to run before a function, or None.
+
+    Finds the initialiser among the function's siblings (chain.py, which
+    refuses anything it is not sure of), and builds the call: the context
+    pointer the function itself will receive, then zeros for any trailing
+    integers - a size or a flag an initialiser takes, where zero is the
+    plainest choice and the same on both sides.
+    """
+    from elenchus.emulation.chain import find_initialiser
+
+    abi = json.loads(abi_json)
+    lookup = [(n, a) for n, _addr, a in siblings]
+    found = find_initialiser(name, abi, lookup)
+    if found is None:
+        return None
+    init_name, init_abi = found
+    address = next(addr for n, addr, _a in siblings if n == init_name)
+    try:
+        init_place = placement(init_abi)
+    except Undecidable:
+        return None
+    # The context is the first input vector's first argument - the same
+    # buffer the function under test will be handed.
+    context = BUFFER_BASE
+    args = [context] + [0] * (len(init_abi.get("params", [])) - 1)
+    return (address, init_place, args)
+
+
 def bucket_pair(o0_loader, o0_addr, o3_loader, o3_addr, abi_json,
-                resolver=None, budget=V0_BUDGET, inputs=None):
+                resolver=None, budget=V0_BUDGET, inputs=None,
+                o0_chain=None, o3_chain=None):
     """Run one pair and return its bucket and, if completed, whether it agreed.
 
     resolver None is the bare layer; a resolver is the stubbed layer. The
@@ -192,7 +256,8 @@ def bucket_pair(o0_loader, o0_addr, o3_loader, o3_addr, abi_json,
     vectors = inputs if inputs is not None else input_vectors(
         abi, count=V0_INPUT_COUNT)
     result = compare(o0_loader, o0_addr, o3_loader, o3_addr, place, vectors,
-                     budget=budget, stub_resolver=resolver)
+                     budget=budget, stub_resolver=resolver,
+                     q_prepare=o0_chain, k_prepare=o3_chain)
 
     if result.verdict is Verdict.REFUTED:
         return PairResult("", "", Bucket.COMPLETED, Bucket.DISAGREED,
@@ -225,24 +290,44 @@ def run_v0(conn, count=3000, seed=0, budget=V0_BUDGET, split="train"):
             loaders[path] = Loader(path)
         return loaders[path]
 
+    siblings = siblings_by_file(conn, split=split)
+
     bare = V0Report(layer="bare")
     stubbed = V0Report(layer="stubbed")
-    for (package, _decl, name), o0, o3 in pairs:
+    chained = V0Report(layer="chained")
+    for (package, decl, name), o0, o3 in pairs:
         try:
             o0_loader = loader_for(o0["path"])
             o3_loader = loader_for(o3["path"])
         except Exception as exc:                       # noqa: BLE001
-            for report in (bare, stubbed):
+            for report in (bare, stubbed, chained):
                 report.add(PairResult(package, name, Bucket.LOAD_FAILED,
                                       detail=str(exc)))
             continue
-        for report, res in ((bare, None), (stubbed, resolver)):
+
+        # Each side's chain comes from its own binary's siblings, so a
+        # context holding a pointer into the binary that built it stays valid
+        # (docs/verifier.md, constructor chains).
+        o0_chain = chain_for(name, o0["abi"],
+                             siblings.get((package, decl, "O0"), []))
+        o3_chain = chain_for(name, o3["abi"],
+                             siblings.get((package, decl, "O3"), []))
+        both_chains = o0_chain is not None and o3_chain is not None
+        if both_chains:
+            chained.chains_found += 1
+
+        for report, res, chains in (
+                (bare, None, (None, None)),
+                (stubbed, resolver, (None, None)),
+                (chained, resolver,
+                 (o0_chain, o3_chain) if both_chains else (None, None))):
             result = bucket_pair(o0_loader, o0["address"], o3_loader,
                                  o3["address"], o0["abi"], resolver=res,
-                                 budget=budget)
+                                 budget=budget,
+                                 o0_chain=chains[0], o3_chain=chains[1])
             result.package, result.name = package, name
             report.add(result)
-    return bare, stubbed
+    return bare, stubbed, chained
 
 
 def _print_report(report: V0Report):
@@ -282,6 +367,7 @@ def _report_dict(report):
         "imports_missing": dict(report.imports_missing.most_common()),
         "stubs_declined": dict(report.stubs_declined.most_common()),
         "instruction_percentiles": report.instruction_percentiles(),
+        "chains_found": report.chains_found,
         "disagreements": [
             {"package": d.package, "name": d.name, "detail": d.detail}
             for d in report.disagreements
@@ -295,22 +381,28 @@ def cmd_verify_v0(args):
     from elenchus.db import connect
 
     conn = connect(args.db)
-    bare, stubbed = run_v0(conn, count=args.count, seed=args.seed,
-                           budget=args.budget)
+    bare, stubbed, chained = run_v0(conn, count=args.count, seed=args.seed,
+                                    budget=args.budget)
     _print_report(bare)
     _print_report(stubbed)
+    _print_report(chained)
 
     bare_done = bare.buckets.get(Bucket.COMPLETED, 0)
     stub_done = stubbed.buckets.get(Bucket.COMPLETED, 0)
+    chain_done = chained.buckets.get(Bucket.COMPLETED, 0)
     total = bare.total or 1
     print(f"\ncoverage: bare {100 * bare_done / total:.1f}%, "
-          f"stubbed {100 * stub_done / total:.1f}%  "
-          f"(the stubs are worth {100 * (stub_done - bare_done) / total:.1f} points)")
+          f"stubbed {100 * stub_done / total:.1f}%, "
+          f"chained {100 * chain_done / total:.1f}%")
+    print(f"  the stubs are worth {100 * (stub_done - bare_done) / total:.1f} "
+          f"points, the chains {100 * (chain_done - stub_done) / total:.1f} "
+          f"({chained.chains_found} pairs had an initialiser on both sides)")
 
     if args.out:
         payload = {
             "count": args.count, "seed": args.seed, "budget": args.budget,
             "bare": _report_dict(bare), "stubbed": _report_dict(stubbed),
+            "chained": _report_dict(chained),
         }
         with open(args.out, "w") as f:
             _json.dump(payload, f, indent=1)

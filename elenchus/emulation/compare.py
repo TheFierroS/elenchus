@@ -228,7 +228,8 @@ def _combine_variants(per_variant) -> InputResult:
 def compare(q_loader: Loader, q_address: int,
             k_loader: Loader, k_address: int,
             placement: Placement, input_vectors,
-            budget: int = 5_000_000, stub_resolver=None) -> Comparison:
+            budget: int = 5_000_000, stub_resolver=None,
+            q_prepare=None, k_prepare=None) -> Comparison:
     """Test whether Q behaves as K across the given inputs.
 
     Each side is run twice per input, at SEED_A and SEED_B, so a
@@ -259,8 +260,11 @@ def compare(q_loader: Loader, q_address: int,
         for variant in (VARIANT_A, VARIANT_B):
             runs = [
                 run(loader, address, placement, args, seed=seed, budget=budget,
-                    stub_resolver=stub_resolver, input_variant=variant)
-                for loader, address in ((q_loader, q_address), (k_loader, k_address))
+                    stub_resolver=stub_resolver, input_variant=variant,
+                    prepare=prepare)
+                for loader, address, prepare in (
+                    (q_loader, q_address, q_prepare),
+                    (k_loader, k_address, k_prepare))
                 for seed in (SEED_A, SEED_B)
             ]
             q_a, q_b, k_a, k_b = runs[0], runs[1], runs[2], runs[3]

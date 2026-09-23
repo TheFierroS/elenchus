@@ -98,6 +98,7 @@ class Status(Enum):
     UNSUPPORTED_INSTRUCTION = "unsupported instruction"
     IMPORT_WITHOUT_STUB = "import without a stub"
     STUB_DECLINED = "stub declined the call"
+    CHAIN_FAILED = "the initialiser did not complete"
     BUDGET_EXHAUSTED = "budget exhausted"
     TIMED_OUT = "timed out"
     TOO_MUCH_MEMORY = "mapped too much memory"
@@ -455,7 +456,7 @@ def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None) -> No
 def run(loader: Loader, address: int, placement: Placement, args,
         seed: int = 1, budget: int = 5_000_000, stub_resolver=None,
         timeout_us: int = DEFAULT_TIMEOUT_US,
-        input_variant: int = 0) -> Outcome:
+        input_variant: int = 0, prepare=None) -> Outcome:
     """Run one function and return what it produced.
 
     args are integers positioned by `placement`: an integer, a pointer's
@@ -473,7 +474,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
     uc = Uc(UC_ARCH_X86, UC_MODE_64)
     try:
         return _run_in(uc, loader, address, placement, args, seed, budget,
-                       stub_resolver, timeout_us, input_variant)
+                       stub_resolver, timeout_us, input_variant, prepare)
     finally:
         # Unicorn holds C-side memory (every mapped page, the hooks) that is
         # not freed when the Python object is collected, and the hook closures
@@ -488,7 +489,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
 
 
 def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
-            timeout_us, input_variant=0):
+            timeout_us, input_variant=0, prepare=None):
     """The body of one run, on an already-created emulator; run() owns its
     lifetime and releases it. Split out so every return path is covered by
     run()'s finally without repeating the cleanup."""
@@ -519,13 +520,16 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
     # import rather than a fetch fault.
     uc.mem_map(TRAP_BASE & ~(PAGE - 1), PAGE)
 
-    # A 16-byte-aligned frame with the sentinel return address on top, and 32
-    # bytes of shadow space below it as the convention requires.
-    rsp = (STACK_TOP - 0x2000) & ~0xF
-    rsp -= 8
-    uc.mem_write(rsp, struct.pack("<Q", SENTINEL))
-    uc.reg_write(UC_X86_REG_RSP, rsp)
-    _load_arguments(uc, placement, args, rsp)
+    def frame(call_placement, call_args):
+        """Lay a fresh call frame: a 16-byte-aligned stack with the sentinel
+        return address on top and 32 bytes of shadow space, arguments placed.
+        Used once per call, so a chained initialiser and the function under
+        test each start from a clean frame."""
+        rsp = (STACK_TOP - 0x2000) & ~0xF
+        rsp -= 8
+        uc.mem_write(rsp, struct.pack("<Q", SENTINEL))
+        uc.reg_write(UC_X86_REG_RSP, rsp)
+        _load_arguments(uc, call_placement, call_args, rsp)
 
     state = {"status": None, "detail": "", "count": 0}
     mapped: set = set()          # pages the harness filled on first touch
@@ -610,7 +614,48 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
     uc.hook_add(UC_HOOK_MEM_WRITE, on_write)
     uc.hook_add(UC_HOOK_CODE, on_code)
 
+    def execute(call_address, call_placement, call_args):
+        """Run one call to its return, and say how it ended.
+
+        Returns None on a clean return, or a Status. Used for the chained
+        initialiser and for the function under test, so both are subject to
+        the same budget, timeout and hooks.
+        """
+        frame(call_placement, call_args)
+        try:
+            uc.emu_start(call_address, SENTINEL, timeout=timeout_us,
+                         count=budget)
+        except UcError:
+            return state["status"] or Status.FAULT
+        if state["status"] is not None:
+            return state["status"]
+        if uc.reg_read(UC_X86_REG_RIP) != SENTINEL:
+            return (Status.BUDGET_EXHAUSTED if state["count"] >= budget
+                    else Status.TIMED_OUT)
+        return None
+
+    if prepare is not None:
+        # The initialiser runs first, in this same emulator, so the context
+        # the function under test receives is one the library built rather
+        # than bytes we invented (docs/verifier.md, constructor chains). Each
+        # version runs its own initialiser, so a context that holds a pointer
+        # into its own binary stays valid.
+        prepare_address, prepare_placement, prepare_args = prepare
+        failure = execute(prepare_address, prepare_placement, prepare_args)
+        if failure is not None:
+            # A half-built context is not a context: abandon the chain rather
+            # than test the function on it.
+            return Outcome(Status.CHAIN_FAILED,
+                           detail=f"initialiser: {failure.value}"
+                                  f"{': ' + state['detail'] if state['detail'] else ''}",
+                           instructions=state["count"])
+        # What the initialiser wrote is setup, not the function's effect.
+        written.clear()
+        state["status"] = None
+        state["detail"] = ""
+
     try:
+        frame(placement, args)
         uc.emu_start(address, SENTINEL, timeout=timeout_us, count=budget)
     except UcError as exc:
         status = state["status"] or Status.FAULT

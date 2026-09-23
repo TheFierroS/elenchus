@@ -180,3 +180,42 @@ def test_the_report_computes_instruction_percentiles():
     median, p90, p99, top = report.instruction_percentiles()
     assert median in (5, 6)          # middle of the five
     assert top == 1000               # the outlier is visible as the max
+
+
+def test_run_v0_produces_three_layers_and_finds_a_chain(tmp_path):
+    """End to end on the fixtures: bare, stubbed and chained, with the accum
+    family giving the chained layer an initialiser to find."""
+    import json as _json
+
+    from elenchus.db import connect
+    from elenchus.emulation.v0 import run_v0
+
+    conn = connect(":memory:")
+    ids = {}
+    for level in ("O0", "O3"):
+        path = str((FIXTURES / f"cases_{level}.dll").resolve())
+        ids[level] = conn.execute(
+            "INSERT INTO binaries (path, sha256, arch, imported_at) "
+            "VALUES (?, ?, 'x86-64', 'now') RETURNING id",
+            (path, "sha-" + level)).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO corpus_binaries (binary_id, package, version, "
+            "compiler, opt_level, stripped) VALUES (?, 'demo', '1', 'gcc', ?, 1)",
+            (ids[level], level))
+    conn.execute("INSERT INTO dataset_split (package, split) VALUES ('demo','train')")
+    wanted = {"accum_final", "accum_init", "accum_peek", "add3", "sum"}
+    for level in ("O0", "O3"):
+        for f in ground_truth(FIXTURES / f"cases_{level}.dll"):
+            if f.name in wanted:
+                conn.execute(
+                    "INSERT INTO ground_truth (binary_id, address, name, "
+                    "decl_file, abi) VALUES (?, ?, ?, 'cases.c', ?)",
+                    (ids[level], f.address, f.name, _json.dumps(f.abi)))
+    conn.commit()
+
+    bare, stubbed, chained = run_v0(conn, count=10, seed=0)
+    assert bare.total == stubbed.total == chained.total
+    assert chained.chains_found >= 1          # accum_final found accum_init
+    # and no layer refuted a true pair
+    for report in (bare, stubbed, chained):
+        assert report.agreement.get(Bucket.DISAGREED, 0) == 0
