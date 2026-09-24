@@ -584,3 +584,16 @@ def test_a_store_reaching_outside_the_given_memory_is_marked_partial(fixture):
               budget=50_000, stub_resolver=resolver)
     assert out.status is Status.COMPLETED
     assert out.partial_writes                # seen, and known to be partial
+
+
+def test_touching_memory_outside_the_given_buffers_is_marked(fixture):
+    """A page outside the buffers and the arena can only be reached through
+    an address computed from data we invented, so a run that touches one says
+    so and a difference that follows cannot refute (F32)."""
+    loader, sigs = fixture
+    f = sigs["count_nonzero"]
+    wild = run(loader, f.address, placement(f.abi),
+               [0x0000_5000_0000_0000, 64], budget=50_000)
+    given = run(loader, f.address, placement(f.abi), [BUF, 64], budget=50_000)
+    assert wild.read_invented
+    assert not given.read_invented

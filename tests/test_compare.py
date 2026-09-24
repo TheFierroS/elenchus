@@ -512,3 +512,32 @@ def test_a_store_half_outside_comparable_memory_is_not_judged():
     b = done(writes={0x1000: b"ABCD"}, ranges=[(0x0FFC, 8)])
     b.partial_writes = ((0x0FFC, 8),)
     assert _stable_writes(a, b).get(0x1000, {}) == {}
+
+
+def test_a_difference_after_reading_invented_memory_does_not_refute():
+    """capstone's map_vregister(0) underflows its index and reads eight
+    gigabytes past its table - into a page only our fill could have put
+    anything in. The value it returns is ours, so the two builds differing
+    over it is ours too (F32)."""
+    q_a = q_b = done(ret_int=0xA835)
+    k_a = k_b = done(ret_int=0x2A65)
+    q_a.read_invented = True
+    result = _judge(q_a, q_b, k_a, k_b, place())
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert "invented" in result.reason
+
+
+def test_agreement_still_counts_after_reading_invented_memory():
+    """The asymmetry: agreeing is agreeing, whatever they read to get there."""
+    q_a = q_b = done(ret_int=7)
+    k_a = k_b = done(ret_int=7)
+    for outcome in (q_a, k_a):
+        outcome.read_invented = True
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.SURVIVED
+
+
+def test_a_difference_without_invented_memory_still_refutes():
+    """The taint must not blunt the rule it protects."""
+    q_a = q_b = done(ret_int=7)
+    k_a = k_b = done(ret_int=8)
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.REFUTED

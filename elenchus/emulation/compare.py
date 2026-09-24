@@ -210,6 +210,19 @@ def _stable_writes(a, b):
     return stable
 
 
+def _invented(*outcomes) -> bool:
+    """Whether any run reached memory only our invented data could address.
+
+    A page outside the input buffers and the arena is at an address the
+    function computed from the bytes we made up, and what it reads there is
+    our fill. A difference that follows from that is ours, not the
+    functions' - so it cannot refute (F32). Agreement is unaffected: two
+    builds agreeing, even while reading our pattern, is still two builds
+    agreeing.
+    """
+    return any(getattr(outcome, "read_invented", False) for outcome in outcomes)
+
+
 def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputResult:
     """Compare the two versions on one input, each already run twice."""
     # Any run that did not complete makes the input inconclusive. Carry the
@@ -229,6 +242,10 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputRe
         # judged, but the written memory still can.
         ret_verdict = None
     elif q_ret != k_ret:
+        if _invented(q_a, q_b, k_a, k_b):
+            return InputResult(Verdict.INCONCLUSIVE,
+                               "differs, but a run read invented memory",
+                               {"Q": q_ret, "K": k_ret})
         return InputResult(Verdict.REFUTED, "return value differs",
                            {"Q": q_ret, "K": k_ret})
     else:
@@ -249,6 +266,10 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputRe
         if any(mine[offset] != theirs[offset] for offset in shared):
             differing.append(hex(page))
     if differing:
+        if _invented(q_a, q_b, k_a, k_b):
+            return InputResult(Verdict.INCONCLUSIVE,
+                               "differs, but a run read invented memory",
+                               {"pages": differing})
         return InputResult(Verdict.REFUTED, "written memory differs",
                            {"pages": differing})
 

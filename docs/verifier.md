@@ -1048,6 +1048,41 @@ leptonica's sort, jerryscript's descriptor. The image-pointer mask is now a
 set of byte offsets and checks unaligned positions too, since a compiler may
 store a pointer anywhere.
 
+## The last three: a difference we read into being (F32)
+
+F31 left three, and the disassembly settled all three at once.
+
+capstone's `AArch64_map_vregister(0)` is the clearest. It expects a register
+id of at least one, and at -O0 it computes `id - 1` in a 32-bit register,
+which for zero underflows to 0xFFFFFFFF, doubles it, and reads a 16-bit entry
+*eight gigabytes* past its table. That address is nowhere the binary has
+anything; it is a page our harness mapped and filled. The value returned is
+ours. -O3 does something else with the same undefined input, as a compiler
+may, and we called the two builds different functions.
+
+The other two are the same shape: `lzx_read_bitlen` loads a pointer out of a
+buffer we filled and dereferences it, and opus's quantiser decides its single
+byte of output after reading the same kind of memory.
+
+**A page outside the input buffers and the arena can only be at an address
+the function computed from the bytes we invented** - a garbage pointer, an
+index that underflowed. What it reads there is our fill pattern, not the
+binary's data, and a difference that follows from it is ours.
+
+So a run records whether it touched such memory, and a difference between two
+runs where either did cannot refute - it is inconclusive. The asymmetry is
+the same one the second tier rests on, and for the same reason: agreement is
+unaffected. Two builds agreeing, even while reading our pattern, is still two
+builds agreeing, and V0's coverage is agreements, so this costs nothing
+there.
+
+What it does cost is refutation power against a wrong candidate that reads
+wild memory - we can no longer tell its difference from ours. That is the
+honest side of the trade, and the right side to be on: the rule is that a
+true claim is never refuted.
+
+Thirteen to zero, in three findings.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

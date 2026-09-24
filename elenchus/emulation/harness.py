@@ -144,6 +144,10 @@ class Outcome:
     # Stores that reached outside comparable memory, so only part of the
     # value they wrote is visible - and part of a value is not one.
     partial_writes: tuple = ()
+    # Whether the run touched memory outside everything the harness handed
+    # out - which it can only have reached through an address it computed
+    # from data we invented (F32).
+    read_invented: bool = False
 
 
 # The content a page gets is a window into one bounded random block, indexed
@@ -622,7 +626,8 @@ def run(loader: Loader, address: int, placement: Placement, args,
              "resume_at": None,    # where a forced branch is being sent
              "write_log": [],      # (address, size, value) when asked for
              "write_ranges": [],   # (address, size) of every recorded store
-             "partial_writes": []}  # stores reaching outside comparable memory
+             "partial_writes": [],  # stores reaching outside comparable memory
+             "read_invented": False}  # touched memory only we could have made
     try:
         outcome = _run_in(uc, loader, address, placement, args, seed, budget,
                           stub_resolver, timeout_us, input_variant, prepare,
@@ -633,6 +638,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
             outcome.write_log = tuple(state["write_log"])
         outcome.write_ranges = tuple(state["write_ranges"])
         outcome.partial_writes = tuple(state["partial_writes"])
+        outcome.read_invented = state["read_invented"]
         return outcome
     finally:
         # Unicorn holds C-side memory (every mapped page, the hooks) that is
@@ -800,6 +806,14 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             state["status"] = Status.TOO_MUCH_MEMORY
             uc.emu_stop()
             return False
+        if not _is_handed_out(page):
+            # A page outside the buffers and the arena can only be at an
+            # address the function computed from data we invented - a garbage
+            # pointer, an index that underflowed. Whatever it reads there is
+            # our fill pattern, not the function's own data, so a difference
+            # that follows is ours and cannot refute (F32). An agreement
+            # still counts: agreeing is agreeing.
+            state["read_invented"] = True
         start, count = _fill_page(uc, page, seed, input_variant)
         mapped.update(start + i * PAGE for i in range(count))
         return True
