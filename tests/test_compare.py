@@ -541,3 +541,24 @@ def test_a_difference_without_invented_memory_still_refutes():
     q_a = q_b = done(ret_int=7)
     k_a = k_b = done(ret_int=8)
     assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.REFUTED
+
+
+def test_a_write_difference_after_a_garbage_return_does_not_refute():
+    """opus's quantiser returns a value that changes with the fill seed -
+    proof it read memory it never wrote - and writes a byte that differs by
+    one between the builds. Garbage-dependence belongs to the run, not to one
+    output: what it wrote came out of the same computation (F33)."""
+    q_a = done(ret_int=0xBC1659B2, writes={0x1000: b"\x00"})
+    q_b = done(ret_int=0xB1A4B55B, writes={0x1000: b"\x00"})
+    k_a = done(ret_int=0xD97E7710, writes={0x1000: b"\x01"})
+    k_b = done(ret_int=0x82F473CF, writes={0x1000: b"\x01"})
+    result = _judge(q_a, q_b, k_a, k_b, place())
+    assert result.verdict is Verdict.INCONCLUSIVE
+
+
+def test_a_write_difference_with_a_steady_return_still_refutes():
+    """The taint follows the evidence: where nothing says the run read
+    garbage, a difference in what was written is the functions'."""
+    q_a = q_b = done(ret_int=7, writes={0x1000: b"\x00"})
+    k_a = k_b = done(ret_int=7, writes={0x1000: b"\x01"})
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.REFUTED

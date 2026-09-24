@@ -235,14 +235,20 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputRe
                                {"detail": outcome.detail},
                                status=outcome.status)
 
+    invented = _invented(q_a, q_b, k_a, k_b)
     q_ret = _stable_return(q_a, q_b, placement)
     k_ret = _stable_return(k_a, k_b, placement)
     if q_ret is None or k_ret is None:
-        # The return depended on garbage in at least one version; it cannot be
-        # judged, but the written memory still can.
+        # The return depended on the fill in at least one version, which is
+        # proof that run read memory it never wrote. Garbage-dependence is a
+        # property of the *run*, not of one output: what it wrote came out of
+        # the same computation, so a difference there is no more the
+        # functions' than the return was (F33). It cannot refute; agreement
+        # still counts.
         ret_verdict = None
+        invented = True
     elif q_ret != k_ret:
-        if _invented(q_a, q_b, k_a, k_b):
+        if invented:
             return InputResult(Verdict.INCONCLUSIVE,
                                "differs, but a run read invented memory",
                                {"Q": q_ret, "K": k_ret})
@@ -266,7 +272,7 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputRe
         if any(mine[offset] != theirs[offset] for offset in shared):
             differing.append(hex(page))
     if differing:
-        if _invented(q_a, q_b, k_a, k_b):
+        if invented:
             return InputResult(Verdict.INCONCLUSIVE,
                                "differs, but a run read invented memory",
                                {"pages": differing})

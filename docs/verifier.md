@@ -1083,6 +1083,32 @@ true claim is never refuted.
 
 Thirteen to zero, in three findings.
 
+## Garbage-dependence belongs to the run (F33)
+
+F32 left one: opus's `silk_NLSF_del_dec_quant`. It writes a single byte, and
+the two builds wrote 0x00 and 0x01 under one input fill and 0xa5 and 0xa6
+under the other - the fill's own byte at that offset, and that byte plus one.
+The difference is there under both fills, so F24's rule does not fire, and
+the function stays inside the buffers we gave it, so F32's does not either.
+
+The proof is in the return: it changes with the fill seed. That is a run
+reading memory it never wrote, and the byte it wrote came out of the same
+computation.
+
+The rule was applied too narrowly. Garbage-dependence was treated as a
+property of one *output* - the return was excluded and the writes were still
+compared - when it is a property of the *run*. A run whose return depends on
+the fill read uninitialised memory, and everything else it produced came
+through the same undefined arithmetic; a difference there is no more the
+functions' than the return was. So it cannot refute, and, as everywhere else
+in this design, agreement still counts.
+
+Thirteen to zero, in four findings: memory that was never ours (F30), bytes
+neither version wrote or one could not settle on (F31), memory reachable only
+through an address we invented (F32), and now outputs of a run that read some
+(F33). Every one of them is the same sentence said more precisely - a
+difference we caused is not evidence.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
