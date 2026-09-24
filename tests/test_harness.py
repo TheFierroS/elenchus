@@ -529,3 +529,45 @@ def test_selectivity_is_read_even_before_the_page_is_mapped():
         distances[level] = out.predicates[0].selectivity
     assert distances["O0"] is not None
     assert distances["O0"] == distances["O3"]
+
+
+def test_only_memory_the_harness_handed_out_is_compared():
+    """A function walking a pointer we invented writes wherever it led, at an
+    address that differs between the versions for a reason that is ours. Such
+    a page belongs to neither and comparing it refuted true claims (F30)."""
+    from elenchus.emulation.harness import (
+        ARENA_BASE,
+        INPUT_REGION_BASE,
+        STACK_TOP,
+        _is_handed_out,
+    )
+    assert _is_handed_out(INPUT_REGION_BASE)
+    assert _is_handed_out(ARENA_BASE)
+    assert not _is_handed_out(INPUT_REGION_BASE - 0x1000)   # just below a buffer
+    assert not _is_handed_out(0xFFFF_F1F8_A000)             # a lost walk's page
+    assert not _is_handed_out(STACK_TOP - 0x1000)           # the stack
+
+
+def test_a_write_outside_the_given_memory_is_not_recorded(fixture):
+    """fill(p, n, v) writes wherever it is pointed. Pointed outside the
+    buffers the harness handed out - where a function walking an invented
+    pointer ends up - the write happens but is not recorded, because that
+    address differs between the versions for a reason that is ours (F30)."""
+    loader, sigs = fixture
+    f = sigs["fill"]
+    wild = 0x0000_5000_0000_0000
+    out = run(loader, f.address, placement(f.abi), [wild, 16, 0x41],
+              budget=50_000)
+    assert out.status is Status.COMPLETED
+    assert not out.writes                    # it wrote, but not where we gave
+
+
+def test_a_write_into_a_given_buffer_is_recorded(fixture):
+    """The same function pointed at a buffer we did hand out: recorded, or
+    the exclusion would have thrown away the evidence with the noise."""
+    loader, sigs = fixture
+    f = sigs["fill"]
+    out = run(loader, f.address, placement(f.abi), [BUF, 16, 0x41],
+              budget=50_000)
+    assert out.status is Status.COMPLETED
+    assert (BUF & ~0xFFF) in out.writes

@@ -406,6 +406,27 @@ def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int,
 
 
 ARENA_BASE = 0x0000_3000_0000_0000
+ARENA_END = ARENA_BASE + 0x1000_0000        # 256 MiB, far more than it hands
+
+
+def _is_handed_out(page: int) -> bool:
+    """Whether a page is memory this harness gave the function.
+
+    Only two regions are: the input buffers the generator pointed arguments
+    at, and the arena an allocation stub hands out. Both sit at the same
+    addresses in both versions, so what a function writes there can be
+    matched between them.
+
+    Everything else it may write to cannot. The stack is its own, and the
+    image is its globals, which the two builds place differently (F15). And a
+    function walking a pointer we invented writes wherever that pointer led -
+    an address that differs between the versions for a reason that is ours,
+    so a page there belongs to neither and comparing it refuted true claims
+    (F30). A write just outside a buffer is the same thing: the function has
+    left the space we gave it, on data we made up.
+    """
+    return (INPUT_REGION_BASE <= page < INPUT_REGION_END
+            or ARENA_BASE <= page < ARENA_END)
 ARENA_LIMIT = 0x0000_3000_1000_0000      # 256 MiB of address space to hand out
 ALIGN = 16                               # malloc returns 16-byte-aligned memory
 
@@ -759,7 +780,7 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         mapped.update(start + i * PAGE for i in range(count))
         return True
 
-    image_end = loader.base + loader.size
+    loader.base + loader.size
 
     def record_write(addr, size):
         """Record the pages a write touches, if it is an observable effect.
@@ -774,14 +795,11 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         Both the emulator's write hook and a stub's Machine.write go through
         here, so a stub's effect counts exactly like the function's own (F25).
         """
-        if STACK_TOP - STACK_SIZE <= addr < STACK_TOP:
-            return
-        if loader.base <= addr < image_end:
-            return
         first = addr & ~(PAGE - 1)
         last = (addr + max(size, 1) - 1) & ~(PAGE - 1)
         for page in range(first, last + PAGE, PAGE):
-            written.add(page)
+            if _is_handed_out(page):
+                written.add(page)
 
     def on_write(uc, access, addr, size, value, _):
         record_write(addr, size)

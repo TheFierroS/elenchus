@@ -129,18 +129,23 @@ def _mask_image_pointers(content: bytes, page: int, ranges) -> bytes:
 
 
 def _stable_writes(a, b):
-    """The pages both seeds of one version wrote identically.
+    """What one version wrote, and which of it could not be trusted.
 
-    A page whose contents differ between the two seeds was filled from
-    garbage the version read, so it is dropped. What remains is the memory
-    the function genuinely produced, keyed by page for comparison across
-    versions.
+    Returns (stable, unjudgeable). A page both seeds wrote identically is the
+    memory the function genuinely produced. A page whose content differs
+    between the seeds was filled from garbage the version read, and a page
+    only one seed wrote at all is no steadier - neither can be compared, and
+    both are named so the caller can leave them out rather than refute on
+    them (F30).
     """
-    stable = {}
+    stable, unjudgeable = {}, set()
     for page, content in a.writes.items():
         if page in b.writes and b.writes[page] == content:
             stable[page] = content
-    return stable
+        else:
+            unjudgeable.add(page)
+    unjudgeable.update(page for page in b.writes if page not in a.writes)
+    return stable, unjudgeable
 
 
 def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputResult:
@@ -167,8 +172,15 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputRe
     else:
         ret_verdict = "agree"
 
-    q_writes = _stable_writes(q_a, q_b)
-    k_writes = _stable_writes(k_a, k_b)
+    q_writes, q_unjudgeable = _stable_writes(q_a, q_b)
+    k_writes, k_unjudgeable = _stable_writes(k_a, k_b)
+    # A page either version could not settle on is not evidence about either.
+    # Comparing the dictionaries whole made a page dropped as garbage in one
+    # version and kept in the other look like a difference in what the
+    # functions wrote, which refuted true claims (F30).
+    for page in q_unjudgeable | k_unjudgeable:
+        q_writes.pop(page, None)
+        k_writes.pop(page, None)
     if image_ranges:
         q_writes = {p: _mask_image_pointers(c, p, image_ranges)
                     for p, c in q_writes.items()}

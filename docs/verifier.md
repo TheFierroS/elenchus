@@ -977,6 +977,44 @@ That is worth understanding rather than just using - the input decides which
 path the function takes to the check, but the check is the same check, and
 forcing it is the same act whichever way it was reached.
 
+## Thirteen in three thousand (F30)
+
+500 pairs had held zero false refutations for several rounds. 3000 turned up
+thirteen - 0.43%, and they were two faults in this design rather than
+thirteen surprises. Six of the thirteen were the same two functions in
+different packages, `__g__fmt` and `__freedtoa`, which are David Gay's dtoa
+bundled into half the corpus.
+
+**Compared memory that was never ours.** The write rule excluded the stack
+and the image and recorded everything else, while its own comment said only
+memory the harness handed out is comparable. Those are not the same thing. A
+function walking a pointer we invented writes wherever that pointer led, and
+that address differs between the two builds for a reason that is ours - so
+one version writes a page the other does not, the dictionaries differ, and a
+true claim is refuted. The dtoa cases showed it plainly: pages at
+0xfffff1f8aa000 written by one build only, and an eight-byte value straddling
+the boundary just *below* an input buffer, where a function had left the
+space we gave it. Only two regions are comparable, the input buffers and the
+arena, both at the same addresses in both versions, and only those are
+recorded now.
+
+**Refuted on memory neither version could settle on.** A page whose content
+differed between the two seeds was dropped as garbage - correctly - but then
+the two versions' dictionaries were compared whole, so a page dropped in one
+and kept in the other looked like a difference in what the functions wrote.
+A page either version could not settle on is not evidence about either, and
+is now left out of the comparison rather than counted as a difference.
+
+Both are mutation-checked, and the tests say what they protect: a write
+pointed outside the given buffers is not recorded while the same write into a
+buffer is, and a page dropped in one version does not refute while a real
+difference in written memory still does.
+
+The lesson is about sample size. Five hundred pairs said zero for four
+consecutive rounds of work; three thousand said thirteen. A rate of 0.4%
+needs thousands of pairs to show itself at all, and the rule this project
+rests on is exactly the kind that fails rarely and matters every time.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

@@ -67,7 +67,20 @@ def test_a_void_return_is_nothing_to_compare():
 def test_stable_writes_keep_only_pages_both_seeds_agree_on():
     a = done(writes={0x1000: b"same", 0x2000: b"garbageA"})
     b = done(writes={0x1000: b"same", 0x2000: b"garbageB"})
-    assert _stable_writes(a, b) == {0x1000: b"same"}
+    stable, unjudgeable = _stable_writes(a, b)
+    assert stable == {0x1000: b"same"}
+    assert unjudgeable == {0x2000}
+
+
+def test_a_page_only_one_seed_wrote_is_unjudgeable():
+    """Not written under the other seed is no steadier than written
+    differently: either way the page turns on garbage and cannot be evidence
+    about the function (F30)."""
+    a = done(writes={0x1000: b"same", 0x3000: b"only under A"})
+    b = done(writes={0x1000: b"same"})
+    stable, unjudgeable = _stable_writes(a, b)
+    assert stable == {0x1000: b"same"}
+    assert unjudgeable == {0x3000}
 
 
 # ------------------------------------------------------- judging one input
@@ -442,3 +455,23 @@ def test_a_real_difference_is_still_refuted_before_any_forcing(env):
                      placement(s3["add3"].abi), [[1, 2, 3], [7, 5, 2]])
     assert result.verdict is Verdict.REFUTED
     assert result.forced_attempts == 0
+
+
+def test_a_page_dropped_in_one_version_does_not_refute():
+    """The whole of F30's second half: Q could not settle on a page and K
+    could, and comparing the dictionaries whole made that look like the
+    functions writing different things."""
+    q_a = done(writes={0x1000: b"out", 0x2000: b"garbageA"})
+    q_b = done(writes={0x1000: b"out", 0x2000: b"garbageB"})
+    k_a = done(writes={0x1000: b"out", 0x2000: b"steady"})
+    k_b = done(writes={0x1000: b"out", 0x2000: b"steady"})
+    result = _judge(q_a, q_b, k_a, k_b, place())
+    assert result.verdict is not Verdict.REFUTED
+
+
+def test_a_real_difference_in_written_memory_still_refutes():
+    """The exclusion must not blunt the rule it protects."""
+    q_a = q_b = done(writes={0x1000: b"one"})
+    k_a = k_b = done(writes={0x1000: b"two"})
+    result = _judge(q_a, q_b, k_a, k_b, place())
+    assert result.verdict is Verdict.REFUTED
