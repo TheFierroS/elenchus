@@ -34,9 +34,23 @@ BUF = 0x0000_2000_0000_0000
 # ------------------------------------------------------- hand-built outcomes
 
 
-def done(ret_int=0, ret_float_bits=0, writes=None):
+def done(ret_int=0, ret_float_bits=0, writes=None, ranges=None):
+    """An Outcome for the judging tests.
+
+    A page is 4096 bytes in a real run; these use short strings, so the page
+    is padded and the write ranges default to covering exactly what the test
+    put there - which is what a function that wrote those bytes would have
+    produced.
+    """
+    from elenchus.emulation.harness import PAGE
+    pages, spans = {}, list(ranges or [])
+    for page, content in (writes or {}).items():
+        pages[page] = bytes(content).ljust(PAGE, b"\x00")
+        if ranges is None:
+            spans.append((page, len(content)))
     return Outcome(Status.COMPLETED, ret_int=ret_int,
-                   ret_float_bits=ret_float_bits, writes=writes or {})
+                   ret_float_bits=ret_float_bits, writes=pages,
+                   write_ranges=tuple(spans))
 
 
 def place(kind="int", size=4):
@@ -64,23 +78,39 @@ def test_a_void_return_is_nothing_to_compare():
     assert _stable_return(done(), done(), place("void", 0)) == "void"
 
 
-def test_stable_writes_keep_only_pages_both_seeds_agree_on():
-    a = done(writes={0x1000: b"same", 0x2000: b"garbageA"})
-    b = done(writes={0x1000: b"same", 0x2000: b"garbageB"})
-    stable, unjudgeable = _stable_writes(a, b)
-    assert stable == {0x1000: b"same"}
-    assert unjudgeable == {0x2000}
+def test_only_bytes_the_function_wrote_are_kept():
+    """A page holds 4096 bytes; a function may have written four. The rest is
+    the fill it never touched, and comparing that compares our own pattern."""
+    a = b = done(writes={0x1000: b"out"})
+    stable = _stable_writes(a, b)
+    assert set(stable[0x1000]) == {0, 1, 2}
 
 
-def test_a_page_only_one_seed_wrote_is_unjudgeable():
-    """Not written under the other seed is no steadier than written
-    differently: either way the page turns on garbage and cannot be evidence
-    about the function (F30)."""
-    a = done(writes={0x1000: b"same", 0x3000: b"only under A"})
-    b = done(writes={0x1000: b"same"})
-    stable, unjudgeable = _stable_writes(a, b)
-    assert stable == {0x1000: b"same"}
-    assert unjudgeable == {0x3000}
+def test_a_byte_the_two_seeds_disagree_on_is_dropped():
+    """Three separate one-byte stores: only the one that disagrees goes."""
+    ranges = [(0x1000, 1), (0x1001, 1), (0x1002, 1)]
+    a = done(writes={0x1000: b"oNt"}, ranges=ranges)
+    b = done(writes={0x1000: b"oXt"}, ranges=ranges)
+    stable = _stable_writes(a, b)
+    assert set(stable[0x1000]) == {0, 2}
+
+
+def test_a_store_with_one_garbage_byte_is_garbage_whole():
+    """One instruction writes one value; half of it being garbage makes the
+    value garbage. Page-granular detection missed this when an eight-byte
+    store straddled a page and only its low half landed on the dropped page
+    (F31)."""
+    a = done(writes={0x1000: b"12345678"}, ranges=[(0x1000, 8)])
+    b = done(writes={0x1000: b"1234567X"}, ranges=[(0x1000, 8)])
+    assert _stable_writes(a, b).get(0x1000, {}) == {}
+
+
+def test_a_neighbouring_store_survives_its_neighbour_being_garbage():
+    """The taint spreads over the store, not over the page."""
+    a = done(writes={0x1000: b"AAAAZ"}, ranges=[(0x1000, 4), (0x1004, 1)])
+    b = done(writes={0x1000: b"AAAAQ"}, ranges=[(0x1000, 4), (0x1004, 1)])
+    stable = _stable_writes(a, b)
+    assert set(stable[0x1000]) == {0, 1, 2, 3}
 
 
 # ------------------------------------------------------- judging one input
@@ -294,19 +324,15 @@ def test_a_written_pointer_into_the_image_does_not_refute(env):
 
 
 def test_masking_only_blanks_image_addresses():
-    """The mask must not blank ordinary data that happens to be large, nor
-    pointers into the input buffers, which are at the same address in both
-    versions."""
-    from elenchus.emulation.compare import _mask_image_pointers
+    """The mask must not blank ordinary data that happens to be large, nor a
+    pointer into the input buffers, which is at the same address in both."""
+    from elenchus.emulation.compare import _image_pointer_bytes
     image = [(0x140000000, 0x140100000)]
     inside = (0x140005000).to_bytes(8, "little")
-    outside = (0x2000000000000).to_bytes(8, "little")      # a buffer address
-    data = (12345).to_bytes(8, "little")
-    content = inside + outside + data
-    masked = _mask_image_pointers(content, 0, image)
-    assert masked[0:8] == b"\x00" * 8                      # the image pointer
-    assert masked[8:16] == outside                         # buffer pointer kept
-    assert masked[16:24] == data                           # plain data kept
+    outside = (0x2000000000000).to_bytes(8, "little")
+    content = {i: byte for i, byte in enumerate(inside + outside)}
+    blanked = _image_pointer_bytes(content, content, 0, image)
+    assert blanked == set(range(8))               # the image pointer only
 
 
 # ------------------------------------------- the input-variant rule (F24)
@@ -475,3 +501,14 @@ def test_a_real_difference_in_written_memory_still_refutes():
     k_a = k_b = done(writes={0x1000: b"two"})
     result = _judge(q_a, q_b, k_a, k_b, place())
     assert result.verdict is Verdict.REFUTED
+
+
+def test_a_store_half_outside_comparable_memory_is_not_judged():
+    """dtoa writes eight bytes four below a buffer: the low half lands on a
+    page we never record, so we cannot see it is garbage, and the high half
+    would refute on its own. Half of one value is not a value (F31)."""
+    a = done(writes={0x1000: b"ABCD"}, ranges=[(0x0FFC, 8)])
+    a.partial_writes = ((0x0FFC, 8),)
+    b = done(writes={0x1000: b"ABCD"}, ranges=[(0x0FFC, 8)])
+    b.partial_writes = ((0x0FFC, 8),)
+    assert _stable_writes(a, b).get(0x1000, {}) == {}

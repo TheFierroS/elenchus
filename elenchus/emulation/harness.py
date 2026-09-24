@@ -133,6 +133,17 @@ class Outcome:
     # The conditional jumps this run took, when recording was asked for: what
     # the second tier ranks to choose a branch to force (docs/verifier.md).
     predicates: tuple = ()
+    # Every write the run made, as (address, size, value), when asked for.
+    # Off by default and only used to work out why two versions differ: the
+    # pages alone say what ended up in memory, not who put it there.
+    write_log: tuple = ()
+    # Which bytes each store covered, as (address, size), always. A page says
+    # what memory holds; this says which of it the function put there, and
+    # which store put it - both of which the comparison needs (F31).
+    write_ranges: tuple = ()
+    # Stores that reached outside comparable memory, so only part of the
+    # value they wrote is visible - and part of a value is not one.
+    partial_writes: tuple = ()
 
 
 # The content a page gets is a window into one bounded random block, indexed
@@ -495,12 +506,14 @@ class Machine:
     function had not reached yet.
     """
 
-    def __init__(self, uc, mapped, seed, arena, input_variant=0, record=None):
+    def __init__(self, uc, mapped, seed, arena, input_variant=0, record=None,
+                 log=None):
         self._uc = uc
         self._mapped = mapped
         self._seed = seed
         self._input_variant = input_variant
         self._record = record
+        self._log = log
         self.arena = arena
 
     def arg(self, index: int) -> int:
@@ -538,6 +551,8 @@ class Machine:
         # writes count exactly like the function's own.
         if self._record is not None and data:
             self._record(address, len(data))
+        if self._log is not None and data:
+            self._log.append((address, len(data), None))
 
     def set_return(self, value: int) -> None:
         from unicorn.x86_const import UC_X86_REG_RAX
@@ -557,7 +572,8 @@ class Machine:
         return size
 
 
-def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None) -> None:
+def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None,
+              log=None) -> None:
     """Run a stub in place of the call, then return to the caller.
 
     The call pushed a return address and jumped to the trap; the stub does
@@ -567,7 +583,7 @@ def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None) -> No
     """
     from unicorn.x86_const import UC_X86_REG_RIP, UC_X86_REG_RSP
 
-    stub(Machine(uc, mapped, seed, arena, input_variant, record))
+    stub(Machine(uc, mapped, seed, arena, input_variant, record, log))
 
     rsp = uc.reg_read(UC_X86_REG_RSP)
     return_address = int.from_bytes(uc.mem_read(rsp, 8), "little")
@@ -579,7 +595,8 @@ def run(loader: Loader, address: int, placement: Placement, args,
         seed: int = 1, budget: int = 5_000_000, stub_resolver=None,
         timeout_us: int = DEFAULT_TIMEOUT_US,
         input_variant: int = 0, prepare=None,
-        record_predicates: bool = False, force=None) -> Outcome:
+        record_predicates: bool = False, force=None,
+        record_writes: bool = False) -> Outcome:
     """Run one function and return what it produced.
 
     args are integers positioned by `placement`: an integer, a pointer's
@@ -602,13 +619,20 @@ def run(loader: Loader, address: int, placement: Placement, args,
              "predicates": [],     # PredicateInstance, in the order seen
              "pending": None,      # a branch whose outcome is not known yet
              "selectivity": None,  # the last compare's distance
-             "resume_at": None}    # where a forced branch is being sent
+             "resume_at": None,    # where a forced branch is being sent
+             "write_log": [],      # (address, size, value) when asked for
+             "write_ranges": [],   # (address, size) of every recorded store
+             "partial_writes": []}  # stores reaching outside comparable memory
     try:
         outcome = _run_in(uc, loader, address, placement, args, seed, budget,
                           stub_resolver, timeout_us, input_variant, prepare,
-                          state, record_predicates, force)
+                          state, record_predicates, force, record_writes)
         if record_predicates:
             outcome.predicates = tuple(state["predicates"])
+        if record_writes:
+            outcome.write_log = tuple(state["write_log"])
+        outcome.write_ranges = tuple(state["write_ranges"])
+        outcome.partial_writes = tuple(state["partial_writes"])
         return outcome
     finally:
         # Unicorn holds C-side memory (every mapped page, the hooks) that is
@@ -713,7 +737,7 @@ def _watch_branch(uc, addr, size, state, decoder, force,
 
 def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             timeout_us, input_variant=0, prepare=None, state=None,
-            record_predicates=False, force=None):
+            record_predicates=False, force=None, record_writes=False):
     """The body of one run, on an already-created emulator; run() owns its
     lifetime and releases it. Split out so every return path is covered by
     run()'s finally without repeating the cleanup."""
@@ -797,11 +821,24 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         """
         first = addr & ~(PAGE - 1)
         last = (addr + max(size, 1) - 1) & ~(PAGE - 1)
-        for page in range(first, last + PAGE, PAGE):
-            if _is_handed_out(page):
-                written.add(page)
+        pages = list(range(first, last + PAGE, PAGE))
+        inside = [page for page in pages if _is_handed_out(page)]
+        for page in inside:
+            written.add(page)
+        if not inside:
+            return
+        state["write_ranges"].append((addr, max(size, 1)))
+        if len(inside) != len(pages):
+            # The store reaches into memory that is not ours, so part of the
+            # value it wrote is somewhere we never look. Half of one value is
+            # not a value: what we *can* see of it cannot be judged either,
+            # and is recorded as such rather than compared (F31). dtoa does
+            # exactly this, writing eight bytes four below a buffer.
+            state["partial_writes"].append((addr, max(size, 1)))
 
     def on_write(uc, access, addr, size, value, _):
+        if record_writes:
+            state["write_log"].append((addr, size, value))
         record_write(addr, size)
 
     def on_code(uc, addr, size, _):
@@ -828,7 +865,9 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             uc.emu_stop()
             return
         try:
-            _run_stub(uc, stub, mapped, seed, arena, input_variant, record_write)
+            _run_stub(uc, stub, mapped, seed, arena, input_variant,
+                      record_write,
+                      state["write_log"] if record_writes else None)
         except StubDeclined as exc:
             # The stub exists but cannot serve this call faithfully - a free
             # of a pointer the arena never handed out, a size past the sanity

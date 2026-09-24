@@ -571,3 +571,16 @@ def test_a_write_into_a_given_buffer_is_recorded(fixture):
               budget=50_000)
     assert out.status is Status.COMPLETED
     assert (BUF & ~0xFFF) in out.writes
+
+
+def test_a_store_reaching_outside_the_given_memory_is_marked_partial(fixture):
+    """fill(p, n, v) pointed four bytes below a buffer writes across the
+    boundary: part of what it wrote is somewhere we never look, so the store
+    is recorded as one we cannot judge (F31)."""
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    f = sigs["copy"]                         # memcpy: one store, eight bytes
+    out = run(loader, f.address, placement(f.abi), [BUF - 4, BUF + 0x1000, 8],
+              budget=50_000, stub_resolver=resolver)
+    assert out.status is Status.COMPLETED
+    assert out.partial_writes                # seen, and known to be partial

@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from elenchus.emulation.abi import Placement
-from elenchus.emulation.harness import Loader, Status, run
+from elenchus.emulation.harness import PAGE, Loader, Status, run
 
 # The two fill seeds. Different, both non-zero (zero means input memory, which
 # is filled from the address alone); a value that depends on garbage will
@@ -106,46 +106,108 @@ def _stable_return(a, b, placement: Placement):
     return ("int", masked_a)
 
 
-def _mask_image_pointers(content: bytes, page: int, ranges) -> bytes:
-    """Blank any 8-byte value in `content` that is an address in `ranges`.
+def _image_pointer_bytes(mine, theirs, page, ranges) -> set:
+    """The byte offsets holding an address into either binary's image.
 
     A function that writes a pointer to one of its own globals writes an
     address, and that address differs between -O0 and -O3 exactly as a
-    global's address does (F15) and a returned pointer's does (F18). The
-    value is not data the two versions should agree on, so each aligned
-    8-byte word that falls inside either binary's image is blanked before
-    the comparison. Everything else - the real data - still compares.
+    global's does (F15) and a returned pointer's does (F18). Only image
+    addresses are excluded: a pointer into an input buffer or the arena sits
+    at the same address in both versions and still compares.
 
-    Only image addresses are blanked, not every large number: a pointer into
-    an input buffer or the arena is at the same address in both versions and
-    stays comparable.
+    Both versions' bytes are needed, because the value is only recognisable
+    as a pointer when the eight bytes are all there - and they are checked
+    unaligned as well, since a compiler is free to store one anywhere (F31).
     """
-    out = bytearray(content)
-    for offset in range(0, len(out) - 7, 8):
-        value = int.from_bytes(out[offset:offset + 8], "little")
-        if any(low <= value < high for low, high in ranges):
-            out[offset:offset + 8] = b"\x00" * 8
-    return bytes(out)
+    blanked = set()
+    for start in sorted(set(mine) | set(theirs)):
+        window = range(start, start + 8)
+        if not all(offset in mine and offset in theirs for offset in window):
+            continue
+        for content in (mine, theirs):
+            value = int.from_bytes(bytes(content[o] for o in window), "little")
+            if any(low <= value < high for low, high in ranges):
+                blanked.update(window)
+                break
+    return blanked
+
+
+def _touched(outcome) -> dict:
+    """Which bytes of which pages a run actually wrote: page -> set of offsets.
+
+    A recorded page holds 4096 bytes, but a function may have written four of
+    them. The rest is the fill it never touched, and comparing that is
+    comparing our own pattern - which is how -O0 zeroing a struct's padding
+    while -O3 leaves it alone came out as the two functions disagreeing
+    (F31).
+    """
+    touched = {}
+    for address, size in outcome.write_ranges:
+        for offset in range(address, address + size):
+            page = offset & ~(PAGE - 1)
+            if page in outcome.writes:
+                touched.setdefault(page, set()).add(offset - page)
+    return touched
+
+
+def _garbage_bytes(a, b) -> dict:
+    """The bytes one version could not settle on, page -> set of offsets.
+
+    A byte that differs between the two seeds came from memory the function
+    read but never wrote. And a *store* with any such byte in it is garbage
+    whole: one machine instruction writes one value, so half of it being
+    garbage makes the value garbage - which is what page-granular detection
+    missed when an eight-byte store straddled a page and only its low half
+    landed on the page that got dropped (F31).
+    """
+    garbage = {}
+    for page, content in a.writes.items():
+        other = b.writes.get(page)
+        if other is None:
+            garbage.setdefault(page, set()).update(range(PAGE))
+            continue
+        differing = {i for i in range(PAGE) if content[i] != other[i]}
+        if differing:
+            garbage.setdefault(page, set()).update(differing)
+    for page in b.writes:
+        if page not in a.writes:
+            garbage.setdefault(page, set()).update(range(PAGE))
+
+    # A store only half of which we can see is not judgeable at all.
+    for outcome in (a, b):
+        for address, size in outcome.partial_writes:
+            for offset in range(address, address + size):
+                garbage.setdefault(offset & ~(PAGE - 1), set()).add(
+                    offset & (PAGE - 1))
+
+    # Spread each tainted byte over the whole store that wrote it.
+    for outcome in (a, b):
+        for address, size in outcome.write_ranges:
+            span = [(offset & ~(PAGE - 1), offset & (PAGE - 1))
+                    for offset in range(address, address + size)]
+            if any(within in garbage.get(page, ()) for page, within in span):
+                for page, within in span:
+                    garbage.setdefault(page, set()).add(within)
+    return garbage
 
 
 def _stable_writes(a, b):
-    """What one version wrote, and which of it could not be trusted.
+    """What one version wrote and can stand behind, page -> {offset: byte}.
 
-    Returns (stable, unjudgeable). A page both seeds wrote identically is the
-    memory the function genuinely produced. A page whose content differs
-    between the seeds was filled from garbage the version read, and a page
-    only one seed wrote at all is no steadier - neither can be compared, and
-    both are named so the caller can leave them out rather than refute on
-    them (F30).
+    Only bytes the function actually wrote, and only those the two seeds
+    agreed on, byte by byte and store by store.
     """
-    stable, unjudgeable = {}, set()
-    for page, content in a.writes.items():
-        if page in b.writes and b.writes[page] == content:
-            stable[page] = content
-        else:
-            unjudgeable.add(page)
-    unjudgeable.update(page for page in b.writes if page not in a.writes)
-    return stable, unjudgeable
+    touched = _touched(a)
+    garbage = _garbage_bytes(a, b)
+    stable = {}
+    for page, offsets in touched.items():
+        content = a.writes[page]
+        bad = garbage.get(page, ())
+        kept = {offset: content[offset] for offset in offsets
+                if offset not in bad}
+        if kept:
+            stable[page] = kept
+    return stable
 
 
 def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputResult:
@@ -172,23 +234,21 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputRe
     else:
         ret_verdict = "agree"
 
-    q_writes, q_unjudgeable = _stable_writes(q_a, q_b)
-    k_writes, k_unjudgeable = _stable_writes(k_a, k_b)
-    # A page either version could not settle on is not evidence about either.
-    # Comparing the dictionaries whole made a page dropped as garbage in one
-    # version and kept in the other look like a difference in what the
-    # functions wrote, which refuted true claims (F30).
-    for page in q_unjudgeable | k_unjudgeable:
-        q_writes.pop(page, None)
-        k_writes.pop(page, None)
-    if image_ranges:
-        q_writes = {p: _mask_image_pointers(c, p, image_ranges)
-                    for p, c in q_writes.items()}
-        k_writes = {p: _mask_image_pointers(c, p, image_ranges)
-                    for p, c in k_writes.items()}
-    if q_writes != k_writes:
-        pages = sorted(set(q_writes) | set(k_writes))
-        differing = [hex(p) for p in pages if q_writes.get(p) != k_writes.get(p)]
+    q_writes = _stable_writes(q_a, q_b)
+    k_writes = _stable_writes(k_a, k_b)
+    # Only bytes *both* versions wrote and both could stand behind are
+    # evidence. A byte one wrote and the other never touched is that other's
+    # padding, and padding is indeterminate in C - comparing it made -O0
+    # zeroing a struct disagree with -O3 leaving it alone (F31).
+    differing = []
+    for page in set(q_writes) & set(k_writes):
+        mine, theirs = q_writes[page], k_writes[page]
+        shared = set(mine) & set(theirs)
+        if image_ranges:
+            shared -= _image_pointer_bytes(mine, theirs, page, image_ranges)
+        if any(mine[offset] != theirs[offset] for offset in shared):
+            differing.append(hex(page))
+    if differing:
         return InputResult(Verdict.REFUTED, "written memory differs",
                            {"pages": differing})
 

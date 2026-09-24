@@ -1015,6 +1015,39 @@ consecutive rounds of work; three thousand said thirteen. A rate of 0.4%
 needs thousands of pairs to show itself at all, and the rule this project
 rests on is exactly the kind that fails rarely and matters every time.
 
+## Byte-precise writes: ten of the thirteen (F31)
+
+F30 fixed one of the thirteen. The write log - added to stop guessing about
+the other twelve - showed the traces of the two builds were *identical in
+structure*: the same twelve stores to the same places. The differences were
+in what those stores contained, and reading them byte by byte gave three
+rules, each of which a page-granular comparison could not express.
+
+**Only bytes the function wrote.** A recorded page holds 4096 bytes and a
+function may have written four; the rest is the fill it never touched.
+Comparing that compares our own pattern.
+
+**Only bytes *both* versions wrote.** box2d showed why: -O0 zeroed a struct's
+padding and -O3 left it holding the fill, and we called that the two
+functions disagreeing. Padding is indeterminate in C, and a byte one version
+never touched is that version's padding whatever it holds.
+
+**A store with one garbage byte is garbage whole.** One instruction writes
+one value. dtoa's `__g__fmt` wrote eight bytes four below a buffer, and the
+low half - seed-dependent, so garbage - landed on one page while the high
+half landed on the next; page-granular detection dropped the page with the
+garbage and kept the page that refuted. The taint now spreads over the store.
+
+**And a store only half of which we can see cannot be judged either.** The
+same eight bytes, when they straddle out of comparable memory, leave part of
+the value somewhere we never look - `__freedtoa` writes four bytes below the
+first buffer. Half of one value is not a value.
+
+Ten of the thirteen are gone: both dtoa families, both box2d cases,
+leptonica's sort, jerryscript's descriptor. The image-pointer mask is now a
+set of byte offsets and checks unaligned positions too, since a compiler may
+store a pointer anywhere.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
