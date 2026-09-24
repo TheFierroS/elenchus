@@ -1109,6 +1109,48 @@ through an address we invented (F32), and now outputs of a run that read some
 (F33). Every one of them is the same sentence said more precisely - a
 difference we caused is not evidence.
 
+## The other half of the measurement: R0 (F34)
+
+Four rounds of work took V0's false refutations from thirteen to zero, and
+each round made the verifier more careful about what counts as evidence. None
+of them measured what that carefulness cost, because nothing in this project
+measured it: **V0 only has true pairs.** A verifier that refuses to refute
+anything passes V0 perfectly and is worthless.
+
+R0 is the other half. It builds pairs that are wrong by construction - one
+function at -O0 against a different function from the same package at -O3 -
+and asks what the verdict is. Every refutation is correct; every survival is
+a miss.
+
+The first measurement, 300 wrong pairs:
+
+| | refuted | inconclusive | survived |
+|---|---|---|---|
+| before F32 and F33 | 16.7% | 59.3% | 24.0% |
+| after | **12.7%** | 62.3% | 25.0% |
+
+So the two taint rules cost four points of refutation power: twelve wrong
+pairs in three hundred that used to be caught now go unjudged. That is the
+price of the thirteen false refutations, and it is the right way round - a
+miss costs an opportunity, a false refutation costs the verifier's word.
+Written down so the next change to the comparison is made knowing it.
+
+**And the measurement found something the V0 side could not see.** A quarter
+of the wrong pairs *survived*, and a sixth of those were pairs where neither
+function produced anything observable at all: a void return, nothing written,
+on both sides. The verifier was calling that agreement. It is not - two
+functions that each declined to show us anything have not agreed on anything,
+and that is exactly what inconclusive is for. A return that is never compared
+(void, or a pointer by F18) is not an observation, and neither is a page with
+no comparable byte in it; agreement now requires at least one of the two.
+
+That change lowers V0's coverage a little, honestly: pairs that agreed on
+doing nothing were being counted.
+
+`elenchus verify-r0` is permanent, beside `verify-v0`. They are read
+together, and the failure mode they exist to catch is a change that cleans
+one while quietly ruining the other.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

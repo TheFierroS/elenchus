@@ -26,6 +26,7 @@ from elenchus.corpus.gaps import cmd_corpus_gap, known_gaps
 from elenchus.corpus.prune import cmd_prune_corpus
 from elenchus.corpus.refresh import cmd_refresh_truth
 from elenchus.db import connect, finish_run, set_run_tool_version, start_run
+from elenchus.emulation.r0 import cmd_verify_r0
 from elenchus.emulation.v0 import cmd_verify_v0
 from elenchus.encoder.cli import cmd_train, cmd_vocab
 from elenchus.evaluation.baselines import all_baselines
@@ -497,6 +498,24 @@ def build_parser():
     v0.add_argument("--out", default=None,
                     help="write the full result to this JSON file")
     v0.set_defaults(func=cmd_verify_v0)
+
+    # R0 is V0's other half: V0 asks whether the verifier ever refutes a
+    # claim that is true, R0 whether it can refute one that is false. A
+    # verifier that refuses to refute anything passes V0 perfectly and is
+    # useless, so the two are read together (elenchus/emulation/r0.py).
+    r0 = sub.add_parser(
+        "verify-r0",
+        help="measure how well the verifier catches a false claim (R0)",
+    )
+    r0.add_argument("--count", type=int, default=300,
+                    help="how many deliberately wrong pairs to sample")
+    r0.add_argument("--seed", type=int, default=0,
+                    help="the sample seed, recorded with the result")
+    r0.add_argument("--budget", type=int, default=5_000,
+                    help="instruction budget per run")
+    r0.add_argument("--out", default=None,
+                    help="write the full result to this JSON file")
+    r0.set_defaults(func=cmd_verify_r0)
 
     check = sub.add_parser("check", help="run consistency checks on the database")
     check.add_argument(

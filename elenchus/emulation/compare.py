@@ -264,11 +264,13 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputRe
     # padding, and padding is indeterminate in C - comparing it made -O0
     # zeroing a struct disagree with -O3 leaving it alone (F31).
     differing = []
+    compared_bytes = 0
     for page in set(q_writes) & set(k_writes):
         mine, theirs = q_writes[page], k_writes[page]
         shared = set(mine) & set(theirs)
         if image_ranges:
             shared -= _image_pointer_bytes(mine, theirs, page, image_ranges)
+        compared_bytes += len(shared)
         if any(mine[offset] != theirs[offset] for offset in shared):
             differing.append(hex(page))
     if differing:
@@ -283,6 +285,18 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputRe
         # Nothing could be compared: the return was garbage-dependent and no
         # memory was written. This input decides nothing.
         return InputResult(Verdict.INCONCLUSIVE, "return depended on the fill")
+
+    # A return that is never compared - void, or a pointer (F18) - is not an
+    # observation. Neither is a page nobody wrote a comparable byte into. Two
+    # functions that both did nothing we can see have not agreed on anything:
+    # they have each declined to show us anything, which is what inconclusive
+    # is for. Measured on deliberately wrong pairs, this was a sixth of the
+    # ones the verifier called survived (F34).
+    saw_return = (ret_verdict == "agree"
+                  and placement.ret.kind not in ("void", "pointer"))
+    if not saw_return and compared_bytes == 0:
+        return InputResult(Verdict.INCONCLUSIVE,
+                           "neither produced anything observable")
 
     return InputResult(Verdict.SURVIVED, "agreed on this input")
 

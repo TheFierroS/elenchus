@@ -273,7 +273,10 @@ def test_a_pointer_return_does_not_refute(env):
     This is the class of false refutation V0 found (utf8proc_version,
     opus_strerror, and six more, all pointer returns)."""
     result = compare_named(env, "banner", "banner", [[], [], []])
-    assert result.verdict is Verdict.SURVIVED
+    # Not refuted is the point. It is not *survived* either: a pointer return
+    # is never compared and banner writes nothing, so there is nothing to have
+    # agreed on (F34).
+    assert result.verdict is not Verdict.REFUTED
 
 
 def test_a_float_return_is_masked_to_its_width():
@@ -562,3 +565,31 @@ def test_a_write_difference_with_a_steady_return_still_refutes():
     q_a = q_b = done(ret_int=7, writes={0x1000: b"\x00"})
     k_a = k_b = done(ret_int=7, writes={0x1000: b"\x01"})
     assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.REFUTED
+
+
+def test_agreeing_on_nothing_is_not_agreeing():
+    """Two runs that both returned void and wrote nothing have not agreed on
+    anything - they have each declined to show us anything. Measured on
+    deliberately wrong pairs, this was a sixth of what the verifier called
+    survived (F34)."""
+    from elenchus.emulation.abi import Placement, Return
+    void = Placement(args=(), ret=Return("void", 0))
+    q_a = q_b = done()
+    k_a = k_b = done()
+    result = _judge(q_a, q_b, k_a, k_b, void)
+    assert result.verdict is Verdict.INCONCLUSIVE
+    assert "observable" in result.reason
+
+
+def test_a_written_byte_is_an_observation_even_with_a_void_return():
+    from elenchus.emulation.abi import Placement, Return
+    void = Placement(args=(), ret=Return("void", 0))
+    q_a = q_b = done(writes={0x1000: b"out"})
+    k_a = k_b = done(writes={0x1000: b"out"})
+    assert _judge(q_a, q_b, k_a, k_b, void).verdict is Verdict.SURVIVED
+
+
+def test_a_compared_return_is_an_observation_with_no_writes():
+    q_a = q_b = done(ret_int=7)
+    k_a = k_b = done(ret_int=7)
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.SURVIVED
