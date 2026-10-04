@@ -228,3 +228,39 @@ def test_run_v0_produces_three_layers_and_finds_a_chain(tmp_path):
     # and no layer refuted a true pair
     for report in (bare, stubbed, chained):
         assert report.agreement.get(Bucket.DISAGREED, 0) == 0
+
+
+def test_the_parallel_path_buckets_every_pair_the_same_way():
+    """V0's report must not depend on how many processes judged it.
+
+    Runs the fixture functions through judge_true_pair both ways and compares
+    the folded reports bucket for bucket. This is the end-to-end form of
+    test_parallel's property: the mapping preserves order, and a task carries
+    everything its pair needs, so a worker reaches the verdict the serial
+    path would.
+    """
+    from elenchus.emulation.parallel import mapped
+    from elenchus.emulation.v0 import V0_BUDGET, judge_true_pair
+
+    s0 = {f.name: f for f in ground_truth(FIXTURES / "cases_O0.dll")}
+    s3 = {f.name: f for f in ground_truth(FIXTURES / "cases_O3.dll")}
+    names = [n for n in ("add3", "count_nonzero", "banner", "null_read",
+                         "publish") if n in s0 and n in s3]
+    assert len(names) >= 3, "the fixtures changed; this test needs a few cases"
+
+    tasks = [("fixtures", name,
+              str(FIXTURES / "cases_O0.dll"), s0[name].address,
+              json.dumps(s3[name].abi),
+              str(FIXTURES / "cases_O3.dll"), s3[name].address,
+              None, None, V0_BUDGET)
+             for name in names]
+
+    def fold(results):
+        report = V0Report(layer="chained")
+        for _found, _abandoned, per_layer in results:
+            report.add(per_layer[2])
+        return report.buckets, report.agreement
+
+    serial = fold(mapped(judge_true_pair, tasks, workers=1))
+    parallel = fold(mapped(judge_true_pair, tasks, workers=2))
+    assert serial == parallel

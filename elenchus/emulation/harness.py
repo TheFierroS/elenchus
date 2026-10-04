@@ -334,15 +334,28 @@ class StubDeclined(Exception):
     """
 
 
+_STACK_BLOCKS: dict[int, bytes] = {}
+
+
 def _stack_garbage(seed: int) -> bytes:
     """The bytes a fresh stack holds, deterministic per seed.
 
     Generated with random.Random, which is reproducible across runs and
-    platforms for a given seed, and fast enough to do per run: filling a
-    megabyte word by word in Python would cost more than the emulation.
+    platforms for a given seed, and kept per seed rather than made again for
+    every run. The first version made it each time, on the grounds that it
+    was fast enough; measured, it was 2.54 ms of a 6.5 ms run - 39% of the
+    whole thing, to produce the same megabyte over and over. A comparison
+    uses two seeds, so this holds two blocks and nothing grows.
+
+    Same shape as _FILL_BLOCKS above, and for the same reason: a bounded
+    block generated once, indexed by the seed that defines it.
     """
     import random
-    return random.Random(f"elenchus-stack-{seed}").randbytes(STACK_SIZE)
+    block = _STACK_BLOCKS.get(seed)
+    if block is None:
+        block = random.Random(f"elenchus-stack-{seed}").randbytes(STACK_SIZE)
+        _STACK_BLOCKS[seed] = block
+    return block
 
 
 def _fill_seed_for(address: int, seed: int, input_variant: int = 0) -> int:

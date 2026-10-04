@@ -497,6 +497,12 @@ def build_parser():
                     help="instruction budget per run")
     v0.add_argument("--out", default=None,
                     help="write the full result to this JSON file")
+    v0.add_argument(
+        "--workers", type=int, default=None,
+        help="judge pairs in this many processes (default: half the cores, "
+             "capped at 8; 1 is the serial path and gives identical results)",
+    )
+
     v0.set_defaults(func=cmd_verify_v0)
 
     # R0 is V0's other half: V0 asks whether the verifier ever refutes a
@@ -515,6 +521,11 @@ def build_parser():
                     help="instruction budget per run")
     r0.add_argument("--out", default=None,
                     help="write the full result to this JSON file")
+    r0.add_argument(
+        "--workers", type=int, default=None,
+        help="judge pairs in this many processes (default: half the cores, "
+             "capped at 8; 1 is the serial path and gives identical results)",
+    )
     r0.set_defaults(func=cmd_verify_r0)
 
     check = sub.add_parser("check", help="run consistency checks on the database")

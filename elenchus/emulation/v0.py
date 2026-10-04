@@ -22,13 +22,16 @@ from __future__ import annotations
 
 import json
 import random
-from collections import Counter
+import sys
+import time
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 
 from elenchus.emulation.abi import Undecidable, placement
 from elenchus.emulation.compare import Verdict, compare
 from elenchus.emulation.harness import Status
 from elenchus.emulation.inputs import BUFFER_BASE, input_vectors
+from elenchus.emulation.parallel import mapped
 
 # The starting instruction budget. V0 measures whether it is right: a pair
 # that does not finish under it is budget-exhausted, and the distribution of
@@ -285,71 +288,141 @@ def bucket_pair(o0_loader, o0_addr, o3_loader, o3_addr, abi_json,
     return _inconclusive_bucket(result)
 
 
-def run_v0(conn, count=3000, seed=0, budget=V0_BUDGET, split="train"):
-    """Run V0 both layers on a sample and return (bare, stubbed) reports.
+# The binaries this process has parsed, most recently used last. Bounded
+# because a worker now lives for the whole run: parsing a PE costs real time,
+# so a cache is worth having, but one that grew with the run would hold every
+# binary in the sample. The pairs are handed out grouped by binary
+# (parallel.mapped's order_by), so a handful is all that is ever live, and the
+# retained pefile objects of F20 cannot come back through the side door.
+LOADER_CACHE = 4
+_LOADERS: OrderedDict[str, object] = OrderedDict()
 
-    Loads each binary once and reuses it across the pairs that live in it, so
-    a package's -O0 and -O3 files are opened once each rather than per pair.
-    Needs the corpus binaries on disk; this is the command's body.
-    """
+
+def _loader_for(path):
     from elenchus.emulation.harness import Loader
+    loader = _LOADERS.get(path)
+    if loader is None:
+        loader = Loader(path)
+        _LOADERS[path] = loader
+        while len(_LOADERS) > LOADER_CACHE:
+            _LOADERS.popitem(last=False)
+    else:
+        _LOADERS.move_to_end(path)
+    return loader
+
+
+def judge_true_pair(task):
+    """One true pair through all three layers, as (chains_found, results).
+
+    Module-level and taking only plain data, so it can be handed to a worker
+    process. Returns a PairResult per layer in the order bare, stubbed,
+    chained, plus whether a chain was found and how many layers abandoned one.
+    """
     from elenchus.emulation.stubs import resolver
 
+    (package, name, o0_path, o0_address, o0_abi, o3_path, o3_address,
+     o0_chain, o3_chain, budget) = task
+
+    try:
+        o0_loader = _loader_for(o0_path)
+        o3_loader = _loader_for(o3_path)
+    except Exception as exc:                           # noqa: BLE001
+        failed = PairResult(package, name, Bucket.LOAD_FAILED, detail=str(exc))
+        return False, 0, [failed, failed, failed]
+
+    both_chains = o0_chain is not None and o3_chain is not None
+    abandoned = 0
+    results = []
+    for res, chains in ((None, (None, None)),
+                        (resolver, (None, None)),
+                        (resolver, (o0_chain, o3_chain) if both_chains
+                         else (None, None))):
+        result = bucket_pair(o0_loader, o0_address, o3_loader, o3_address,
+                             o0_abi, resolver=res, budget=budget,
+                             o0_chain=chains[0], o3_chain=chains[1])
+        if result.bucket == Bucket.CHAIN_FAILED and chains[0] is not None:
+            # A chain is an attempt to improve, not a precondition. If the
+            # initialiser cannot run, fall back to testing the function
+            # unchained rather than losing a pair that was judged before:
+            # the first run of the chained layer cost 0.8 points by turning
+            # completed pairs into chain failures.
+            result = bucket_pair(o0_loader, o0_address, o3_loader,
+                                 o3_address, o0_abi, resolver=res,
+                                 budget=budget)
+            abandoned += 1
+        result.package, result.name = package, name
+        results.append(result)
+    return both_chains, abandoned, results
+
+
+def _progress(done, total, started):
+    """A line that is overwritten, so a long run shows it is still moving.
+
+    V0 prints nothing until it is finished, which on 3000 pairs is half an
+    hour of not knowing whether it is working or wedged.
+    """
+    elapsed = time.time() - started
+    rate = done / elapsed if elapsed else 0
+    left = (total - done) / rate if rate else 0
+    print(f"\r  {done}/{total} pairs  {elapsed / 60:.1f} min elapsed  "
+          f"{rate:.1f} pairs/s  ~{left / 60:.0f} min left   ",
+          end="", file=sys.stderr, flush=True)
+    if done == total:
+        print(file=sys.stderr)
+
+
+def run_v0(conn, count=3000, seed=0, budget=V0_BUDGET, split="train",
+           workers=1):
+    """Run V0's three layers on a sample and return (bare, stubbed, chained).
+
+    Needs the corpus binaries on disk; this is the command's body. Each
+    process keeps its own cache of parsed binaries, so a package's -O0 and
+    -O3 files are opened once per worker rather than once per pair.
+
+    workers > 1 spreads the pairs over processes. The buckets and their order
+    do not change with it: each pair is judged from its own task and the
+    results come back in the tasks' order (parallel.mapped).
+    """
+    print("  sampling pairs...", file=sys.stderr, flush=True)
     pairs = sample_pairs(conn, split=split, count=count, seed=seed)
-    loaders = {}
-
-    def loader_for(path):
-        if path not in loaders:
-            loaders[path] = Loader(path)
-        return loaders[path]
-
+    print("  indexing siblings for the constructor chain...",
+          file=sys.stderr, flush=True)
     siblings = siblings_by_file(conn, split=split)
+
+    tasks = []
+    for (package, decl, name), o0, o3 in pairs:
+        # Each side's chain comes from its own binary's siblings, so a
+        # context holding a pointer into the binary that built it stays valid
+        # (docs/verifier.md, constructor chains). Resolved here rather than in
+        # the worker, because the sibling index is one large object and the
+        # chain it yields is a few values.
+        tasks.append((
+            package, name,
+            o0["path"], o0["address"], o0["abi"],
+            o3["path"], o3["address"],
+            chain_for(name, o0["abi"], siblings.get((package, decl, "O0"), [])),
+            chain_for(name, o3["abi"], siblings.get((package, decl, "O3"), [])),
+            budget,
+        ))
 
     bare = V0Report(layer="bare")
     stubbed = V0Report(layer="stubbed")
     chained = V0Report(layer="chained")
-    for (package, decl, name), o0, o3 in pairs:
-        try:
-            o0_loader = loader_for(o0["path"])
-            o3_loader = loader_for(o3["path"])
-        except Exception as exc:                       # noqa: BLE001
-            for report in (bare, stubbed, chained):
-                report.add(PairResult(package, name, Bucket.LOAD_FAILED,
-                                      detail=str(exc)))
-            continue
+    print(f"  {len(tasks)} pairs x 3 layers over {workers} worker(s)",
+          file=sys.stderr, flush=True)
+    started = time.time()
 
-        # Each side's chain comes from its own binary's siblings, so a
-        # context holding a pointer into the binary that built it stays valid
-        # (docs/verifier.md, constructor chains).
-        o0_chain = chain_for(name, o0["abi"],
-                             siblings.get((package, decl, "O0"), []))
-        o3_chain = chain_for(name, o3["abi"],
-                             siblings.get((package, decl, "O3"), []))
-        both_chains = o0_chain is not None and o3_chain is not None
-        if both_chains:
+    def tick(done, total):
+        if done <= 5 or done % 25 == 0 or done == total:
+            _progress(done, total, started)
+
+    for found, abandoned, results in mapped(judge_true_pair, tasks, workers,
+                                            order_by=lambda task: task[2],
+                                            on_result=tick):
+        if found:
             chained.chains_found += 1
-
-        for report, res, chains in (
-                (bare, None, (None, None)),
-                (stubbed, resolver, (None, None)),
-                (chained, resolver,
-                 (o0_chain, o3_chain) if both_chains else (None, None))):
-            result = bucket_pair(o0_loader, o0["address"], o3_loader,
-                                 o3["address"], o0["abi"], resolver=res,
-                                 budget=budget,
-                                 o0_chain=chains[0], o3_chain=chains[1])
-            if (result.bucket == Bucket.CHAIN_FAILED
-                    and chains[0] is not None):
-                # A chain is an attempt to improve, not a precondition. If the
-                # initialiser cannot run, fall back to testing the function
-                # unchained rather than losing a pair that was judged before:
-                # the first run of the chained layer cost 0.8 points by
-                # turning completed pairs into chain failures.
-                result = bucket_pair(o0_loader, o0["address"], o3_loader,
-                                     o3["address"], o0["abi"], resolver=res,
-                                     budget=budget)
-                report.chains_abandoned += 1
-            result.package, result.name = package, name
+        chained.chains_abandoned += abandoned
+        for report, result in zip((bare, stubbed, chained), results):
             report.add(result)
     return bare, stubbed, chained
 
@@ -404,10 +477,18 @@ def cmd_verify_v0(args):
     import json as _json
 
     from elenchus.db import connect
+    from elenchus.emulation.parallel import default_workers
+
+    # The flag is left unset by default so the number is chosen from the
+    # machine rather than written into the command line; 1 is the serial
+    # path and gives the same report.
+    if getattr(args, "workers", None) is None:
+        args.workers = default_workers()
+    print(f"[workers: {args.workers}]")
 
     conn = connect(args.db)
     bare, stubbed, chained = run_v0(conn, count=args.count, seed=args.seed,
-                                    budget=args.budget)
+                                    budget=args.budget, workers=args.workers)
     _print_report(bare)
     _print_report(stubbed)
     _print_report(chained)
@@ -432,6 +513,7 @@ def cmd_verify_v0(args):
     if args.out:
         payload = {
             "count": args.count, "seed": args.seed, "budget": args.budget,
+            "workers": args.workers,
             "bare": _report_dict(bare), "stubbed": _report_dict(stubbed),
             "chained": _report_dict(chained),
         }
