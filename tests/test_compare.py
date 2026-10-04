@@ -326,16 +326,78 @@ def test_a_written_pointer_into_the_image_does_not_refute(env):
     assert result.verdict is Verdict.SURVIVED
 
 
-def test_masking_only_blanks_image_addresses():
+def test_masking_only_blanks_addresses_we_did_not_hand_out():
     """The mask must not blank ordinary data that happens to be large, nor a
     pointer into the input buffers, which is at the same address in both."""
-    from elenchus.emulation.compare import _image_pointer_bytes
+    from elenchus.emulation.compare import _foreign_pointer_bytes
     image = [(0x140000000, 0x140100000)]
     inside = (0x140005000).to_bytes(8, "little")
     outside = (0x2000000000000).to_bytes(8, "little")
     content = {i: byte for i, byte in enumerate(inside + outside)}
-    blanked = _image_pointer_bytes(content, content, 0, image)
+    blanked = _foreign_pointer_bytes(content, content, 0, image)
     assert blanked == set(range(8))               # the image pointer only
+
+
+def test_the_stack_is_a_region_that_does_not_correspond():
+    """A pointer into the stack is an address, like a pointer into the image.
+
+    -O0 and -O3 size their frames differently, so a struct field holding a
+    back-pointer to the caller's frame holds a different value in the two
+    builds - for a reason that is the compiler's, not the function's (F35).
+    """
+    from elenchus.emulation.compare import (
+        _foreign_pointer_bytes,
+        foreign_ranges,
+    )
+    from elenchus.emulation.harness import ARENA_BASE, STACK_TOP
+
+    class FakeLoader:
+        def __init__(self, base, size):
+            self.base, self.size = base, size
+
+    ranges = foreign_ranges(FakeLoader(0x140000000, 0x100000),
+                            FakeLoader(0x180000000, 0x100000))
+
+    stack = (STACK_TOP - 0x2080).to_bytes(8, "little")
+    arena = (ARENA_BASE + 0x1720).to_bytes(8, "little")
+    content = {i: byte for i, byte in enumerate(stack + arena)}
+    blanked = _foreign_pointer_bytes(content, content, 0, ranges)
+    assert blanked == set(range(8))     # the stack pointer, not the arena one
+
+
+def test_a_written_stack_pointer_does_not_refute():
+    """libspng/compress2, the last false refutation V0 found.
+
+    zlib's deflateInit stores `s->strm = strm` into the deflate_state it
+    allocated, a back-pointer to the z_stream in compress2's own frame. -O0
+    put that frame at ...df80 and -O3 at ...df50, so one byte of the stored
+    address differed and a true claim was refuted. The 4 bytes of real state
+    beside it agree and must still be compared.
+    """
+    from elenchus.emulation.compare import foreign_ranges
+    from elenchus.emulation.harness import ARENA_BASE, STACK_TOP
+
+    class FakeLoader:
+        def __init__(self, base, size):
+            self.base, self.size = base, size
+
+    images = ((0x140000000, 0x140100000), (0x180000000, 0x180100000))
+    ranges = foreign_ranges(FakeLoader(0x140000000, 0x100000),
+                            FakeLoader(0x180000000, 0x100000))
+
+    def state(frame):
+        return {ARENA_BASE: (STACK_TOP - frame).to_bytes(8, "little")
+                + (0x2A).to_bytes(4, "little")}
+
+    q = [done(writes=state(0x2080)), done(writes=state(0x2080))]
+    k = [done(writes=state(0x20B0)), done(writes=state(0x20B0))]
+
+    assert _judge(*q, *k, place(), ranges).verdict is Verdict.SURVIVED
+
+    # Mutation: with the stack left out of the ranges, exactly this pair is
+    # refuted again. The test fails if the rule is removed, which is the
+    # point of writing it.
+    assert _judge(*q, *k, place(), images).verdict is Verdict.REFUTED
 
 
 # ------------------------------------------- the input-variant rule (F24)

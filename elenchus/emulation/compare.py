@@ -38,7 +38,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from elenchus.emulation.abi import Placement
-from elenchus.emulation.harness import PAGE, Loader, Status, run
+from elenchus.emulation.harness import (
+    PAGE,
+    STACK_SIZE,
+    STACK_TOP,
+    Loader,
+    Status,
+    run,
+)
 
 # The two fill seeds. Different, both non-zero (zero means input memory, which
 # is filled from the address alone); a value that depends on garbage will
@@ -106,14 +113,37 @@ def _stable_return(a, b, placement: Placement):
     return ("int", masked_a)
 
 
-def _image_pointer_bytes(mine, theirs, page, ranges) -> set:
-    """The byte offsets holding an address into either binary's image.
+def foreign_ranges(q_loader, k_loader):
+    """The regions whose layout does not correspond between the two builds.
+
+    Only two things sit at the same address in both versions: the input
+    buffers and the arena, which the harness hands out itself. Everything
+    else a pointer can point at is somewhere the two builds lay out
+    differently - each binary's own image, and the stack, whose frames -O0
+    and -O3 size differently. An address into one of those is not data and
+    cannot be compared (F35).
+    """
+    return (
+        (q_loader.base, q_loader.base + q_loader.size),
+        (k_loader.base, k_loader.base + k_loader.size),
+        (STACK_TOP - STACK_SIZE, STACK_TOP),
+    )
+
+
+def _foreign_pointer_bytes(mine, theirs, page, ranges) -> set:
+    """The byte offsets holding an address the harness did not hand out.
 
     A function that writes a pointer to one of its own globals writes an
     address, and that address differs between -O0 and -O3 exactly as a
-    global's does (F15) and a returned pointer's does (F18). Only image
-    addresses are excluded: a pointer into an input buffer or the arena sits
-    at the same address in both versions and still compares.
+    global's does (F15) and a returned pointer's does (F18). The same is true
+    of a pointer into the stack: zlib's `deflateInit` stores `s->strm = strm`,
+    a back-pointer to the `z_stream` in its caller's frame, and -O0 and -O3
+    place that frame differently, so one byte of the stored address differs
+    and a true claim was refuted (F35).
+
+    A pointer into an input buffer or the arena still compares: those are at
+    the same address in both versions, which is what makes them comparable
+    memory in the first place.
 
     Both versions' bytes are needed, because the value is only recognisable
     as a pointer when the eight bytes are all there - and they are checked
@@ -223,7 +253,8 @@ def _invented(*outcomes) -> bool:
     return any(getattr(outcome, "read_invented", False) for outcome in outcomes)
 
 
-def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputResult:
+def _judge(q_a, q_b, k_a, k_b, placement: Placement,
+           foreign=()) -> InputResult:
     """Compare the two versions on one input, each already run twice."""
     # Any run that did not complete makes the input inconclusive. Carry the
     # first non-completed status exactly, so the caller buckets on the enum
@@ -268,8 +299,8 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement, image_ranges=()) -> InputRe
     for page in set(q_writes) & set(k_writes):
         mine, theirs = q_writes[page], k_writes[page]
         shared = set(mine) & set(theirs)
-        if image_ranges:
-            shared -= _image_pointer_bytes(mine, theirs, page, image_ranges)
+        if foreign:
+            shared -= _foreign_pointer_bytes(mine, theirs, page, foreign)
         compared_bytes += len(shared)
         if any(mine[offset] != theirs[offset] for offset in shared):
             differing.append(hex(page))
@@ -364,7 +395,7 @@ FORCED_INPUTS = 1
 
 def _forced_agreement(q_loader, q_address, k_loader, k_address, placement,
                       args, budget, stub_resolver, q_prepare, k_prepare,
-                      image_ranges, seed) -> tuple[int, int]:
+                      foreign, seed) -> tuple[int, int]:
     """Run both versions with corresponding branches forced, and count.
 
     Returns (attempts, agreements). A difference here is discarded: the path
@@ -398,7 +429,7 @@ def _forced_agreement(q_loader, q_address, k_loader, k_address, placement,
             for variant in (VARIANT_A,)
         ]
         judged = _judge(runs[0], runs[1], runs[2], runs[3], placement,
-                        image_ranges)
+                        foreign)
         if judged.verdict is Verdict.SURVIVED:
             agreements += 1
     return attempts, agreements
@@ -423,12 +454,10 @@ def compare(q_loader: Loader, q_address: int,
     resolver, so a claim is judged against one set of stubs. Passed None -
     the default - every import is inconclusive, which is layer A of V0.
     """
-    # Both binaries' image ranges, so a written pointer into either one can be
-    # recognised as an address rather than compared as data (F23).
-    image_ranges = (
-        (q_loader.base, q_loader.base + q_loader.size),
-        (k_loader.base, k_loader.base + k_loader.size),
-    )
+    # The regions the two builds lay out differently, so a written pointer
+    # into any of them is recognised as an address rather than compared as
+    # data (F23, F35).
+    foreign = foreign_ranges(q_loader, k_loader)
     results = []
     judged_any = False
     peak = 0
@@ -450,7 +479,8 @@ def compare(q_loader: Loader, q_address: int,
             ]
             q_a, q_b, k_a, k_b = runs[0], runs[1], runs[2], runs[3]
             peak = max(peak, *(r.instructions for r in runs))
-            per_variant.append(_judge(q_a, q_b, k_a, k_b, placement, image_ranges))
+            per_variant.append(
+                _judge(q_a, q_b, k_a, k_b, placement, foreign))
 
         result = _combine_variants(per_variant)
         results.append(result)
@@ -472,7 +502,7 @@ def compare(q_loader: Loader, q_address: int,
     for args in (input_vectors[:FORCED_INPUTS] if force_when_unjudged else ()):
         made, agreed = _forced_agreement(
             q_loader, q_address, k_loader, k_address, placement, args, budget,
-            stub_resolver, q_prepare, k_prepare, image_ranges, forcing_seed)
+            stub_resolver, q_prepare, k_prepare, foreign, forcing_seed)
         attempts += made
         agreements += agreed
         if agreements:

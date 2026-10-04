@@ -1151,6 +1151,132 @@ doing nothing were being counted.
 together, and the failure mode they exist to catch is a change that cleans
 one while quietly ruining the other.
 
+## A pointer into the stack is an address too (F35)
+
+The 3000-pair run left one false refutation that the thirteen had not
+included: `libspng/compress2`, refuted in the stubbed and chained layers on
+*written memory differs*. It appeared only after F31 made the comparison
+byte-precise, which is the first thing it says about itself - a page-granular
+comparison had been hiding it behind coarser noise.
+
+Everything the earlier rules test came back clean. Both builds completed, at
+4,616 and 2,154 instructions. The return was stable under both seeds and both
+fills, so F22 and F33 do not fire. Neither run touched memory outside the
+buffers and the arena, so F32 does not. No store was partial. The refuting
+page was the arena's first block, and of the 855 bytes the judge compared
+there, **one** differed.
+
+Read as the eight bytes it belongs to, that one byte is this:
+
+| | value | points into |
+|---|---|---|
+| -O0 | `0x00007fefffffdf80` | the stack |
+| -O3 | `0x00007fefffffdf50` | the stack |
+
+The arena's first block is zlib's `deflate_state`, and its first field is
+`strm` - a back-pointer to the `z_stream` that `compress2` holds in its own
+frame. -O0 and -O3 size that frame differently, so the stored address differs
+in its low byte, and the two builds looked like two functions.
+
+**The mask was narrower than the sentence it serves.** F23 excluded a written
+pointer into either binary's *image*, and its comment said a pointer into an
+input buffer or the arena still compares because those sit at the same
+address in both versions. That is right, and it is also the whole rule: only
+what the harness hands out corresponds between the two builds. The image was
+one region that does not. The stack is another, and nothing excluded it.
+
+So the ranges the mask is given are now the two images **and the stack**, and
+the helper is named for what it does - `_foreign_pointer_bytes`, the offsets
+holding an address the harness did not hand out. A pointer into an input
+buffer or the arena still compares, as before; the diagnosis confirmed that
+it must, because every other pointer in that `deflate_state` is an arena
+address and all of them matched, which also rules out the alternative reading
+that the two builds allocate differently.
+
+This is a class and not a case, which is why it is worth the paragraph: a
+context structure holding a back-pointer to something on the caller's stack
+is an ordinary C shape, and `X_init(ctx, caller_struct)` is exactly what the
+constructor chain goes looking for. The same pattern would have refuted every
+library that writes one.
+
+The cost is the same one F23 accepted: a genuine data value that happens to
+land in the stack's megabyte can no longer refute. R0 says what that is worth
+in refutation power, and it is measured beside V0 rather than argued about.
+
+The tests say what they protect - that a pointer into the stack is masked
+while a pointer into the arena beside it is not, and that this exact pair
+survives - and the mutation check removes the stack from the ranges and
+watches both fail with *written memory differs* on page `0x300000000000`, the
+line V0 reported.
+
+## Where the measurement's time goes, and what did not move it (F36)
+
+The 3000-pair V0 took 112 minutes, 81 of them kernel time, and the handover
+named the cause: mapping the binary's image into a fresh emulator for every
+one of tens of thousands of runs. Four things were tried against it. One
+worked, three did not, and the three are worth more than the one.
+
+**Judging the pairs across processes: 1.65x, and it stops at two.** The runs
+are independent, so this should divide by the cores given to it. Measured on
+R0, 100 pairs, on a machine with twenty cores:
+
+| workers | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| pairs/s | 1.45 | 2.37 | 2.40 | 1.97 |
+
+Two is the whole of it. Four buys nothing and eight is worse than two, which
+is not Amdahl's shape - a serial fraction would still improve at four. It is a
+flat ceiling, so what the processes share is saturated, and what every run
+asks for is memory mapped and given back. The verdicts were identical at
+every worker count, which is the property that makes any of this allowed.
+
+**Keeping the stack fill: nothing.** Every run generated a megabyte of
+random bytes for the stack, deterministic per seed and thrown away after.
+Cached per seed - the same shape as the page fill already had - a fixture run
+went from 6.50 ms to 2.47 ms, 2.6x. On the corpus it moved the rate from 1.50
+to 1.45 pairs a second, which is noise. The fixture is a poor proxy: its
+functions run tens of instructions where real pairs have a p90 at the 5000
+budget, so the fixed cost the cache removes is a large share of one and a
+small share of the other. The change is kept because it removes work that was
+plainly repeated, and it is recorded here as worth nothing measurable.
+
+**A smaller stack: 1.27x serial, 1.14x at two workers - declined.** A run maps
+a megabyte of stack and writes a megabyte into it, while a function starts
+0x2000 below the top and uses a few kilobytes. Scanned at 1 MiB, 256 KiB,
+64 KiB and 16 KiB, with R0's verdicts read beside the clock at every size:
+they did not move, and the time fell 68.1s to 53.5s at the smallest. Declined
+anyway, for two reasons. The gain shrinks to 1.14x under the two workers we
+are keeping, so it is worth about ten per cent of a real run. And 16 KiB
+leaves 8 KiB below the entry frame, so a function with a large local array
+faults where it used to run - a coverage loss that R0 at 100 pairs cannot
+see and that only a V0 run would show. Ten per cent is not worth buying with
+a risk to the thing V0 measures.
+
+**Forcing fork rather than spawn: nothing, and it cost something.** Asking a
+pool for max_tasks_per_child makes Python refuse fork and fall back to spawn,
+where each worker starts a fresh interpreter and imports everything again,
+`pyghidra` included - a plausible reason eight workers beat two. Measured, it
+was not the reason: forking gave 1.45 / 2.37 / 2.40 / 1.97 against spawn's
+1.50 / 2.47 / 2.43 / 2.16. And from Python 3.14 forking a process that has
+threads is deprecated and can deadlock the child. Reverted to the platform's
+own choice; what the recycling was for is done where it belongs instead, by
+bounding the loader cache to the last few binaries.
+
+**What this says about the obvious next lever.** Reusing the emulator between
+runs - mapping the image once and resetting only what changed - is the move
+the handover named, and it is a real refactor against F19's rule that every
+run releases the handle. The evidence now says not to make it. Removing seven
+eighths of the stack removes most of what a run maps and moved the ceiling by
+fourteen per cent; removing the rest cannot be worth several times that. The
+ceiling is not the bytes each run maps, and a refactor aimed at them would
+reach the same wall with a leak risk attached.
+
+So the measurement is 1.65x faster and that is where it is left: a 3000-pair
+V0 falls from about 110 minutes to about 67. The daily pulse, 150 pairs, was
+already a minute or two. Recorded with the rejected options because the next
+person to look at this will have the same four ideas, and three of them have
+now been paid for.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
