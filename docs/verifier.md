@@ -1209,6 +1209,43 @@ survives - and the mutation check removes the stack from the ranges and
 watches both fail with *written memory differs* on page `0x300000000000`, the
 line V0 reported.
 
+**Confirmed at three thousand pairs.** The rule was written against one case
+and checked on 500, which is the sample size that had never shown the fault in
+the first place. The 3000-pair run is the one that could, and it is clean:
+zero disagreements in all three layers, over 1105, 1364 and 1371 completed
+pairs. Coverage did not move at all - 36.8 / 45.5 / 45.7 per cent against
+36.8 / 45.5 / 45.7 before the fix, and forced-only agreement 5.4 against 5.4.
+
+That the coverage is identical to the decimal is the part worth recording. A
+wider mask excludes more bytes, and the way it could cost something here is by
+leaving a pair with no comparable byte at all, which would move it into "ran
+but nothing to compare". No pair in three thousand was left that way: where a
+written pointer into the stack appears, real data appears beside it. The other
+half of the cost was already measured and was also nothing - R0's refutation
+power at 500 wrong pairs is unchanged by this rule.
+
+**And the same run corrects what the chain is worth.** F26 measured the
+constructor chain at 0.6 points on 500 pairs. At 3000 it is 0.2: 45.5 per cent
+stubbed to 45.7 chained, from 86 pairs with an initialiser on both sides, 31
+of which fell back when it failed. This is F30's lesson in the other
+direction - a small sample hides a rare fault, and it also flatters a small
+gain. The chain stays, on exactly the grounds it was kept on before: it never
+refutes, it falls back, and where it applies the function is tested on a
+context its own library built. It is worth a fifth of what was recorded.
+
+**What the import histograms say at this size.** The stub families are done:
+the commonest import still without a stub is getenv, ten times in three
+thousand pairs, and the tail below it is either unstubbable by rule (longjmp,
+SystemFunction036) or too rare to pay for. The declines point somewhere else.
+After the preconditions we violate ourselves - abort at 80, a free of a
+pointer our own invented bytes produced at 60, _assert at 35 - the largest is
+InitOnceExecuteOnce at 54, declined because the one-time initialiser's
+callback is not run. That callback is code in the same binary, which tier 1
+follows for free everywhere else; running it needs re-entry from inside a
+stub and nothing more. At 1.8 per cent it is nine times what the constructor
+chain bought, and it is the next thing to measure after the import
+observation.
+
 ## Where the measurement's time goes, and what did not move it (F36)
 
 The 3000-pair V0 took 112 minutes, 81 of them kernel time, and the handover
