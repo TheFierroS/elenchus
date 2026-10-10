@@ -1207,6 +1207,99 @@ compared by sha256 before anything was deleted.
 Cost of stages 2 and 3 together, including the volume and the CPU pods
 used to fetch results: about $4.50.
 
+### F37 — What a vcpkg corpus would be worth, and what was never counted
+
+Path C was decided on an argument - the analyst's binary is MSVC - with its
+scale written as three guessed rows: 600 / 1,000 / 1,500 ports at 120 / 200 /
+300 identities each. Both halves can be measured, and one of them had been
+sitting in the database all along.
+
+**The probe (40 ports, seed 0, triplet x64-windows, `C:\probe\vcpkg_probe.csv`).**
+33 of 40 built unattended (82%) and 14 of those left PDBs (42% of built, 35% of
+ports sampled). Over vcpkg's 2,875 ports that is **about 1,000 ports that build
+and leave debug information** - the middle row of the guess, now measured.
+
+Its own extrapolation is not usable and should not be quoted. Three ports are
+89% of the sample's total (vulkan-validationlayers 317,196 procedures,
+globjects 152,302, unicorn 114,304), so the mean of 46,662 is a draw from a
+long tail rather than a measurement: at the mean, 47 million procedures; at the
+median, 4 million. Forty samples cannot narrow that, so the median is what is
+carried below. The script prints "median 4,242", the upper of fourteen values'
+two middle ones; the median is **4,026**.
+
+**The funnel, counted for the first time (`16ed945`, fingerprint
+`69b6d888c94c2175`).** What survives from the compiler's own record to a
+trainable row was never counted, only its endpoint:
+
+| step | rows | kept |
+|---|---|---|
+| DWARF functions with an address, in corpus binaries | 274,682 | - |
+| matched to a function Ghidra found | 274,501 | **99.93%** |
+| after the source-file rules | 231,762 | 84.4% |
+| after `>= 8 instructions` | 201,334 | 86.9% |
+| after the cross-package dedup | 187,403 | 93.1% |
+| **eligible** | **187,403** | **68.2%** |
+
+**Matching costs nothing**, which was not obvious: 181 rows of 274,682. It is
+the step where a name has to meet an address across two builds, and Q1 is why
+it holds - without the .pdata seeding, functions reached only through pointers
+were missing. For MSVC it should hold at least as well, since `S_GPROC32`
+carries section and offset directly rather than through a second tool.
+
+**Two of the three remaining losses are this corpus's own.** The excluded files
+are `{dependency: 261, shared+toolchain: 70, toolchain: 27}` - not one file is
+excluded for being shared alone. Both rules exist because of how we build: the
+MinGW CRT is linked statically into every DLL, and a package's dependencies are
+compiled into the same binary under `_deps/` (F12). vcpkg does neither - the
+UCRT is a separate module and a dependency is a separate port - so most of
+those 42,739 rows have no counterpart there. The `>= 8 instructions` rule
+applies unchanged; the dedup bites harder at scale, not less.
+
+**Translating the probe through the funnel.** vcpkg's MSVC default gives two
+views, Debug `/Od` and Release `/O2`, where this corpus has four. The ratio
+between a debug and a release view was measured twice and agreed: zlib's
+warm-up PDBs hold 287 procedures debug and 202 release (70%), and this corpus
+loses functions to inlining at the same rate (zlib 219 at -O0 to 165 at -O3,
+leptonica 3,336 to 1,901). So about 1.70 procedures per identity.
+
+1,000 ports x 4,026 procedures ~ 4.03M procedures (both views)
+/ 1.70 views ~ 2.37M identities
+x 68.2% funnel ~ 1.62M eligible identities
+
+
+Against roughly 47,000 identities today that is **25 to 40 times**, the range
+covering the funnel being gentler on vcpkg and the dedup being harsher at
+scale. Path C was taken on an estimate of 4x.
+
+**Three reasons to read it as a ceiling, largest first.** The sampled ports are
+C++ heavy and `S_GPROC32` counts template instantiations, where this corpus is
+C. The dedup drops 6.9% across 136 packages and F12 says why that grows - vcpkg
+carries the same library inside dozens of ports. And the funnel varies far more
+by package than its average admits: leptonica keeps 95% of its ground truth,
+zlib 55%.
+
+**What this does not settle, and it is the half that decides.** L2 measured
++0.0587 val MRR per doubling of packages, and 30x is about five doublings. That
+arithmetic is worth nothing if the model does not transfer to MSVC output, and
+F11 wrote the cheap test for it - score the existing 11M on MSVC-built
+binaries - which still has not been run. The scale is measured; its value is
+not. Nothing here is an argument for starting the build.
+
+**A path eliminated without being measured.** Path B (vcpkg with MinGW) was
+dropped as "mingw triplets uncertain". The reason this corpus stopped at 136
+packages is hand-written build recipes, not the compiler, and vcpkg removes
+those whichever toolchain it drives. The same probe answers it with one flag,
+`-Triplet x64-mingw-static`. If it builds, the scale above arrives without a
+new ground-truth reader, without recalibrating the verifier (F15-F36 were all
+measured on MinGW), and with 0.735 still comparable.
+
+**Side finding: 1,941 orphan ground-truth rows.** `store_ground_truth` writes
+with `INSERT OR REPLACE` and never deletes a binary's existing rows, so rows
+survive a binary being deregistered. They are harmless to the dataset -
+`candidate_rows` joins `corpus_binaries` - but `elenchus dataset` reports
+"matched functions" from the whole table and overstates it by that many. The
+fix is one `DELETE` before the insert.
+
 ### Q3 — the third axis was never measured
 
 L and L2 measured two ways of growing the corpus: more **functions**
@@ -1435,5 +1528,9 @@ block were added as the work reached them.
       tag move together at every milestone from here - 0.7.0 verifier,
       0.8.0 agent core, 0.9.0 end to end, 1.0.0 v1 - after 0.2.0 to 0.5.0
       were tagged while the package still said 0.1.0
+- [x] Corpus scale: the funnel counted and the vcpkg probe translated through
+      it (F37) - 25-40x, against the 4x the roadmap assumed; the transfer
+      test F11 asked for is still not run, and it is what decides
+
 - [ ] Verifier: how many claims survive verification, end to end
       (design, before any code: `docs/verifier.md`)
