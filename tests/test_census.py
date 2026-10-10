@@ -10,6 +10,7 @@ import random
 from dataclasses import dataclass
 
 from elenchus.emulation.census import (
+    BEYOND,
     CODE_FROM_FILL,
     GOLDEN_INVERSE,
     INPUT_FILL,
@@ -17,6 +18,7 @@ from elenchus.emulation.census import (
     NULL,
     OTHER,
     REACH,
+    STACK_GARBAGE,
     UNINITIALISED_FILL,
     aggregate,
     census_lines,
@@ -323,3 +325,49 @@ def test_a_ceiling_counts_only_pairs_not_already_refuted():
     assert row["differs"] == 2
     assert row["differs_unrefuted"] == 1
     assert any("calls" in line for line in census_lines(summary, "R0"))
+
+
+# ------------------------------------------------------- what "other" was
+
+
+def test_an_uninitialised_local_is_told_apart():
+    """The stack's garbage does not invert, but it is deterministic and can
+    be listed. A pointer read out of it is an uninitialised local."""
+    from elenchus.emulation.harness import _stack_garbage
+    block = _stack_garbage(SEED_A)
+    local = int.from_bytes(block[0x1F00:0x1F08], "little")
+    assert classify_wild("read", local + 16, SEED_A, VARIANT_A) \
+        == STACK_GARBAGE
+    assert classify_wild("fetch", local, SEED_A, VARIANT_A) == CODE_FROM_FILL
+    assert classify_wild("read", local, SEED_B, VARIANT_A) == OTHER
+
+
+def test_an_address_just_past_a_region_is_told_apart():
+    """A real base plus a garbage length or index: the integer inputs, not
+    the pointers, sent the function there."""
+    from elenchus.emulation.harness import ARENA_END, INPUT_REGION_END
+    assert classify_wild("read", INPUT_REGION_END + 0x1000,
+                         SEED_A, VARIANT_A) == BEYOND
+    assert classify_wild("write", INPUT_REGION_BASE - 4,
+                         SEED_A, VARIANT_A) == BEYOND
+    assert classify_wild("read", ARENA_END + 0xFFFF_FFFF * 8,
+                         SEED_A, VARIANT_A) == BEYOND
+
+
+def test_a_faulting_pair_is_read_by_the_run_that_faulted():
+    """A completed run touched wild memory first; another run faulted. The
+    fault is what the anatomy is about."""
+    early = word_at(INPUT_PAGE, 0x100, VARIANT_A)
+    found = census_of(
+        both_fills({"first_wild": ("read", early), "read_invented": True}, {}),
+        both_fills({"status": Status.FAULT, "first_wild": ("null", 0)}, {}))
+    assert found.wild_origin == NULL
+    assert found.wild_status == "fault"
+
+
+def test_which_observations_differed_is_kept_for_the_union():
+    """Ceilings overlap; the union needs to know which differed together."""
+    found = census_of(both_fills({"calls": ("a",)}, {"calls": ("b",)}))
+    assert found.differing == ("calls",)
+    summary = aggregate([(None, found)], 5_000)
+    assert summary["differing"] == [["inconclusive", ["calls"]]]

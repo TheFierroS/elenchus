@@ -43,7 +43,10 @@ from elenchus.emulation.harness import (
     INPUT_REGION_BASE,
     INPUT_REGION_END,
     NULL_GUARD,
+    STACK_SIZE,
+    STACK_TOP,
     Status,
+    _stack_garbage,
 )
 from elenchus.emulation.inputs import BUFFER_STRIDE
 from elenchus.emulation.stubs import LOCKS, STREAM_OUTPUT
@@ -63,9 +66,21 @@ REACH = 1024
 NULL = "null"
 INPUT_FILL = "data pointer from the input fill"
 UNINITIALISED_FILL = "data pointer from uninitialised fill"
-CODE_FROM_FILL = "code pointer from fill"
+STACK_GARBAGE = "data pointer from an uninitialised local"
+BEYOND = "past a region of ours, by a garbage offset"
+CODE_FROM_FILL = "code pointer from invented data"
 OTHER = "other"
-ORIGINS = (NULL, INPUT_FILL, UNINITIALISED_FILL, CODE_FROM_FILL, OTHER)
+ORIGINS = (NULL, INPUT_FILL, UNINITIALISED_FILL, STACK_GARBAGE, BEYOND,
+           CODE_FROM_FILL, OTHER)
+
+# The regions whose base is real: the buffers and the arena the harness hands
+# out, and the stack. An address up to a tebibyte outside one is read as that
+# base plus a garbage length or index - a 32-bit index scaled by 8 lands well
+# inside it - while a fill word lands that close by chance under once in a
+# million.
+OURS = ((INPUT_REGION_BASE, INPUT_REGION_END), (ARENA_BASE, ARENA_END),
+        (STACK_TOP - STACK_SIZE, STACK_TOP))
+BEYOND_SPAN = 1 << 40
 
 
 def fill_origin(address: int, constants, reach: int = REACH):
@@ -95,26 +110,65 @@ def fill_origin(address: int, constants, reach: int = REACH):
     return None
 
 
+_STACK_WORDS: dict[int, frozenset] = {}
+
+
+def _stack_words(seed: int) -> frozenset:
+    """Every aligned word of the stack garbage a run under `seed` starts with.
+
+    The stack is filled from random.Random, not the arithmetic fill, so it
+    does not invert; but it is deterministic and a megabyte, so its 131,072
+    words can simply be listed. A local the function never wrote is one.
+    """
+    words = _STACK_WORDS.get(seed)
+    if words is None:
+        block = _stack_garbage(seed)
+        words = frozenset(int.from_bytes(block[i:i + 8], "little")
+                          for i in range(0, len(block), 8))
+        _STACK_WORDS[seed] = words
+    return words
+
+
+def _from_stack(address: int, seed: int, reach: int = REACH) -> bool:
+    """Whether `address` is a word of the stack's garbage plus a field offset."""
+    words = _stack_words(seed)
+    return any(((address - d) & MASK64) in words
+               for d in range(-reach, reach + 1))
+
+
+def _beyond(address: int) -> bool:
+    """Whether `address` lies just outside a region of ours: a real base plus
+    or minus a garbage offset."""
+    return any(low - BEYOND_SPAN <= address < high + BEYOND_SPAN
+               for low, high in OURS)
+
+
 def classify_wild(kind: str, address: int, seed: int, variant: int) -> str:
     """Where a run's first wild access came from, as one of ORIGINS.
 
     `kind` is how the harness touched it: "read", "write", "fetch", or "null"
     for a dereference of the guard page. `seed` and `variant` are the run's
-    own, the only two constants its fill could have used.
+    own, the only constants its memory could have been filled from.
 
-    A fetch is code: the function called or jumped through a pointer it read
-    out of our fill - a callback in a context, an operations table. Handing it
-    a buffer cannot repair that, so it is kept apart from data pointers, which
-    a buffer can.
+    The sources are tried from the most specific: a pointer read out of the
+    arithmetic fill, then out of the stack's garbage - an uninitialised local
+    - then a real base with a garbage offset added. A fetch from invented
+    data is code, a callback or an operations table; handing it a buffer
+    cannot repair that, so it is kept apart from data pointers, which a
+    buffer can.
     """
     if kind == "null" or address < NULL_GUARD:
         return NULL
     origin = fill_origin(address, (variant, seed))
-    if origin is None:
-        return OTHER
-    if kind == "fetch":
-        return CODE_FROM_FILL
-    return INPUT_FILL if origin[0] == variant else UNINITIALISED_FILL
+    if origin is not None:
+        if kind == "fetch":
+            return CODE_FROM_FILL
+        return INPUT_FILL if origin[0] == variant else UNINITIALISED_FILL
+    if _from_stack(address, seed):
+        return CODE_FROM_FILL if kind == "fetch" else STACK_GARBAGE
+    if _beyond(address):
+        return BEYOND
+    return OTHER
 
 
 
@@ -240,14 +294,18 @@ def _status_split(variants):
 
 
 def _first_wild(traces):
-    """The first run, in input and fill order, that touched outside what the
-    harness handed out - or None."""
-    for variants in traces:
-        for variant in variants:
-            for run_trace in variant:
-                if run_trace.first_wild is not None:
-                    return run_trace
-    return None
+    """The run whose wild touch says most about how the pair ended, or None.
+
+    A run that stopped - faulted, lost its walk - is preferred over one that
+    completed, so a faulting pair is read by the run that faulted rather than
+    by whichever run happened to touch wild memory first.
+    """
+    touched = [run_trace for variants in traces for variant in variants
+               for run_trace in variant if run_trace.first_wild is not None]
+    for run_trace in touched:
+        if run_trace.status != COMPLETED:
+            return run_trace
+    return touched[0] if touched else None
 
 
 @dataclass
@@ -263,6 +321,7 @@ class PairCensus:
     survival_saw_return: bool
     wild_origin: str | None     # one of ORIGINS
     wild_status: str | None     # how the run that touched it ended
+    differing: tuple = ()       # every observation that differed, for unions
 
 
 def summarise(verdict: str, forced_only: bool, inputs, traces,
@@ -317,6 +376,7 @@ def summarise(verdict: str, forced_only: bool, inputs, traces,
         survival_saw_return=saw_return,
         wild_origin=origin,
         wild_status=wild.status if wild is not None else None,
+        differing=tuple(sorted(n for n, d in differs.items() if d)),
     )
 
 
@@ -333,7 +393,7 @@ def aggregate(entries, budget: int) -> dict:
     experiments/census_read.py, which applies the protocol's thresholds.
     """
     observations, names, anatomy, outcomes = {}, Counter(), Counter(), Counter()
-    runs, survivals = [], []
+    runs, survivals, differing = [], [], []
     for bucket, pair in entries:
         ended = bucket or pair.verdict
         outcomes[ended] += 1
@@ -351,6 +411,8 @@ def aggregate(entries, budget: int) -> dict:
             survivals.append([pair.survival_mass, pair.survival_saw_return])
         if pair.wild_origin is not None:
             anatomy[f"{ended} | {pair.wild_origin}"] += 1
+        if pair.differing:
+            differing.append([pair.verdict, list(pair.differing)])
     runs.sort()
 
     def percentile(p):
@@ -369,8 +431,8 @@ def aggregate(entries, budget: int) -> dict:
         },
         "survivals": survivals,
         "anatomy": dict(anatomy),
+        "differing": differing,
     }
-
 
 def census_lines(summary: dict, side: str) -> list:
     """The census as V0 or R0 prints it beside its own report.
