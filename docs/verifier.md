@@ -1542,6 +1542,63 @@ fewer completions, the second towards fewer refutations - so they are one
 change, F39, measured on its own: every touch, the function's or a stub's,
 through one rule.
 
+## The second door closed: a stub's touches obey the run's rule (F39)
+
+F38 named four places where a stub's reach into memory disagreed with the
+function's own, and fixed the one that cost coverage. The other three are
+fixed here as one change, because they are one mistake: the stub had a path
+into memory of its own.
+
+- A stub dereferencing near null mapped the guard page instead of faulting.
+  `strlen(NULL)` returned a length read out of our fill, and the page stayed
+  mapped for the rest of the run, so the function's own null dereferences
+  stopped faulting too.
+- A stub reaching memory outside the buffers and the arena did not set
+  `read_invented`, so F32 never saw a difference that followed from it.
+- A stub's first touches were not counted against the walk budget, so a
+  16 MiB `memcpy` from a wild pointer ran where the same walk by the function
+  would have stopped.
+
+There is now one rule for a first touch, `admit`, and both paths go through
+it: Unicorn's unmapped hook for the function, `stub_touch` for a stub. A
+stub's touch that ends the run raises out of the stub and leaves the status
+the function's own touch would have set, with the stub named in the detail.
+With F25 for writes and F38 for what the run mapped itself, the stub no longer
+has a door of its own.
+
+**Tested on existing fixture functions** - `strlen(NULL)`, `strlen` of a wild
+pointer, a 16 MiB copy from one - and mutation-checked three ways. Unwiring
+the stub from the rule breaks exactly those six runs and leaves F38's passing.
+Removing the `read_invented` line from `admit` breaks the new stub test *and*
+the old test of the function's own touch, which is the demonstration that the
+two paths share one rule. Skipping the null check for a stub still faults, but
+without saying null, and the test tells the two apart.
+
+**The shape of the measurement was written before it was taken.** All three
+rules make the verifier more careful and none bolder, so some numbers could
+only move one way: bare must not move, completion and R0's refutations must
+not rise, disagreements must stay at zero. On the same 500 pairs:
+
+| | after F38 | after F39 |
+|---|---|---|
+| V0 bare | 36.2% | 36.2% |
+| V0 stubbed | 49.8% | 49.6% |
+| V0 chained | 50.4% | 50.2% |
+| V0 forced-only | 6.4% | 6.4% |
+| V0 disagreements | 0 / 0 / 0 | 0 / 0 / 0 |
+| R0 refuted / inconclusive / survived | 54 / 409 / 37 | 53 / 410 / 37 |
+
+Every number moved the way it was allowed to, and none moved the other way.
+The effect is two V0 pairs in 500: one completed pair now faults, one
+exhausted budget is now a lost walk.
+
+**The R0 pair is the one worth reading.** A wrong pair that was refuted is now
+inconclusive: its refutation rested on a difference that followed from a stub
+reading our fill, which is exactly what F32 says is not evidence. Refuting a
+wrong pair was the right answer reached for a reason the rules forbid, and the
+same hole on a true pair would have been a false refutation. Once in 500 wrong
+pairs it was live. This was not a tidy-up.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
