@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from elenchus.emulation.abi import Placement
+from elenchus.emulation.census import trace
 from elenchus.emulation.harness import (
     PAGE,
     STACK_SIZE,
@@ -79,6 +80,11 @@ class InputResult:
     status: object = None            # the harness Status when inconclusive,
     #                                  carried exactly so the caller need not
     #                                  parse `reason`; None otherwise
+    # How much a survival actually compared - its bytes, and whether a return.
+    # Read by the census as a survival's mass, BSim's significance in our
+    # terms; never by the verdict.
+    compared_bytes: int = 0
+    saw_return: bool = False
 
 
 def _stable_return(a, b, placement: Placement):
@@ -334,7 +340,8 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement,
         return InputResult(Verdict.INCONCLUSIVE,
                            "neither produced anything observable")
 
-    return InputResult(Verdict.SURVIVED, "agreed on this input")
+    return InputResult(Verdict.SURVIVED, "agreed on this input",
+                       compared_bytes=compared_bytes, saw_return=saw_return)
 
 
 @dataclass
@@ -352,6 +359,9 @@ class Comparison:
     forced_attempts: int = 0
     forced_agreements: int = 0
     forced_only: bool = False
+    # Per input, per input fill, the census's trace of the four first-tier
+    # runs (Q seed A, Q seed B, K seed A, K seed B). Never compared.
+    traces: list = field(default_factory=list)
 
 
 def _combine_variants(per_variant) -> InputResult:
@@ -464,6 +474,7 @@ def compare(q_loader: Loader, q_address: int,
     # data (F23, F35).
     foreign = foreign_ranges(q_loader, k_loader)
     results = []
+    traces = []
     judged_any = False
     peak = 0
     for index, args in enumerate(input_vectors):
@@ -472,6 +483,7 @@ def compare(q_loader: Loader, q_address: int,
         # one fill and not the other came from the bytes we invented, not from
         # the functions (F24).
         per_variant = []
+        variant_traces = []
         for variant in (VARIANT_A, VARIANT_B):
             runs = [
                 run(loader, address, placement, args, seed=seed, budget=budget,
@@ -484,19 +496,25 @@ def compare(q_loader: Loader, q_address: int,
             ]
             q_a, q_b, k_a, k_b = runs[0], runs[1], runs[2], runs[3]
             peak = max(peak, *(r.instructions for r in runs))
+            # What the census keeps of these four runs; never compared.
+            variant_traces.append(tuple(
+                trace(r, run_seed, variant)
+                for r, run_seed in zip(runs, (SEED_A, SEED_B, SEED_A, SEED_B))))
             per_variant.append(
                 _judge(q_a, q_b, k_a, k_b, placement, foreign))
 
         result = _combine_variants(per_variant)
         results.append(result)
+        traces.append(tuple(variant_traces))
         if result.verdict is Verdict.REFUTED:
             return Comparison(Verdict.REFUTED, results, refuting_input=index,
-                              max_instructions=peak)
+                              max_instructions=peak, traces=traces)
         if result.verdict is Verdict.SURVIVED:
             judged_any = True
 
     if judged_any:
-        return Comparison(Verdict.SURVIVED, results, max_instructions=peak)
+        return Comparison(Verdict.SURVIVED, results, max_instructions=peak,
+                          traces=traces)
 
     # The first tier could judge nothing: the function faulted on the data we
     # invented, or ran out of budget in a loop that data sent it round, or
@@ -519,6 +537,7 @@ def compare(q_loader: Loader, q_address: int,
         # quietly treating the two as the same thing.
         return Comparison(Verdict.SURVIVED, results, max_instructions=peak,
                           forced_attempts=attempts,
-                          forced_agreements=agreements, forced_only=True)
+                          forced_agreements=agreements, forced_only=True,
+                          traces=traces)
     return Comparison(Verdict.INCONCLUSIVE, results, max_instructions=peak,
-                      forced_attempts=attempts)
+                      forced_attempts=attempts, traces=traces)

@@ -318,3 +318,95 @@ def summarise(verdict: str, forced_only: bool, inputs, traces,
         wild_origin=origin,
         wild_status=wild.status if wild is not None else None,
     )
+
+
+
+
+# ---------------------------------------------------------------- adding up
+
+
+def aggregate(entries, budget: int) -> dict:
+    """Add up the census over many pairs, as JSON can hold it.
+
+    `entries` are (bucket, PairCensus); V0 knows a pair's bucket, R0 passes
+    None and its verdict stands in. The two halves are read together by
+    experiments/census_read.py, which applies the protocol's thresholds.
+    """
+    observations, names, anatomy, outcomes = {}, Counter(), Counter(), Counter()
+    runs, survivals = [], []
+    for bucket, pair in entries:
+        ended = bucket or pair.verdict
+        outcomes[ended] += 1
+        for name, could in pair.comparable.items():
+            row = observations.setdefault(
+                name, {"comparable": 0, "differs": 0, "differs_unrefuted": 0})
+            row["comparable"] += int(could)
+            if pair.differs.get(name):
+                row["differs"] += 1
+                if pair.verdict != "refuted":
+                    row["differs_unrefuted"] += 1
+        names.update(pair.call_names)
+        runs.extend(pair.instructions)
+        if pair.survival_mass is not None:
+            survivals.append([pair.survival_mass, pair.survival_saw_return])
+        if pair.wild_origin is not None:
+            anatomy[f"{ended} | {pair.wild_origin}"] += 1
+    runs.sort()
+
+    def percentile(p):
+        return runs[min(len(runs) - 1, int(len(runs) * p))] if runs else None
+
+    return {
+        "pairs": len(entries),
+        "outcomes": dict(outcomes),
+        "observations": observations,
+        "call_names": dict(names.most_common()),
+        "runs": len(runs),
+        "instructions_per_run": {
+            "median": percentile(0.50), "p90": percentile(0.90),
+            "p99": percentile(0.99), "max": runs[-1] if runs else None,
+            "at_budget": sum(1 for r in runs if r >= budget),
+        },
+        "survivals": survivals,
+        "anatomy": dict(anatomy),
+    }
+
+
+def census_lines(summary: dict, side: str) -> list:
+    """The census as V0 or R0 prints it beside its own report.
+
+    V0 counts how often an observation differed on true pairs - its risk.
+    R0 counts how often it differed on wrong pairs not already refuted - its
+    ceiling. Neither half decides alone.
+    """
+    pairs = summary["pairs"] or 1
+    lines = [f"\n=== observation census ({side}, stubbed layer, "
+             f"{summary['pairs']} pairs)"]
+    what = "not refuted" if side == "R0" else "differed"
+    lines.append(f"  {'observation':26} {'comparable':>10} {what:>12}")
+    for name, row in summary["observations"].items():
+        count = row["differs_unrefuted"] if side == "R0" else row["differs"]
+        lines.append(f"  {name:26} {row['comparable']:10} {count:12}"
+                     f"  {100 * count / pairs:5.1f}%")
+    per_run = summary["instructions_per_run"]
+    lines.append(f"  instructions per run ({summary['runs']} runs): "
+                 f"median {per_run['median']}, p90 {per_run['p90']}, "
+                 f"p99 {per_run['p99']}, max {per_run['max']}, "
+                 f"{per_run['at_budget']} at the budget")
+    masses = sorted(mass for mass, _ in summary["survivals"])
+    if masses:
+        with_return = sum(1 for _, saw in summary["survivals"] if saw)
+        lines.append(f"  survivals: {len(masses)}, compared bytes "
+                     f"p10 {masses[len(masses) // 10]}, "
+                     f"median {masses[len(masses) // 2]}; "
+                     f"{with_return} with a compared return")
+    if summary["anatomy"]:
+        lines.append("  first wild touch (how the pair ended | where from):")
+        for key, n in sorted(summary["anatomy"].items(),
+                             key=lambda item: -item[1])[:12]:
+            lines.append(f"      {key:62} {n:5}")
+    if side == "V0" and summary["call_names"]:
+        lines.append("  call names that differed on true pairs (top 15):")
+        for name, n in list(summary["call_names"].items())[:15]:
+            lines.append(f"      {name:30} {n:5}")
+    return lines

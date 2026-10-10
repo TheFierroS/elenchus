@@ -35,6 +35,7 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 
 from elenchus.emulation.abi import Undecidable, placement
+from elenchus.emulation.census import aggregate, census_lines, summarise
 from elenchus.emulation.compare import compare
 from elenchus.emulation.harness import Loader
 from elenchus.emulation.inputs import input_vectors
@@ -51,6 +52,7 @@ class R0Report:
     verdicts: Counter = field(default_factory=Counter)
     forced_survivals: int = 0
     elapsed: float = 0.0
+    census: list = field(default_factory=list)  # (None, PairCensus)
 
     @property
     def refuted(self) -> int:
@@ -162,7 +164,9 @@ def judge_false_pair(task):
         return None
     except Exception:                              # noqa: BLE001
         return None
-    return result.verdict.value, bool(getattr(result, "forced_only", False))
+    summary = summarise(result.verdict.value, result.forced_only,
+                        result.inputs, result.traces, place.ret.kind)
+    return result.verdict.value, result.forced_only, summary
 
 
 def _progress(done, total, started):
@@ -205,8 +209,9 @@ def run_r0(conn, count=300, seed=0, budget=R0_BUDGET, split="train",
                          order_by=lambda task: task[0], on_result=tick):
         if judged is None:
             continue
-        verdict, forced_only = judged
+        verdict, forced_only, summary = judged
         report.add(verdict, forced_only=forced_only)
+        report.census.append((None, summary))
     report.elapsed = time.time() - started
     return report
 
@@ -247,6 +252,11 @@ def cmd_verify_r0(args):
     report = run_r0(conn, count=args.count, seed=args.seed,
                     budget=args.budget, workers=args.workers)
     _print_report(report)
+    census = (aggregate(report.census, args.budget)
+              if report.census else None)
+    if census:
+        for line in census_lines(census, "R0"):
+            print(line)
 
     if args.out:
         with open(args.out, "w") as handle:
@@ -255,6 +265,7 @@ def cmd_verify_r0(args):
                         "total": report.total,
                         "verdicts": dict(report.verdicts),
                         "forced_survivals": report.forced_survivals,
-                        "elapsed": report.elapsed}, handle, indent=1)
+                        "elapsed": report.elapsed,
+                        "census": census}, handle, indent=1)
         print(f"\nwritten to {args.out}")
     return 0

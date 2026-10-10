@@ -655,3 +655,48 @@ def test_a_compared_return_is_an_observation_with_no_writes():
     q_a = q_b = done(ret_int=7)
     k_a = k_b = done(ret_int=7)
     assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.SURVIVED
+
+
+
+
+# ------------------------------------------------ what the census is handed
+
+
+def test_a_comparison_carries_what_the_census_reads(env):
+    """Per input, per fill, four traces; and a survival says how much it
+    compared. Neither is read by the verdict."""
+    result = compare_named(env, "fill", "fill", [[BUF, 16, 0x41]])
+    assert result.verdict is Verdict.SURVIVED
+    assert len(result.traces) == 1
+    assert len(result.traces[0]) == 2
+    assert all(len(fill) == 4 for fill in result.traces[0])
+    assert result.inputs[0].compared_bytes == 16
+    assert not result.inputs[0].saw_return
+
+
+def test_v0_hands_the_census_a_summary_only_when_asked(env):
+    import json
+
+    from elenchus.emulation.v0 import bucket_pair
+    o0, o3, s0, s3 = env
+    pair = (o0, s0["fill"].address, o3, s3["fill"].address,
+            json.dumps(s0["fill"].abi))
+    asked = bucket_pair(*pair, inputs=[[BUF, 16, 0x41]], census=True)
+    plain = bucket_pair(*pair, inputs=[[BUF, 16, 0x41]])
+    assert asked.census.verdict == "survived"
+    assert asked.census.survival_mass == 16
+    assert plain.census is None
+
+
+def test_r0_hands_the_census_a_summary_with_its_verdict():
+    import json
+
+    from elenchus.emulation.r0 import judge_false_pair
+    s0 = {f.name: f for f in ground_truth(FIXTURES / "cases_O0.dll")}
+    s3 = {f.name: f for f in ground_truth(FIXTURES / "cases_O3.dll")}
+    verdict, _forced, summary = judge_false_pair(
+        (str(FIXTURES / "cases_O0.dll"), s0["add3"].address,
+         json.dumps(s0["add3"].abi), str(FIXTURES / "cases_O3.dll"),
+         s3["mix64"].address, 5_000))
+    assert verdict == "refuted"
+    assert summary.verdict == "refuted"

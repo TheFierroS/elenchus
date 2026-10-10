@@ -18,6 +18,8 @@ from elenchus.emulation.census import (
     OTHER,
     REACH,
     UNINITIALISED_FILL,
+    aggregate,
+    census_lines,
     classify_wild,
     fill_origin,
     summarise,
@@ -306,3 +308,18 @@ def test_the_first_wild_touch_is_classified():
 def test_every_first_tier_run_is_counted():
     found = census_of(both_fills({}, {}), both_fills({}, {}))
     assert len(found.instructions) == 2 * 2 * 4
+
+
+# ------------------------------------------------------- adding up
+
+
+def test_a_ceiling_counts_only_pairs_not_already_refuted():
+    """A difference on a pair the verifier already refutes adds nothing."""
+    calls = both_fills({"calls": ("a",)}, {"calls": ("b",)})
+    open_pair = census_of(calls)
+    refuted = summarise("refuted", False, [], [calls], "int")
+    summary = aggregate([(None, open_pair), (None, refuted)], 5_000)
+    row = summary["observations"]["calls"]
+    assert row["differs"] == 2
+    assert row["differs_unrefuted"] == 1
+    assert any("calls" in line for line in census_lines(summary, "R0"))

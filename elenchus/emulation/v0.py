@@ -28,6 +28,7 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 
 from elenchus.emulation.abi import Undecidable, placement
+from elenchus.emulation.census import aggregate, census_lines, summarise
 from elenchus.emulation.compare import Verdict, compare
 from elenchus.emulation.harness import Status
 from elenchus.emulation.inputs import BUFFER_BASE, input_vectors
@@ -91,6 +92,7 @@ class PairResult:
     agreement: str | None = None        # AGREED / DISAGREED, if completed
     detail: str = ""
     instructions: int = 0               # the longest run, when completed
+    census: object = None               # census.PairCensus, stubbed layer only
 
 
 @dataclass
@@ -104,8 +106,11 @@ class V0Report:
     completed_instructions: list = field(default_factory=list)  # per completed pair
     chains_found: int = 0               # pairs where both sides had an initialiser
     chains_abandoned: int = 0           # chains that failed and fell back
+    census: list = field(default_factory=list)  # (bucket, PairCensus)
 
     def add(self, result: PairResult):
+        if result.census is not None:
+            self.census.append((result.bucket, result.census))
         self.buckets[result.bucket] += 1
         if result.bucket == Bucket.COMPLETED:
             self.agreement[result.agreement] += 1
@@ -243,7 +248,7 @@ def chain_for(name, abi_json, siblings):
 
 def bucket_pair(o0_loader, o0_addr, o3_loader, o3_addr, abi_json,
                 resolver=None, budget=V0_BUDGET, inputs=None,
-                o0_chain=None, o3_chain=None):
+                o0_chain=None, o3_chain=None, census=False):
     """Run one pair and return its bucket and, if completed, whether it agreed.
 
     resolver None is the bare layer; a resolver is the stubbed layer. The
@@ -265,7 +270,18 @@ def bucket_pair(o0_loader, o0_addr, o3_loader, o3_addr, abi_json,
     result = compare(o0_loader, o0_addr, o3_loader, o3_addr, place, vectors,
                      budget=budget, stub_resolver=resolver,
                      q_prepare=o0_chain, k_prepare=o3_chain)
+    # The census reads the stubbed layer only - the configuration R0 runs, so
+    # the two halves compare like with like (docs/verifier.md, the census).
+    summary = (summarise(result.verdict.value, result.forced_only,
+                         result.inputs, result.traces, place.ret.kind)
+               if census else None)
+    pair = _classify(result)
+    pair.census = summary
+    return pair
 
+
+def _classify(result):
+    """The bucket a comparison falls in, and whether it agreed."""
     if result.verdict is Verdict.SURVIVED and result.forced_only:
         # Agreed, but only where a branch was forced: real evidence, from
         # code the first tier could not reach, and weaker than a feasible
@@ -330,13 +346,15 @@ def judge_true_pair(task):
     both_chains = o0_chain is not None and o3_chain is not None
     abandoned = 0
     results = []
-    for res, chains in ((None, (None, None)),
-                        (resolver, (None, None)),
-                        (resolver, (o0_chain, o3_chain) if both_chains
-                         else (None, None))):
+    for layer, (res, chains) in enumerate((
+            (None, (None, None)),
+            (resolver, (None, None)),
+            (resolver, (o0_chain, o3_chain) if both_chains
+             else (None, None)))):
         result = bucket_pair(o0_loader, o0_address, o3_loader, o3_address,
                              o0_abi, resolver=res, budget=budget,
-                             o0_chain=chains[0], o3_chain=chains[1])
+                             o0_chain=chains[0], o3_chain=chains[1],
+                             census=layer == 1)
         if result.bucket == Bucket.CHAIN_FAILED and chains[0] is not None:
             # A chain is an attempt to improve, not a precondition. If the
             # initialiser cannot run, fall back to testing the function
@@ -489,6 +507,10 @@ def cmd_verify_v0(args):
     _print_report(bare)
     _print_report(stubbed)
     _print_report(chained)
+    census = aggregate(stubbed.census, args.budget) if stubbed.census else None
+    if census:
+        for line in census_lines(census, "V0"):
+            print(line)
 
     bare_done = bare.buckets.get(Bucket.COMPLETED, 0)
     stub_done = stubbed.buckets.get(Bucket.COMPLETED, 0)
@@ -513,6 +535,7 @@ def cmd_verify_v0(args):
             "workers": args.workers,
             "bare": _report_dict(bare), "stubbed": _report_dict(stubbed),
             "chained": _report_dict(chained),
+            "census": census,
         }
         with open(args.out, "w") as f:
             _json.dump(payload, f, indent=1)
