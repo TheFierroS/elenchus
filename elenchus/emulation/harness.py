@@ -333,6 +333,10 @@ class StubDeclined(Exception):
     into IMPORT_WITHOUT_STUB, and the pair is inconclusive.
     """
 
+class _TouchStopped(Exception):
+    """A stub's touch met a rule that ends the run - near null, or past the
+    walk budget. The run's status is already set when this is raised; it only
+    has to get the stub out of the way (F39)."""
 
 _STACK_BLOCKS: dict[int, bytes] = {}
 
@@ -536,10 +540,11 @@ class Machine:
     """
 
     def __init__(self, uc, mapped, seed, arena, input_variant=0, record=None,
-                 log=None, premapped=()):
+                 log=None, premapped=(), touch=None):
         self._uc = uc
         self._mapped = mapped
         self._premapped = premapped
+        self._touch = touch
         self._seed = seed
         self._input_variant = input_variant
         self._record = record
@@ -558,20 +563,32 @@ class Machine:
         regs = (UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_R8, UC_X86_REG_R9)
         return self._uc.reg_read(regs[index]) & 0xFFFFFFFFFFFFFFFF
 
+    def _reach(self, address: int, size: int) -> None:
+        """Make [address, address+size) touchable, by the run's own rule.
+
+        Inside a run that is the rule the function's own touches obey - the
+        null guard, the walk budget, read_invented (F39). A Machine built
+        without a run, as a test may build one, falls back to plain mapping.
+        """
+        if self._touch is not None:
+            self._touch(address, size)
+        else:
+            _ensure_mapped(self._uc, self._mapped, address, size, self._seed,
+                           self._input_variant, self._premapped)
+
     def read(self, address: int, size: int) -> bytes:
         if size > MAX_TRANSFER:
             raise StubDeclined(f"read of {size} bytes, past the sanity bound")
         if size:
-            _ensure_mapped(self._uc, self._mapped, address, size, self._seed,
-                           self._input_variant, self._premapped)
+            self._reach(address, size)
         return bytes(self._uc.mem_read(address, size))
 
     def write(self, address: int, data: bytes) -> None:
         if len(data) > MAX_TRANSFER:
             raise StubDeclined(f"write of {len(data)} bytes, past the sanity bound")
         if data:
-            _ensure_mapped(self._uc, self._mapped, address, len(data),
-                           self._seed, self._input_variant, self._premapped)
+            self._reach(address, len(data))
+
         self._uc.mem_write(address, data)
         # A stub writes through the emulator's API, which does not fire the
         # write hook, so its effect would otherwise be invisible: a -O0 build
@@ -603,7 +620,7 @@ class Machine:
 
 
 def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None,
-              log=None, premapped=()) -> None:
+                log=None, premapped=(), touch=None) -> None:
     """Run a stub in place of the call, then return to the caller.
 
     The call pushed a return address and jumped to the trap; the stub does
@@ -614,7 +631,7 @@ def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None,
     from unicorn.x86_const import UC_X86_REG_RIP, UC_X86_REG_RSP
 
     stub(Machine(uc, mapped, seed, arena, input_variant, record, log,
-                 premapped))
+                 premapped, touch))
 
     rsp = uc.reg_read(UC_X86_REG_RSP)
     return_address = int.from_bytes(uc.mem_read(rsp, 8), "little")
@@ -828,18 +845,23 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
     written: set = set()
     arena = Arena()              # fresh per run: both versions allocate alike
 
-    def on_unmapped(uc, access, addr, size, value, _):
+    def admit(addr):
+        """The one rule for a first touch, the function's own or a stub's.
+
+        Returns False, with the run's status set, if the touch ends the run.
+        The function's touches arrive through Unicorn's unmapped hook, a
+        stub's through Machine (stub_touch below); before F39 a stub had a
+        path of its own that skipped all three rules here.
+        """
         page = addr & ~(PAGE - 1)
         if addr < NULL_GUARD:
             # A null (or near-null) dereference. Left unmapped so it faults,
             # the way it would on a real machine, rather than being filled.
             state["status"] = Status.FAULT
             state["detail"] = f"null dereference at {addr:#x}"
-            uc.emu_stop()
             return False
         if len(mapped) >= UNMAPPED_FILL_LIMIT:
             state["status"] = Status.TOO_MUCH_MEMORY
-            uc.emu_stop()
             return False
         if not _is_handed_out(page):
             # A page outside the buffers and the arena can only be at an
@@ -852,6 +874,32 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         start, count = _fill_page(uc, page, seed, input_variant)
         mapped.update(start + i * PAGE for i in range(count))
         return True
+
+    def on_unmapped(uc, access, addr, size, value, _):
+        if admit(addr):
+            return True
+        uc.emu_stop()
+        return False
+
+    def stub_touch(address, size):
+        """A stub's reach into memory, through the same rule (F39).
+
+        F25 made a stub's writes count like the function's own; this does the
+        same for its touches. Before it, a stub dereferencing near null mapped
+        the guard page instead of faulting - and left it mapped for the rest
+        of the run; a stub reaching invented memory did not set
+        read_invented, so F32 never saw it; and a stub's first touches were
+        not counted against the walk budget. What the run mapped itself is
+        left alone (F38).
+        """
+        first = address & ~(PAGE - 1)
+        last = (address + size - 1) & ~(PAGE - 1)
+        for page in range(first, last + PAGE, PAGE):
+            if page in mapped or any(low <= page < high
+                                     for low, high in premapped):
+                continue
+            if not admit(max(page, address)):
+                raise _TouchStopped
 
     loader.base + loader.size
 
@@ -917,7 +965,13 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             _run_stub(uc, stub, mapped, seed, arena, input_variant,
                       record_write,
                       state["write_log"] if record_writes else None,
-                      premapped)
+                      premapped, stub_touch)
+        except _TouchStopped:
+            # The stub's touch met the rule the function's own would have:
+            # the status is set, and naming the stub says where (F39).
+            state["detail"] = (f"{state['detail']} in {name}"
+                               if state["detail"] else f"in {name}")
+            uc.emu_stop()
         except StubDeclined as exc:
             # The stub exists but cannot serve this call faithfully - a free
             # of a pointer the arena never handed out, a size past the sanity

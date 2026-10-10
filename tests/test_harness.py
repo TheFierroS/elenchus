@@ -635,3 +635,52 @@ def test_a_stub_writes_a_local_on_the_stack(fixture):
               budget=50_000, stub_resolver=resolver)
     assert out.status is Status.COMPLETED
     assert not out.writes                   # the stack is not compared
+
+
+
+# ------------------------------------------- a stub's touch obeys the run's rule
+
+
+def test_a_stub_near_null_faults_like_the_function_would(fixture):
+    """strlen(NULL) crashes on a real machine. A stub used to map the guard
+    page, fill it and carry on - returning a length out of our fill, and
+    leaving the page mapped, so the function's own null dereferences stopped
+    faulting too. A stub's touch now meets the guard the function's does
+    (F39)."""
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    f = sigs["length_of"]
+    out = run(loader, f.address, placement(f.abi), [0],
+              budget=50_000, stub_resolver=resolver)
+    assert out.status is Status.FAULT
+    assert "null" in out.detail
+    assert "strlen" in out.detail
+
+
+def test_a_stub_reaching_invented_memory_is_marked(fixture):
+    """F32's taint, for a stub: strlen walking a pointer outside the buffers
+    and the arena reads our fill, so a difference that follows cannot refute.
+    It was set for the function's own touches and never for a stub's (F39)."""
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    f = sigs["length_of"]
+    wild = run(loader, f.address, placement(f.abi), [0x0000_5000_0000_0000],
+               budget=50_000, stub_resolver=resolver)
+    given = run(loader, f.address, placement(f.abi), [BUF],
+                budget=50_000, stub_resolver=resolver)
+    assert wild.read_invented
+    assert not given.read_invented
+
+
+def test_a_stubs_touches_count_against_the_walk_budget(fixture):
+    """memcpy of 16 MiB from a wild pointer reaches 256 separate chunks - a
+    lost walk by any measure, and one the budget stopped only when the
+    function walked it itself (F39)."""
+    from elenchus.emulation.harness import MAX_TRANSFER
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    f = sigs["copy"]
+    out = run(loader, f.address, placement(f.abi),
+              [BUF, 0x0000_5000_0000_0000, MAX_TRANSFER],
+              budget=50_000, stub_resolver=resolver)
+    assert out.status is Status.TOO_MUCH_MEMORY
