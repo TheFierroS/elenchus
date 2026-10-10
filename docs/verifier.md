@@ -1328,8 +1328,10 @@ the numbers are read.
 reports two counts it already computes. The harness records three more things a
 run already sees. The exit criterion is that nothing moves: V0 at 3,000 pairs
 gives the same buckets in every layer, to the pair, with zero disagreements,
-and R0 at 500 gives 53 / 414 / 33 again. A census that moves a bucket has
-changed behaviour, and is reverted rather than explained.
+and R0 at 500 gives the same verdicts, both against the runs taken after F38
+and F39 - which moved them on purpose, and before the census code exists. A
+census that moves a bucket has changed behaviour, and is reverted rather than
+explained.
 
 ### What is recorded
 
@@ -1449,6 +1451,96 @@ random addresses are not. The counting gates are tested on hand-built
 disagree on, a run that read invented memory - each asserted not counted, and
 a clean difference asserted counted. The existing suite passing unchanged is
 the first evidence that no verdict moved; the 500-pair runs are the second.
+
+## A stub could not touch what the run had mapped (F38)
+
+Found while reading the harness to place the census's recording, and the
+largest coverage change since forcing. Faults - "a function walked a pointer
+we invented" - were a sixth of every pair and the biggest bucket left. For
+most of them that explanation was wrong.
+
+A function's own memory access goes through Unicorn, which calls the unmapped
+hook only for memory that is unmapped. A stub's goes through
+`_ensure_mapped`, which maps every page not in `mapped` - and `mapped` holds
+only first touches, because it is what the walk budget counts. The image and
+the stack are mapped by the run before the call and were never in it. So a
+stub reading a string constant, or writing a local, tried to map memory that
+was already there; Unicorn refused with `UC_ERR_MAP`, the error came back
+through `emu_start`, and the run ended as a fault. `strlen` of a literal,
+`strcmp` against one, `memset` on a local struct: some of the most ordinary
+calls in C, made by a function doing nothing wrong.
+
+**Confirmed before it was fixed, then counted.** A `Machine` over a mapped
+stack and image refused both, with an input buffer as control. On the first
+300 pairs of the V0 sample, stubbed layer, 40 of 56 faulting pairs met it -
+71% - with 1,163 collisions in the image against 144 on the stack: it was
+mostly constants being read, not locals being written. That was an upper
+bound, since a pair can meet this and a genuine fault both.
+
+It never risked a false refutation - a fault is inconclusive - which is why
+a clean 3,000-pair V0 never showed it. It was silencing the verifier, not
+making it lie.
+
+**The fix** hands a stub the regions the run mapped itself (image, stack,
+sentinel and trap pages) and leaves them alone. Two fixture tests reuse
+functions that were already there - `strlen` on the `.rdata` string
+`banner()` returns, and `memcpy` into a stack address - and both failed
+before the fix, which is the strongest mutation check there is. Four more
+mutations each break what they should: disabling the check or the wiring
+breaks both, and removing the stack or the image from the regions breaks
+only the test for that one.
+
+**Measured on the same 500 pairs as before it** (chained layer):
+
+| bucket | before | after |
+|---|---|---|
+| completed | 45.0% | **50.4%** |
+| fault | 17.0% | **6.4%** |
+| budget exhausted | 5.0% | 7.8% |
+| import without a stub | 4.8% | 5.8% |
+| mapped too much memory | 4.4% | 5.2% |
+| ran but nothing to compare | 7.4% | 8.0% |
+| stub declined | 8.2% | 8.2% |
+| completed only on forced paths | 6.4% | 6.4% |
+
+Bare stays at 36.2% to the decimal, which is the control: the bare layer has
+no stubs, so a change to how stubs touch memory must not move it, and it did
+not. Zero disagreements in all three layers. The stubs are now worth 13.6
+points where they were worth 8.2, because they no longer kill the runs they
+serve.
+
+Of the 10.6 points that left the fault bucket, half became agreements and
+half met the function's next obstacle - an exhausted budget, an import with
+no stub, a walk past the touch limit. Functions that used to die at their
+first `strlen` now get as far as their real problems.
+
+**R0 reads it differently, and both readings stand.** 53 / 414 / 33 before,
+54 / 409 / 37 after (refuted / inconclusive / survived; forced-only survivals
+10 then 9). More true pairs are judged, and almost no more false pairs are
+caught: the wrong pairs this lets run mostly agree on what little is
+compared, and four more survive. The likelihood ratio of a survival stays
+near eight. A coverage gain on true claims is not a gain in refutation
+power, and that is exactly what the census's seventh observation - how much
+a survival compared - exists to take apart.
+
+**What it says about how this project explains its numbers.** The fault
+bucket had an explanation that fitted, and it was repeated in the handover
+without having been measured. It was right for about a third of the bucket.
+F26 made the same mistake from the other side - the constructor shape was
+assumed common and measured at 3% - and the remedy is the same: an
+explanation that fits is a hypothesis until it is counted.
+
+**And the stub is still a second door.** F25 made a stub's *writes* go
+through the same rule as the function's own. Its *touches* did not, and this
+was one of four places the two paths disagree. The other three are still
+open: a stub dereferencing near null maps the guard page instead of
+faulting, and leaves it mapped for the rest of the run; a stub reaching a
+page outside the buffers and the arena does not set `read_invented`, so F32
+does not see it; and a stub's first touches are not counted against the walk
+budget. They push in different directions - the first and third towards
+fewer completions, the second towards fewer refutations - so they are one
+change, F39, measured on its own: every touch, the function's or a stub's,
+through one rule.
 
 ## Hardening - the core is built, these make it stronger
 
