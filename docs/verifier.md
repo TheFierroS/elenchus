@@ -1314,6 +1314,142 @@ already a minute or two. Recorded with the rejected options because the next
 person to look at this will have the same four ideas, and three of them have
 now been paid for.
 
+## What else could be observed: the census - protocol
+
+Written 10 October, before any code. Refutation power is 10.6% on R0, and it
+rests on two observations: the masked return, and the bytes both versions
+wrote. The roadmap asked for a third, the sequence of imported calls; the
+second survey (docs/related-work.md, section 5) says that is the weakest of
+BLEX's seven features and points at three things that may be worth more. This
+protocol measures all of them in one pair of runs, and decides nothing until
+the numbers are read.
+
+**Nothing in it can change a verdict.** No rule is added to `_judge`; `_judge`
+reports two counts it already computes. The harness records three more things a
+run already sees. The exit criterion is that nothing moves: V0 at 3,000 pairs
+gives the same buckets in every layer, to the pair, with zero disagreements,
+and R0 at 500 gives 53 / 414 / 33 again. A census that moves a bucket has
+changed behaviour, and is reverted rather than explained.
+
+### What is recorded
+
+- **The imports a run called**, in order, when the stub served the call. A
+  declined or missing stub ends the run, so that pair is not compared anyway.
+  Capped at 256 with an overflow flag; a truncated list is reported apart,
+  since a cut multiset misleads as much as a cut sequence.
+- **The first wild access**: the kind (read, write, fetch) and address of the
+  first touch outside the buffers and the arena - the event that sets
+  `read_invented` - or the address of a null dereference.
+- **The arena's allocations**: the size of each block an allocation stub
+  handed out, in order, leaving out the runtime-state blocks (`_errno`, the
+  stdio table).
+
+All three are reset after a chained initialiser runs, where `written` is: what
+the initialiser did is setup. (`write_ranges`, `partial_writes` and
+`read_invented` are not reset there today, against the comment beside
+`written.clear()`. That is a behaviour question with a measurement of its own,
+recorded under Hardening, and the census does not touch it.)
+
+The pure logic - inverting the fill, the counting gates, the aggregation -
+lives in `elenchus/emulation/census.py`, which holds no emulator state and is
+tested without Unicorn, like `abi`, `inputs`, `branches`, `forced` and `chain`.
+
+### The eight observations
+
+Everything is read on the **stubbed** layer of V0, which is the configuration
+R0 runs, so the two halves compare like with like.
+
+1. **Import multiset** - the count of each name served. Also projected onto
+   the allow-list the roadmap derived by argument - locks and stream output, 25
+   names a compiler can neither invent nor remove - to see whether the argument
+   holds.
+2. **Instructions per run** - every first-tier run, not the maximum over a
+   pair's runs, which is what V0 prints today as "instructions of finishers".
+   That figure's p90 of 5,000 has been read as a single run's; it is not, and
+   S6 and F36's open suspicion cannot be weighed without the per-run figure.
+3. **Which buffers were written** - the indices of the argument buffers each
+   version wrote into. `_judge` compares only bytes both versions wrote, so two
+   functions writing *different* buffers share no byte and that difference is
+   never seen. A buffer's index is the same in both builds by construction.
+   Arena writes are reported as a byte count only: -O3 may remove an
+   allocation (risk 5), after which every later arena address shifts, and a
+   block-level comparison would then measure us.
+4. **Allocation pattern** - the multiset of block sizes. Risk 5 says this may
+   not survive optimisation; it is measured because it is cheap and ARCTURUS
+   uses it.
+5. **How the runs ended** - each side's status on each input. Needs nothing
+   new.
+6. **Null or not** - for a returned pointer, which is never compared (F18),
+   whether it was zero.
+7. **Observation mass of a survival** - the compared bytes, and whether a
+   return was compared, for every input that survived. This is BSim's
+   significance in our terms: a survival on one byte and a survival on eight
+   hundred are the same verdict today.
+8. **Fault anatomy** - for every run that faulted or read invented memory,
+   where its first wild address came from. The fill makes this exact. A word
+   of the fill is `offset * GOLDEN + c` modulo 2^64, `c` being the input
+   variant inside the buffers and the run's seed elsewhere, and GOLDEN is odd,
+   so it inverts. An address `a` was reached through a pointer read out of our
+   fill if, for some displacement `d` with `|d| <= 1024`,
+   `(a - d - c) * GOLDEN^-1` is a multiple of eight below the block size; the
+   chance of that by accident is under one in a billion a run. Classified as
+   null; data pointer from the input fill; data pointer from uninitialised
+   fill; code pointer from either (a fetch); other.
+
+### How a difference is counted
+
+A difference the existing rules would call ours is not counted, or the census
+would measure the ceiling of a rule that cannot be written. For observations 1,
+3, 4 and 6 an input counts as differing only if all four runs under a fill
+completed, each version's two seeds agree on the observation, neither version
+read invented memory, and the difference appears under both input fills -
+F22, F32 and F24, applied to the new observation exactly as to the old ones.
+
+Each of them gets two numbers:
+
+- **Risk** - on V0, the share of judged true pairs where it differs. Every one
+  is a false refutation the observation would have made.
+- **Ceiling** - on R0, the share of all wrong pairs where it differs *and the
+  verifier does not already refute them*. A difference on a pair already
+  refuted adds nothing.
+
+### What decides, written now
+
+- An observation becomes a **rule candidate** only with zero risk in 3,000 true
+  pairs - by the rule of three, a rate below 0.1% - and a ceiling of at least
+  two points of R0. Anything less is recorded and not built. A candidate is
+  then a separate change with its own protocol, tests and mutation check; the
+  census itself never writes a rule.
+- **Survival grading** (7) is pursued if some threshold on compared bytes
+  keeps at least 80% of V0's survivals and at least doubles the likelihood
+  ratio of a survival, about 8 today.
+- **Input repair** (8) - Tinbergen's pointer derivation, read from DWARF types
+  rather than tainted - is pursued if pointers read out of our fill explain at
+  least a third of the faulting pairs, about six points of coverage at stake.
+- **Instructions per run** (2) are recorded for S6, which they inform and do
+  not decide.
+
+### Runs
+
+- R0 at 150 pairs: a pulse, about a minute.
+- V0 and R0 at 500 pairs: nothing moved against the numbers they gave before.
+- **V0 at 3,000** (about 67 minutes) and **R0 at 3,000** (about 21): the census.
+  R0 at 500 would see a two-point ceiling as ten pairs, too few to read.
+
+The V0 run is the one v0.7.0 was waiting for anyway; the census rides on it.
+
+### Tests
+
+Each recorded field has a test that it records and a test that it is reset
+after a chained initialiser, each mutation-checked by deleting the line that
+records it. The fill inversion is tested on words built by `_fill` itself: a
+pointer read out of the fill is recognised at displacements 0 and 1,024, and
+random addresses are not. The counting gates are tested on hand-built
+`Outcome`s - a difference under one fill only, an observation the two seeds
+disagree on, a run that read invented memory - each asserted not counted, and
+a clean difference asserted counted. The existing suite passing unchanged is
+the first evidence that no verdict moved; the 500-pair runs are the second.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
