@@ -684,3 +684,105 @@ def test_a_stubs_touches_count_against_the_walk_budget(fixture):
               [BUF, 0x0000_5000_0000_0000, MAX_TRANSFER],
               budget=50_000, stub_resolver=resolver)
     assert out.status is Status.TOO_MUCH_MEMORY
+
+
+
+# ------------------------------------------- what the census records
+
+
+def test_a_served_import_is_recorded(fixture):
+    """The census's first observation: which imports a stub served, in
+    order. Recorded, never compared."""
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    f = sigs["copy"]
+    out = run(loader, f.address, placement(f.abi), [BUF, BUF + 0x1000, 16],
+              budget=50_000, stub_resolver=resolver)
+    assert out.status is Status.COMPLETED
+    assert out.calls == ("memcpy",)
+    assert not out.calls_overflow
+
+
+def test_a_call_that_ended_the_run_is_not_recorded(fixture):
+    """A declined stub ends the run, so its pair is never compared;
+    recording it would count a call the function never got to finish."""
+    from elenchus.emulation.harness import MAX_TRANSFER
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    f = sigs["copy"]
+    out = run(loader, f.address, placement(f.abi),
+              [BUF, BUF + 0x1000, MAX_TRANSFER + 1],
+              budget=50_000, stub_resolver=resolver)
+    assert out.status is Status.STUB_DECLINED
+    assert out.calls == ()
+
+
+def test_the_first_wild_touch_is_recorded_with_its_kind(fixture):
+    """Fault anatomy (the census, observation 8) starts from the first touch
+    outside what the harness handed out: where it was, and which way."""
+    loader, sigs = fixture
+    wild = 0x0000_5000_0000_0000
+    read = run(loader, sigs["count_nonzero"].address,
+               placement(sigs["count_nonzero"].abi), [wild, 64],
+               budget=50_000)
+    write = run(loader, sigs["fill"].address, placement(sigs["fill"].abi),
+                [wild, 16, 0x41], budget=50_000)
+    given = run(loader, sigs["count_nonzero"].address,
+                placement(sigs["count_nonzero"].abi), [BUF, 64],
+                budget=50_000)
+    assert read.first_wild == ("read", wild)
+    assert write.first_wild == ("write", wild)
+    assert given.first_wild is None
+
+
+def test_a_stubs_wild_touch_is_recorded_too(fixture):
+    """Since F39 a stub's touches go through the same rule, so they are
+    recorded the same way - including which way they went, and a null."""
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    wild = 0x0000_5000_0000_0000
+    read = run(loader, sigs["length_of"].address,
+               placement(sigs["length_of"].abi), [wild],
+               budget=50_000, stub_resolver=resolver)
+    write = run(loader, sigs["copy"].address, placement(sigs["copy"].abi),
+                [wild, BUF, 16], budget=50_000, stub_resolver=resolver)
+    null = run(loader, sigs["length_of"].address,
+               placement(sigs["length_of"].abi), [0],
+               budget=50_000, stub_resolver=resolver)
+    assert read.first_wild == ("read", wild)
+    assert write.first_wild == ("write", wild)
+    assert null.first_wild == ("null", 0)
+
+
+def test_the_arenas_allocations_are_recorded(fixture):
+    """duplicate(s) mallocs strlen(s) + 1 bytes: one block, recorded by
+    size. The length is whatever our fill holds at BUF, computed here from
+    the fill itself."""
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    f = sigs["duplicate"]
+    out = run(loader, f.address, placement(f.abi), [BUF],
+              budget=50_000, stub_resolver=resolver)
+    assert out.status is Status.COMPLETED
+    assert len(out.allocations) == 1
+    page = _fill(BUF, 0)
+    if 0 in page:
+        assert out.allocations == (page.index(0) + 1,)
+
+
+def test_an_initialisers_census_is_not_the_functions(fixture):
+    """duplicate(wild) as a constructor calls strlen, malloc and memcpy,
+    touches invented memory and allocates; length_of then runs on what it
+    built. None of the setup is length_of's, and the census must not count
+    it - the reason written.clear() exists."""
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    dup, length = sigs["duplicate"], sigs["length_of"]
+    out = run(loader, length.address, placement(length.abi), [BUF],
+              budget=50_000, stub_resolver=resolver,
+              prepare=(dup.address, placement(dup.abi),
+                       [0x0000_5000_0000_0000], True))
+    assert out.status is Status.COMPLETED
+    assert out.calls == ("strlen",)
+    assert out.first_wild is None
+    assert out.allocations == ()

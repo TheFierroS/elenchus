@@ -98,6 +98,11 @@ DEFAULT_TIMEOUT_US = 2_000_000       # 2 seconds
 # function touches in one call, and well past the page-map limit above.
 MAX_TRANSFER = 16 * 1024 * 1024
 
+# How many served imports a run records for the census, in order. A run that
+# calls more says so with calls_overflow, rather than keeping a cut list that
+# would read as a complete one.
+CALL_LIMIT = 256
+
 
 class Status(Enum):
     """Why a run ended. Only COMPLETED yields a return value to compare."""
@@ -139,6 +144,16 @@ class Outcome:
     # out - which it can only have reached through an address it computed
     # from data we invented (F32).
     read_invented: bool = False
+    # What the census records (docs/verifier.md, the census). None of it is
+    # compared, and none of it can change a verdict: the imports a stub
+    # served, in order; whether there were more than CALL_LIMIT; the first
+    # touch outside what the harness handed out, as (kind, address) with kind
+    # read, write, fetch or null; and the size of each block the allocation
+    # stubs handed out.
+    calls: tuple = ()
+    calls_overflow: bool = False
+    first_wild: tuple | None = None
+    allocations: tuple = ()
 
 
 # The content a page gets is a window into one bounded random block, indexed
@@ -517,6 +532,18 @@ class Arena:
         return block["size"]
 
 
+def _allocation_sizes(arena, start) -> tuple:
+    """The size of each block the allocation stubs handed out from `start`,
+    in order, leaving out the runtime's own state blocks (errno, the stdio
+    table) - those are the harness's bookkeeping, not the function's
+    allocations. For the census; never compared."""
+    if arena is None:
+        return ()
+    runtime = set(arena.runtime_state.values())
+    return tuple(block["size"]
+                 for address, block in sorted(arena.blocks.items())
+                 if address >= start and address not in runtime)
+
 
 class Machine:
     """What a stub is handed: the emulator's memory and the call's registers.
@@ -556,7 +583,7 @@ class Machine:
         regs = (UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_R8, UC_X86_REG_R9)
         return self._uc.reg_read(regs[index]) & 0xFFFFFFFFFFFFFFFF
 
-    def _reach(self, address: int, size: int) -> None:
+    def _reach(self, address: int, size: int, kind: str = "read") -> None:
         """Make [address, address+size) touchable, by the run's own rule.
 
         Inside a run that is the rule the function's own touches obey - the
@@ -564,7 +591,7 @@ class Machine:
         without a run, as a test may build one, falls back to plain mapping.
         """
         if self._touch is not None:
-            self._touch(address, size)
+            self._touch(address, size, kind)
         else:
             _ensure_mapped(self._uc, self._mapped, address, size, self._seed,
                            self._input_variant, self._premapped)
@@ -580,7 +607,7 @@ class Machine:
         if len(data) > MAX_TRANSFER:
             raise StubDeclined(f"write of {len(data)} bytes, past the sanity bound")
         if data:
-            self._reach(address, len(data))
+            self._reach(address, len(data), "write")
         self._uc.mem_write(address, data)
         # A stub writes through the emulator's API, which does not fire the
         # write hook, so its effect would otherwise be invisible: a -O0 build
@@ -663,7 +690,13 @@ def run(loader: Loader, address: int, placement: Placement, args,
              "write_log": [],      # (address, size, value) when asked for
              "write_ranges": [],   # (address, size) of every recorded store
              "partial_writes": [],  # stores reaching outside comparable memory
-             "read_invented": False}  # touched memory only we could have made
+             "read_invented": False,  # touched memory only we could have made
+             # Recorded for the census, never compared (docs/verifier.md).
+             "calls": [],           # imports a stub served, in order
+             "calls_overflow": False,
+             "first_wild": None,    # (kind, address) of the first wild touch
+             "arena": None,         # the run's arena, for its block sizes
+             "arena_from": ARENA_BASE}  # blocks before this were setup's
     try:
         outcome = _run_in(uc, loader, address, placement, args, seed, budget,
                           stub_resolver, timeout_us, input_variant, prepare,
@@ -675,6 +708,11 @@ def run(loader: Loader, address: int, placement: Placement, args,
         outcome.write_ranges = tuple(state["write_ranges"])
         outcome.partial_writes = tuple(state["partial_writes"])
         outcome.read_invented = state["read_invented"]
+        outcome.calls = tuple(state["calls"])
+        outcome.calls_overflow = state["calls_overflow"]
+        outcome.first_wild = state["first_wild"]
+        outcome.allocations = _allocation_sizes(state["arena"],
+                                                state["arena_from"])
         return outcome
     finally:
         # Unicorn holds C-side memory (every mapped page, the hooks) that is
@@ -789,6 +827,8 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         UC_HOOK_MEM_READ_UNMAPPED,
         UC_HOOK_MEM_WRITE,
         UC_HOOK_MEM_WRITE_UNMAPPED,
+        UC_MEM_FETCH_UNMAPPED,
+        UC_MEM_WRITE_UNMAPPED,
         UcError,
     )
     from unicorn.x86_const import UC_X86_REG_RAX, UC_X86_REG_RIP, UC_X86_REG_RSP
@@ -836,8 +876,9 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
     mapped: set = set()          # pages the harness filled on first touch
     written: set = set()
     arena = Arena()              # fresh per run: both versions allocate alike
+    state["arena"] = arena       # the census reads its block sizes
 
-    def admit(addr):
+    def admit(addr, kind="read"):
         """The one rule for a first touch, the function's own or a stub's.
 
         Returns False, with the run's status set, if the touch ends the run.
@@ -851,6 +892,8 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             # the way it would on a real machine, rather than being filled.
             state["status"] = Status.FAULT
             state["detail"] = f"null dereference at {addr:#x}"
+            if state["first_wild"] is None:
+                state["first_wild"] = ("null", addr)
             return False
         if len(mapped) >= UNMAPPED_FILL_LIMIT:
             state["status"] = Status.TOO_MUCH_MEMORY
@@ -863,17 +906,21 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             # that follows is ours and cannot refute (F32). An agreement
             # still counts: agreeing is agreeing.
             state["read_invented"] = True
+            if state["first_wild"] is None:
+                state["first_wild"] = (kind, addr)
         start, count = _fill_page(uc, page, seed, input_variant)
         mapped.update(start + i * PAGE for i in range(count))
         return True
 
     def on_unmapped(uc, access, addr, size, value, _):
-        if admit(addr):
+        kind = ("fetch" if access == UC_MEM_FETCH_UNMAPPED
+                else "write" if access == UC_MEM_WRITE_UNMAPPED else "read")
+        if admit(addr, kind):
             return True
         uc.emu_stop()
         return False
 
-    def stub_touch(address, size):
+    def stub_touch(address, size, kind="read"):
         """A stub's reach into memory, through the same rule (F39).
 
         F25 made a stub's writes count like the function's own; this does the
@@ -890,7 +937,7 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             if page in mapped or any(low <= page < high
                                      for low, high in premapped):
                 continue
-            if not admit(max(page, address)):
+            if not admit(max(page, address), kind):
                 raise _TouchStopped
 
     def record_write(addr, size):
@@ -971,6 +1018,13 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             state["status"] = Status.STUB_DECLINED
             state["detail"] = f"{name}: {exc}"
             uc.emu_stop()
+        else:
+            # Served: the census records it. A declined call, or one with no
+            # stub, ends the run, so its pair is never compared anyway.
+            if len(state["calls"]) < CALL_LIMIT:
+                state["calls"].append(name)
+            else:
+                state["calls_overflow"] = True
 
     uc.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED
                 | UC_HOOK_MEM_FETCH_UNMAPPED, on_unmapped)
@@ -1048,6 +1102,14 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         written.clear()
         state["status"] = None
         state["detail"] = ""
+        # Nor are its calls, its first wild touch or its allocations. (Its
+        # write_ranges, partial_writes and read_invented are not reset here;
+        # that changes verdicts, and is measured on its own - the census
+        # protocol in docs/verifier.md.)
+        state["calls"].clear()
+        state["calls_overflow"] = False
+        state["first_wild"] = None
+        state["arena_from"] = arena.next
 
     failure = execute(address, placement, call_args)
     if failure is not None:
