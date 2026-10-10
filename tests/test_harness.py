@@ -597,3 +597,41 @@ def test_touching_memory_outside_the_given_buffers_is_marked(fixture):
     given = run(loader, f.address, placement(f.abi), [BUF, 64], budget=50_000)
     assert wild.read_invented
     assert not given.read_invented
+
+
+
+# ------------------------------------------- a stub touching what the run mapped
+
+
+def test_a_stub_reads_a_constant_in_the_image(fixture):
+    """strlen on a string literal reads the binary's own .rdata, which the run
+    mapped itself before the call. The stub must read it rather than try to
+    map it again: it used to, Unicorn refused, and a run doing nothing wrong
+    ended as a fault - 71% of the stubbed layer's faults met this in a
+    300-pair sample (F38)."""
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    text = call(fixture, "banner", [])
+    assert text.status is Status.COMPLETED
+    f = sigs["length_of"]
+    out = run(loader, f.address, placement(f.abi), [text.ret_int],
+              budget=50_000, stub_resolver=resolver)
+    assert out.status is Status.COMPLETED
+    assert (out.ret_int & placement(f.abi).ret.mask) \
+        == len("elenchus fixture banner v1")
+
+
+def test_a_stub_writes_a_local_on_the_stack(fixture):
+    """memset or memcpy into a local - among the commonest calls in -O0 code -
+    writes the stack, which the run also mapped itself, and met the same
+    refusal (F38). The stack is never compared, so the write must not be
+    recorded either."""
+    from elenchus.emulation.harness import STACK_TOP
+    from elenchus.emulation.stubs import resolver
+    loader, sigs = fixture
+    f = sigs["copy"]
+    local = STACK_TOP - 0x8000              # well below the frame the run lays
+    out = run(loader, f.address, placement(f.abi), [local, BUF, 16],
+              budget=50_000, stub_resolver=resolver)
+    assert out.status is Status.COMPLETED
+    assert not out.writes                   # the stack is not compared

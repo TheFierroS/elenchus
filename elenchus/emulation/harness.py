@@ -421,16 +421,28 @@ def _fill_page(uc, page_base: int, seed: int, input_variant: int = 0) -> int:
 
 
 def _ensure_mapped(uc, mapped: set, address: int, size: int, seed: int,
-                   input_variant: int = 0) -> None:
+                   input_variant: int = 0, premapped=()) -> None:
     """Map and fill every page a range [address, address+size) touches that is
     not mapped yet, so a read of it returns the same bytes a function's own
-    read would. Used by a stub through the Machine."""
+    read would. Used by a stub through the Machine.
+
+    `premapped` is what the run mapped itself before the call - the image, the
+    stack, the sentinel and trap pages. None of it is in `mapped`, which holds
+    only first touches because it is what the walk budget counts. Without it a
+    stub that read a string constant or wrote a local tried to map memory that
+    was already there, Unicorn refused, and a run doing nothing wrong ended as
+    a fault: 71% of the stubbed layer's faults met this in a 300-pair sample
+    (F38). A function's own access never had the problem, since Unicorn calls
+    the unmapped hook only for memory that is unmapped.
+    """
     first = address & ~(PAGE - 1)
     last = (address + size - 1) & ~(PAGE - 1)
     for page in range(first, last + PAGE, PAGE):
-        if page not in mapped:
-            start, count = _fill_page(uc, page, seed, input_variant)
-            mapped.update(start + i * PAGE for i in range(count))
+        if page in mapped or any(low <= page < high
+                                 for low, high in premapped):
+            continue
+        start, count = _fill_page(uc, page, seed, input_variant)
+        mapped.update(start + i * PAGE for i in range(count))
 
 
 ARENA_BASE = 0x0000_3000_0000_0000
@@ -524,9 +536,10 @@ class Machine:
     """
 
     def __init__(self, uc, mapped, seed, arena, input_variant=0, record=None,
-                 log=None):
+                 log=None, premapped=()):
         self._uc = uc
         self._mapped = mapped
+        self._premapped = premapped
         self._seed = seed
         self._input_variant = input_variant
         self._record = record
@@ -550,7 +563,7 @@ class Machine:
             raise StubDeclined(f"read of {size} bytes, past the sanity bound")
         if size:
             _ensure_mapped(self._uc, self._mapped, address, size, self._seed,
-                           self._input_variant)
+                           self._input_variant, self._premapped)
         return bytes(self._uc.mem_read(address, size))
 
     def write(self, address: int, data: bytes) -> None:
@@ -558,7 +571,7 @@ class Machine:
             raise StubDeclined(f"write of {len(data)} bytes, past the sanity bound")
         if data:
             _ensure_mapped(self._uc, self._mapped, address, len(data),
-                           self._seed, self._input_variant)
+                           self._seed, self._input_variant, self._premapped)
         self._uc.mem_write(address, data)
         # A stub writes through the emulator's API, which does not fire the
         # write hook, so its effect would otherwise be invisible: a -O0 build
@@ -590,7 +603,7 @@ class Machine:
 
 
 def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None,
-              log=None) -> None:
+              log=None, premapped=()) -> None:
     """Run a stub in place of the call, then return to the caller.
 
     The call pushed a return address and jumped to the trap; the stub does
@@ -600,7 +613,8 @@ def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None,
     """
     from unicorn.x86_const import UC_X86_REG_RIP, UC_X86_REG_RSP
 
-    stub(Machine(uc, mapped, seed, arena, input_variant, record, log))
+    stub(Machine(uc, mapped, seed, arena, input_variant, record, log,
+                 premapped))
 
     rsp = uc.reg_read(UC_X86_REG_RSP)
     return_address = int.from_bytes(uc.mem_read(rsp, 8), "little")
@@ -786,6 +800,14 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
     # by the code hook before it can execute. Mapping it keeps that a caught
     # import rather than a fetch fault.
     uc.mem_map(TRAP_BASE & ~(PAGE - 1), PAGE)
+        # Everything mapped above is the run's own, set up before the call. A
+    # stub's reads and writes must not try to map it again (F38).
+    premapped = (
+        (loader.base, loader.base + loader.size),
+        (STACK_TOP - STACK_SIZE, STACK_TOP),
+        (SENTINEL & ~(PAGE - 1), (SENTINEL & ~(PAGE - 1)) + PAGE),
+        (TRAP_BASE & ~(PAGE - 1), (TRAP_BASE & ~(PAGE - 1)) + PAGE),
+    )
 
     def frame(call_placement, call_args):
         """Lay a fresh call frame: a 16-byte-aligned stack with the sentinel
@@ -894,7 +916,8 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         try:
             _run_stub(uc, stub, mapped, seed, arena, input_variant,
                       record_write,
-                      state["write_log"] if record_writes else None)
+                      state["write_log"] if record_writes else None,
+                      premapped)
         except StubDeclined as exc:
             # The stub exists but cannot serve this call faithfully - a free
             # of a pointer the arena never handed out, a size past the sanity
