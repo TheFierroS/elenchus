@@ -48,25 +48,16 @@ CHUNK = 16 * 4096                    # 64 KiB mapped per first touch: one
 #                                      region instead of 16, which is where
 #                                      Unicorn's cost actually lies.
 #
-# The budget is in pages, but what it has to bound is the number of *distinct
-# touches* a lost walk makes, and a touch now costs CHUNK. Set so that the
-# walk gets the same 512 touches it had before chunking: the first version of
-# this kept the budget at 4096 pages, which with a 64-page chunk allowed only
-# 64 touches, and cost 2.2 points of coverage (F27). Measured, 512 touches of
-# 16 pages is 32 MiB and 83 ms, against 2 MiB and 390 ms before.
-UNMAPPED_FILL_LIMIT = 128 * 16       # pages: 128 touches of CHUNK each.
-#                                      Measured: 128 and 512 touches judge
-#                                      exactly the same pairs, and 128 runs in
-#                                      134 s where 512 takes 368 s. A walk
-#                                      that has reached 128 separate places
-#                                      has already lost its way (F28).
-#                                      before calling it a lost walk. 2 MiB is
-#                                      already far more than a real function
-#                                      touches; a garbage pointer chased
-#                                      through a data structure hits this fast,
-#                                      and each page filled in Python is not
-#                                      cheap, so a high limit was most of the
-#                                      first V0 pass's time (F16).
+# The budget is in pages, but what it bounds is the number of *distinct
+# touches* a lost walk makes, and a touch maps a whole CHUNK. The first
+# chunked version kept the budget at 4096 pages, which with a 64-page chunk
+# allowed only 64 touches and cost 2.2 points of coverage (F27). Then
+# measured: 128 and 512 touches judge exactly the same pairs, and 128 runs in
+# 134 s where 512 takes 368 s (F28). A walk that has reached 128 separate
+# places has already lost its way, and stopping it sooner is faster and no
+# less accurate, since its verdict is inconclusive either way (F16). Since
+# F39 a stub's touches count against it too.
+UNMAPPED_FILL_LIMIT = 128 * 16       # pages: 128 touches of a 16-page CHUNK
 
 # Imports are given trap addresses in a page of their own. A call to an
 # import compiles to `call [thunk]`, an indirect call through the import
@@ -330,13 +321,15 @@ class StubDeclined(Exception):
     Raised by a stub when honouring the call exactly is beyond what it
     implements - a realloc that would have to move a block the arena cannot,
     an argument it will not assume. Never a refutation: the caller turns it
-    into IMPORT_WITHOUT_STUB, and the pair is inconclusive.
+    into STUB_DECLINED, and the pair is inconclusive.
     """
+
 
 class _TouchStopped(Exception):
     """A stub's touch met a rule that ends the run - near null, or past the
     walk budget. The run's status is already set when this is raised; it only
     has to get the stub out of the way (F39)."""
+
 
 _STACK_BLOCKS: dict[int, bytes] = {}
 
@@ -588,7 +581,6 @@ class Machine:
             raise StubDeclined(f"write of {len(data)} bytes, past the sanity bound")
         if data:
             self._reach(address, len(data))
-
         self._uc.mem_write(address, data)
         # A stub writes through the emulator's API, which does not fire the
         # write hook, so its effect would otherwise be invisible: a -O0 build
@@ -620,7 +612,7 @@ class Machine:
 
 
 def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None,
-                log=None, premapped=(), touch=None) -> None:
+              log=None, premapped=(), touch=None) -> None:
     """Run a stub in place of the call, then return to the caller.
 
     The call pushed a return address and jumped to the trap; the stub does
@@ -817,7 +809,7 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
     # by the code hook before it can execute. Mapping it keeps that a caught
     # import rather than a fetch fault.
     uc.mem_map(TRAP_BASE & ~(PAGE - 1), PAGE)
-        # Everything mapped above is the run's own, set up before the call. A
+    # Everything mapped above is the run's own, set up before the call. A
     # stub's reads and writes must not try to map it again (F38).
     premapped = (
         (loader.base, loader.base + loader.size),
@@ -900,8 +892,6 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
                 continue
             if not admit(max(page, address)):
                 raise _TouchStopped
-
-    loader.base + loader.size
 
     def record_write(addr, size):
         """Record the pages a write touches, if it is an observable effect.

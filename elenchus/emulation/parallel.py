@@ -3,8 +3,9 @@
 V0's 3000 pairs took 112 minutes, of which 81 were kernel time: every run maps
 the binary's image into a fresh emulator, and there are tens of thousands of
 runs. The runs are entirely independent - each one builds its own emulator,
-its own arena and its own stack, and nothing is carried between them - so the
-cost divides by however many cores are given to it.
+its own arena and its own stack, and nothing is carried between them - so in
+principle the cost divides by the cores given to it. Measured, it stops at
+two (F36, MAX_WORKERS below).
 
 Two properties this must hold, because the measurements are worthless without
 them:
@@ -20,10 +21,10 @@ the tests compare against.
 3000-pair run at 9 GB, and the lesson there - every run releases the
 emulator's handle in a `finally` - is untouched here: a worker runs exactly
 the same `run()`. What a worker does accumulate is its own cache of parsed
-binaries, so processes are recycled after a fixed number of tasks and the
-cache goes with them. Memory is per worker, so four workers want roughly four
-times one run's footprint; the verifier sits at about 800 MB, and the WSL
-default of 10 GB is what the ceiling below is chosen against.
+binaries, and that is bounded where it lives - v0 and r0 keep the last few
+loaders - rather than by recycling processes, which was tried first and
+undone (see the comment below). The worker count is measured, not chosen
+against memory (F36).
 """
 
 from __future__ import annotations

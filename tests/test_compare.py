@@ -334,7 +334,7 @@ def test_masking_only_blanks_addresses_we_did_not_hand_out():
     inside = (0x140005000).to_bytes(8, "little")
     outside = (0x2000000000000).to_bytes(8, "little")
     content = {i: byte for i, byte in enumerate(inside + outside)}
-    blanked = _foreign_pointer_bytes(content, content, 0, image)
+    blanked = _foreign_pointer_bytes(content, content, image)
     assert blanked == set(range(8))               # the image pointer only
 
 
@@ -361,7 +361,7 @@ def test_the_stack_is_a_region_that_does_not_correspond():
     stack = (STACK_TOP - 0x2080).to_bytes(8, "little")
     arena = (ARENA_BASE + 0x1720).to_bytes(8, "little")
     content = {i: byte for i, byte in enumerate(stack + arena)}
-    blanked = _foreign_pointer_bytes(content, content, 0, ranges)
+    blanked = _foreign_pointer_bytes(content, content, ranges)
     assert blanked == set(range(8))     # the stack pointer, not the arena one
 
 

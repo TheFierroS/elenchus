@@ -33,17 +33,14 @@ from elenchus.emulation.harness import Status
 from elenchus.emulation.inputs import BUFFER_BASE, input_vectors
 from elenchus.emulation.parallel import mapped
 
-# The starting instruction budget. V0 measures whether it is right: a pair
-# that does not finish under it is budget-exhausted, and the distribution of
-# how many instructions the finishers took says where the real budget sits.
-# Lowered from the 5M ceiling to 500k after the first pass: real functions
-# that finish do so in far fewer, and a lower budget turns a 5M-instruction
-# spin from most of the running time into a quick budget-exhausted verdict.
-# The instruction budget. Measured, not guessed: on the sample, completed
-# pairs finish with a p90 of ~300 instructions, and lowering the budget from
-# 500k to 5k left coverage unchanged (30%/32% either way) while halving the
-# time - so nothing legitimate needs 5k-500k instructions, and a run that
-# reaches 5k is a garbage-fed loop, caught sooner as budget-exhausted.
+# The instruction budget, per run. Measured, not guessed: it started at the
+# design's 5M ceiling, came down to 500k after the first pass, and then to 5k,
+# which left coverage unchanged (30%/32% either way) while halving the time -
+# a run that reaches 5k is a garbage-fed loop, caught sooner as
+# budget-exhausted. At the time, completed runs finished with a p90 near 300.
+# The report's "instructions of finishers" is a different figure - the longest
+# of a pair's many runs - and its p90 sits at this budget; the census reports
+# the per-run distribution beside it.
 V0_BUDGET = 5_000
 
 # How many input vectors per pair. Generated from the reference signature by

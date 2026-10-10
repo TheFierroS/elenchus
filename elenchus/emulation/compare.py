@@ -130,7 +130,7 @@ def foreign_ranges(q_loader, k_loader):
     )
 
 
-def _foreign_pointer_bytes(mine, theirs, page, ranges) -> set:
+def _foreign_pointer_bytes(mine, theirs, ranges) -> set:
     """The byte offsets holding an address the harness did not hand out.
 
     A function that writes a pointer to one of its own globals writes an
@@ -148,6 +148,11 @@ def _foreign_pointer_bytes(mine, theirs, page, ranges) -> set:
     Both versions' bytes are needed, because the value is only recognisable
     as a pointer when the eight bytes are all there - and they are checked
     unaligned as well, since a compiler is free to store one anywhere (F31).
+
+    It is handed one page at a time, so an unaligned pointer straddling two
+    pages - at offset 4089 or later - is whole on neither and is compared. An
+    aligned one never straddles, 4096 being a multiple of 8. Not met in 3,000
+    pairs; if a false refutation ever lands on such an offset, look here.
     """
     blanked = set()
     for start in sorted(set(mine) | set(theirs)):
@@ -300,7 +305,7 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement,
         mine, theirs = q_writes[page], k_writes[page]
         shared = set(mine) & set(theirs)
         if foreign:
-            shared -= _foreign_pointer_bytes(mine, theirs, page, foreign)
+            shared -= _foreign_pointer_bytes(mine, theirs, foreign)
         compared_bytes += len(shared)
         if any(mine[offset] != theirs[offset] for offset in shared):
             differing.append(hex(page))
