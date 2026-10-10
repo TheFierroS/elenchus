@@ -7,7 +7,9 @@ be worth and what it would cost. Nothing here decides anything. It holds no
 emulator state and imports no emulator, so it is tested on its own, like abi,
 inputs, branches, forced and chain.
 
-This first part reads one thing exactly: where a wild address came from.
+Two things live here. The first reads one thing exactly: where a wild address
+came from. The second is the counting - what the census keeps of each run, and
+when a difference between two versions counts at all.
 
 A function run on invented data often dereferences a pointer it read out of
 that data, and lands somewhere the harness never handed out. The fill that put
@@ -30,7 +32,21 @@ on it, and it decides whether repairing inputs is worth building.
 
 from __future__ import annotations
 
-from elenchus.emulation.harness import GAMMA, GOLDEN, NULL_GUARD
+from collections import Counter
+from dataclasses import dataclass
+
+from elenchus.emulation.harness import (
+    ARENA_BASE,
+    ARENA_END,
+    GAMMA,
+    GOLDEN,
+    INPUT_REGION_BASE,
+    INPUT_REGION_END,
+    NULL_GUARD,
+    Status,
+)
+from elenchus.emulation.inputs import BUFFER_STRIDE
+from elenchus.emulation.stubs import LOCKS, STREAM_OUTPUT
 
 MASK64 = (1 << 64) - 1
 GOLDEN_INVERSE = pow(GOLDEN, -1, 1 << 64)
@@ -99,3 +115,206 @@ def classify_wild(kind: str, address: int, seed: int, variant: int) -> str:
     if kind == "fetch":
         return CODE_FROM_FILL
     return INPUT_FILL if origin[0] == variant else UNINITIALISED_FILL
+
+
+
+
+# ---------------------------------------------------------------- the runs
+
+COMPLETED = Status.COMPLETED.value
+
+# The names the roadmap argued a compiler can neither invent nor remove - locks
+# and stream output - reported as their own projection of the calls, to see
+# whether the argument holds (docs/verifier.md, the census, observation 1).
+ALLOW_LIST = frozenset(LOCKS) | frozenset(STREAM_OUTPUT)
+
+
+@dataclass(frozen=True)
+class RunTrace:
+    """What the census keeps of one run: small, picklable, never compared.
+
+    A comparison makes eight first-tier runs an input and the verdict needs
+    their written pages; the census needs only this, so it can cross a
+    process boundary with the pair's result.
+    """
+    status: str
+    instructions: int
+    calls: tuple
+    calls_overflow: bool
+    first_wild: tuple | None
+    allocations: tuple
+    buffers: frozenset          # indices of the argument buffers written
+    arena_bytes: int            # bytes stored into the arena
+    null_return: bool | None    # RAX was zero; None if the run stopped
+    read_invented: bool
+    seed: int
+    variant: int
+
+
+def trace(outcome, seed: int, variant: int) -> RunTrace:
+    """The census's record of one run, from the harness's Outcome.
+
+    A buffer's index is its distance from the region's base in strides,
+    the layout inputs.input_vectors hands out - the same in both builds by
+    construction, which is what makes it comparable.
+    """
+    buffers, arena_bytes = set(), 0
+    for address, size in outcome.write_ranges:
+        if INPUT_REGION_BASE <= address < INPUT_REGION_END:
+            buffers.add((address - INPUT_REGION_BASE) // BUFFER_STRIDE)
+        elif ARENA_BASE <= address < ARENA_END:
+            arena_bytes += size
+    completed = outcome.status is Status.COMPLETED
+    return RunTrace(
+        status=outcome.status.value,
+        instructions=outcome.instructions,
+        calls=tuple(outcome.calls),
+        calls_overflow=outcome.calls_overflow,
+        first_wild=outcome.first_wild,
+        allocations=tuple(outcome.allocations),
+        buffers=frozenset(buffers),
+        arena_bytes=arena_bytes,
+        null_return=(outcome.ret_int == 0) if completed else None,
+        read_invented=outcome.read_invented,
+        seed=seed,
+        variant=variant,
+    )
+
+
+# ---------------------------------------------------------------- counting
+
+
+def _multiset(items) -> tuple:
+    return tuple(sorted(Counter(items).items()))
+
+
+# Each observation as a function of one run's trace; None where the run
+# cannot show it, as a call list that overflowed cannot.
+OBSERVATIONS = {
+    "calls": lambda t: None if t.calls_overflow else _multiset(t.calls),
+    "calls on the allow-list": lambda t: (
+        None if t.calls_overflow
+        else _multiset(c for c in t.calls if c in ALLOW_LIST)),
+    "buffers written": lambda t: t.buffers,
+    "arena bytes written": lambda t: t.arena_bytes,
+    "allocations": lambda t: _multiset(t.allocations),
+}
+
+
+def _settled(variant, extract):
+    """(Q's value, K's value) under one input fill, or None if it cannot say.
+
+    The gates are the verifier's own, so the census measures rules that could
+    actually be written: all four runs completed, none read memory only we
+    could have made (F32), and each version's two seeds agree (F22, F33).
+    """
+    if any(t.status != COMPLETED or t.read_invented for t in variant):
+        return None
+    q_a, q_b, k_a, k_b = (extract(t) for t in variant)
+    if q_a is None or k_a is None or q_a != q_b or k_a != k_b:
+        return None
+    return q_a, k_a
+
+
+def _judge_input(variants, extract):
+    """Whether one input shows a difference: None if it cannot say, and True
+    only when Q and K differ under both input fills (F24)."""
+    settled = [_settled(variant, extract) for variant in variants]
+    if any(s is None for s in settled):
+        return None
+    return all(q != k for q, k in settled)
+
+
+def _status_split(variants):
+    """Whether Q and K ended differently - one completed, one faulted - the
+    same way under both seeds and both fills. A run that read invented memory
+    says nothing: how it ended may be ours."""
+    splits = []
+    for q_a, q_b, k_a, k_b in variants:
+        if any(t.read_invented for t in (q_a, q_b, k_a, k_b)):
+            return None
+        if q_a.status != q_b.status or k_a.status != k_b.status:
+            return None
+        splits.append(q_a.status != k_a.status)
+    return all(splits)
+
+
+def _first_wild(traces):
+    """The first run, in input and fill order, that touched outside what the
+    harness handed out - or None."""
+    for variants in traces:
+        for variant in variants:
+            for run_trace in variant:
+                if run_trace.first_wild is not None:
+                    return run_trace
+    return None
+
+
+@dataclass
+class PairCensus:
+    """What the census says about one pair, ready to be added up."""
+    verdict: str
+    forced_only: bool
+    comparable: dict            # observation -> could it be compared at all
+    differs: dict               # observation -> did it differ on some input
+    call_names: tuple           # names whose counts differed, first such input
+    instructions: tuple         # every first-tier run's count
+    survival_mass: int | None   # compared bytes of the strongest survival
+    survival_saw_return: bool
+    wild_origin: str | None     # one of ORIGINS
+    wild_status: str | None     # how the run that touched it ended
+
+
+def summarise(verdict: str, forced_only: bool, inputs, traces,
+              ret_kind: str) -> PairCensus:
+    """One pair's census, from its per-input results and run traces.
+
+    `traces` holds, per input, one tuple per input fill of four traces in the
+    order (Q seed A, Q seed B, K seed A, K seed B). `inputs` are the per-input
+    results, read only for how much a survival compared. Nothing here can
+    change the verdict it is handed.
+    """
+    observations = dict(OBSERVATIONS)
+    if ret_kind == "pointer":
+        # A returned pointer is never compared (F18); whether it was null is.
+        observations["null return"] = lambda t: t.null_return
+
+    comparable, differs, call_names = {}, {}, ()
+    for name, extract in observations.items():
+        judged = [_judge_input(variants, extract) for variants in traces]
+        comparable[name] = any(j is not None for j in judged)
+        differs[name] = any(j for j in judged)
+        if name == "calls" and differs[name]:
+            variants = traces[judged.index(True)]
+            q, k = (dict(side) for side in _settled(variants[0], extract))
+            call_names = tuple(sorted(n for n in set(q) | set(k)
+                                      if q.get(n) != k.get(n)))
+
+    splits = [_status_split(variants) for variants in traces]
+    comparable["status split"] = any(s is not None for s in splits)
+    differs["status split"] = any(s for s in splits)
+
+    mass, saw_return = None, False
+    if verdict == "survived" and not forced_only:
+        for result in inputs:
+            if result.verdict.value == "survived":
+                mass = max(mass or 0, result.compared_bytes)
+                saw_return = saw_return or result.saw_return
+
+    wild = _first_wild(traces)
+    origin = (classify_wild(*wild.first_wild, wild.seed, wild.variant)
+              if wild is not None else None)
+
+    return PairCensus(
+        verdict=verdict,
+        forced_only=forced_only,
+        comparable=comparable,
+        differs=differs,
+        call_names=call_names,
+        instructions=tuple(t.instructions for variants in traces
+                           for variant in variants for t in variant),
+        survival_mass=mass,
+        survival_saw_return=saw_return,
+        wild_origin=origin,
+        wild_status=wild.status if wild is not None else None,
+    )

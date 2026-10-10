@@ -7,6 +7,7 @@ shows something that is not one being refused.
 """
 
 import random
+from dataclasses import dataclass
 
 from elenchus.emulation.census import (
     CODE_FROM_FILL,
@@ -19,16 +20,27 @@ from elenchus.emulation.census import (
     UNINITIALISED_FILL,
     classify_wild,
     fill_origin,
+    summarise,
+    trace,
 )
-from elenchus.emulation.compare import SEED_A, SEED_B, VARIANT_A, VARIANT_B
+from elenchus.emulation.compare import (
+    SEED_A,
+    SEED_B,
+    VARIANT_A,
+    VARIANT_B,
+    Verdict,
+)
 from elenchus.emulation.harness import (
     ARENA_BASE,
     GAMMA,
     GOLDEN,
     INPUT_REGION_BASE,
     PAGE,
+    Outcome,
+    Status,
     _fill,
 )
+from elenchus.emulation.inputs import BUFFER_STRIDE
 
 # A page well inside the input region, and one in the arena.
 INPUT_PAGE = INPUT_REGION_BASE + 37 * PAGE
@@ -121,3 +133,176 @@ def test_only_the_runs_own_constants_are_tried():
     """A run under SEED_A cannot have read a word SEED_B made."""
     garbage = word_at(ARENA_PAGE, 0x100, SEED_B)
     assert classify_wild("read", garbage, SEED_A, VARIANT_A) == OTHER
+
+
+
+
+# ------------------------------------------------------- what a run shows
+
+
+def run_trace(status=Status.COMPLETED, calls=(), seed=SEED_A,
+              variant=VARIANT_A, read_invented=False, first_wild=None,
+              allocations=(), writes=(), ret=1, overflow=False):
+    out = Outcome(status, ret_int=ret, write_ranges=tuple(writes),
+                  calls=tuple(calls), calls_overflow=overflow,
+                  first_wild=first_wild, allocations=tuple(allocations),
+                  read_invented=read_invented)
+    return trace(out, seed, variant)
+
+
+def under(variant, q, k, q_seed_b=None, k_seed_b=None):
+    """One input fill's four runs, Q's and K's seeds agreeing unless told."""
+    return (run_trace(seed=SEED_A, variant=variant, **q),
+            run_trace(seed=SEED_B, variant=variant, **(q_seed_b or q)),
+            run_trace(seed=SEED_A, variant=variant, **k),
+            run_trace(seed=SEED_B, variant=variant, **(k_seed_b or k)))
+
+
+def both_fills(q, k):
+    return (under(VARIANT_A, q, k), under(VARIANT_B, q, k))
+
+
+def census_of(*inputs, ret_kind="int"):
+    return summarise("inconclusive", False, [], list(inputs), ret_kind)
+
+
+def test_a_trace_reads_which_buffers_and_how_much_arena():
+    t = run_trace(writes=[(INPUT_REGION_BASE + 16, 4),
+                          (INPUT_REGION_BASE + BUFFER_STRIDE + 8, 8),
+                          (ARENA_BASE, 24)])
+    assert t.buffers == {0, 1}
+    assert t.arena_bytes == 24
+
+
+def test_a_run_that_stopped_shows_no_return():
+    assert run_trace(ret=0).null_return is True
+    assert run_trace(status=Status.FAULT, ret=0).null_return is None
+
+
+# ------------------------------------------------------- the gates
+
+
+def test_a_clean_difference_is_counted():
+    found = census_of(both_fills({"calls": ("memcpy",)},
+                                 {"calls": ("strlen",)}))
+    assert found.comparable["calls"] and found.differs["calls"]
+    assert found.call_names == ("memcpy", "strlen")
+
+
+def test_a_difference_under_one_fill_only_is_ours():
+    """F24 applied to a new observation: it came from the bytes we invented."""
+    one = (under(VARIANT_A, {"calls": ("memcpy",)}, {"calls": ("strlen",)}),
+           under(VARIANT_B, {"calls": ("memcpy",)}, {"calls": ("memcpy",)}))
+    found = census_of(one)
+    assert found.comparable["calls"]
+    assert not found.differs["calls"]
+
+
+def test_an_observation_the_seeds_disagree_on_is_not_compared():
+    """F22: what changes with the seed came from memory nobody wrote."""
+    unstable = (under(VARIANT_A, {"calls": ("memcpy",)},
+                      {"calls": ("strlen",)}, q_seed_b={"calls": ()}),
+                under(VARIANT_B, {"calls": ("memcpy",)},
+                      {"calls": ("strlen",)}))
+    found = census_of(unstable)
+    assert not found.comparable["calls"]
+    assert not found.differs["calls"]
+
+
+def test_a_run_that_read_invented_memory_is_not_compared():
+    """F32: what follows from our fill is ours."""
+    found = census_of(both_fills(
+        {"calls": ("memcpy",), "read_invented": True},
+        {"calls": ("strlen",)}))
+    assert not found.comparable["calls"]
+
+
+def test_a_run_that_stopped_compares_nothing():
+    found = census_of(both_fills({"calls": ("memcpy",),
+                                  "status": Status.FAULT},
+                                 {"calls": ("strlen",)}))
+    assert not found.comparable["calls"]
+
+
+def test_an_overflowing_call_list_is_not_compared():
+    """A list cut at 256 would read as complete; it is left out instead."""
+    found = census_of(both_fills({"calls": ("memcpy",), "overflow": True},
+                                 {"calls": ("strlen",)}))
+    assert not found.comparable["calls"]
+
+
+# ------------------------------------------------------- each observation
+
+
+def test_the_allow_list_projection_ignores_what_a_compiler_can_add():
+    """memcpy against memset differs in the calls, not on the allow-list;
+    a stream write on one side only differs on both."""
+    lists = census_of(both_fills(
+        {"calls": ("memcpy", "EnterCriticalSection")},
+        {"calls": ("memset", "EnterCriticalSection")}))
+    assert lists.differs["calls"]
+    assert not lists.differs["calls on the allow-list"]
+    stream = census_of(both_fills({"calls": ("fputs",)}, {"calls": ()}))
+    assert stream.differs["calls on the allow-list"]
+
+
+def test_writing_different_buffers_is_seen():
+    """The difference _judge cannot see: no byte written by both."""
+    found = census_of(both_fills(
+        {"writes": [(INPUT_REGION_BASE, 4)]},
+        {"writes": [(INPUT_REGION_BASE + BUFFER_STRIDE, 4)]}))
+    assert found.differs["buffers written"]
+
+
+def test_a_null_return_is_observed_only_for_a_pointer():
+    found = census_of(both_fills({"ret": 0}, {"ret": 7}),
+                      ret_kind="pointer")
+    assert found.differs["null return"]
+    plain = census_of(both_fills({"ret": 0}, {"ret": 7}))
+    assert "null return" not in plain.comparable
+
+
+def test_ending_differently_is_a_status_split():
+    found = census_of(both_fills({}, {"status": Status.FAULT}))
+    assert found.differs["status split"]
+    assert not found.comparable["calls"]
+
+
+# ------------------------------------------------------- mass and anatomy
+
+
+@dataclass
+class Judged:
+    verdict: Verdict
+    compared_bytes: int
+    saw_return: bool
+
+
+def test_a_survivals_mass_is_its_strongest_input():
+    inputs = [Judged(Verdict.SURVIVED, 3, False),
+              Judged(Verdict.SURVIVED, 800, True),
+              Judged(Verdict.INCONCLUSIVE, 0, False)]
+    found = summarise("survived", False, inputs, [], "int")
+    assert found.survival_mass == 800
+    assert found.survival_saw_return
+
+
+def test_a_forced_survival_has_no_mass():
+    """Forced paths are another tier; their agreements are weighed apart."""
+    inputs = [Judged(Verdict.SURVIVED, 800, True)]
+    assert summarise("survived", True, inputs, [], "int").survival_mass \
+        is None
+
+
+def test_the_first_wild_touch_is_classified():
+    pointer = word_at(INPUT_PAGE, 0x100, VARIANT_A)
+    found = census_of(both_fills(
+        {"first_wild": ("read", pointer + 8), "read_invented": True},
+        {}))
+    assert found.wild_origin == INPUT_FILL
+    assert found.wild_status == "completed"
+
+
+def test_every_first_tier_run_is_counted():
+    found = census_of(both_fills({}, {}), both_fills({}, {}))
+    assert len(found.instructions) == 2 * 2 * 4
