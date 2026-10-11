@@ -1701,6 +1701,27 @@ V0 at 3,000 gives the census run's buckets in every layer to the pair, with
 zero disagreements. R0 at 3,000 refutes more and lets no more survive; the
 census bounds it at 15.0% refuted, from 10.8%, and 25 fewer survivals.
 
+### Measured
+
+V0 at 3,000 gave the census run's numbers to the pair: 1,105 / 1,511 /
+1,517 agreed, every bucket of every layer the same, zero disagreements.
+R0 at 3,000 refuted 451 wrong pairs where it had refuted 324 - 10.8% to
+15.0%, the census's bound reached exactly. Every wrong pair the two
+observations could catch, they caught, and the census now shows none of
+them left unrefuted.
+
+The 127 came 99 from inconclusive and 28 from survived, not the 102 and 25
+the census foresaw, and the difference is F24 at work. On a few pairs the
+new difference appeared under one fill only, which makes that input
+inconclusive rather than refuting; a pair that had survived on it then
+rests on the second tier instead, and forced-only survivals rose from 73
+to 75.
+
+A survival is worth more than it was. Of the wrong pairs, 5.7% now survive
+on a feasible path, against 51.4% of true pairs: a likelihood ratio of
+about 9, where it was 7.7. A refutation is still never wrong on a true
+pair, now at 0 in 3,000 with this rule in place.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
