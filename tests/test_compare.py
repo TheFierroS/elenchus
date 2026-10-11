@@ -793,3 +793,61 @@ def test_the_forced_tier_does_not_judge_effects():
     k_a = k_b = with_calls()
     assert _judge(q_a, q_b, k_a, k_b, place(),
                   effects=False).verdict is Verdict.SURVIVED
+
+
+# ------------------------------------------- buffers a run changed (F43)
+
+
+def test_changing_a_buffer_the_other_left_alone_refutes():
+    """_judge compares bytes both wrote; a buffer only one changed shares no
+    byte with the other, and was never seen before this rule."""
+    from elenchus.emulation.compare import VARIANT_A
+    q_a = q_b = done(ret_int=7, writes={BUF: b"out!"})
+    k_a = k_b = done(ret_int=7)
+    result = _judge(q_a, q_b, k_a, k_b, place(), variant=VARIANT_A)
+    assert result.verdict is Verdict.REFUTED
+    assert "buffers" in result.reason
+
+
+def test_a_store_of_the_value_already_there_does_not_refute():
+    """lheapSortStrictOrder (F41): -O0 restores a count, -O3 drops the
+    store. Written by one, changed by neither."""
+    from elenchus.emulation.compare import VARIANT_A
+    from elenchus.emulation.harness import _fill
+    same = _fill(BUF, VARIANT_A)[4:8]
+    q_a = q_b = done(ret_int=7, writes={BUF: b"\x00" * 4 + same},
+                     ranges=[(BUF + 4, 4)])
+    k_a = k_b = done(ret_int=7)
+    assert _judge(q_a, q_b, k_a, k_b, place(),
+                  variant=VARIANT_A).verdict is Verdict.SURVIVED
+
+
+def test_a_by_value_copy_is_the_callees_own():
+    """A struct over eight bytes travels as a pointer to the caller's copy,
+    which the callee may use as scratch; -O0 may write it and -O3 not."""
+    from elenchus.emulation.compare import VARIANT_A
+    q_a = q_b = done(ret_int=7, writes={BUF: b"out!"})
+    k_a = k_b = done(ret_int=7)
+    assert _judge(q_a, q_b, k_a, k_b, place(), variant=VARIANT_A,
+                  copies=frozenset({0})).verdict is Verdict.SURVIVED
+
+
+def test_the_copies_are_found_from_the_placement():
+    """A hidden return buffer first, then a pointer, then a by-value copy:
+    only the copy is the callee's."""
+    from elenchus.emulation.compare import _copies
+    from elenchus.emulation.inputs import input_vectors
+    abi = {"return": {"kind": "struct", "size": 24},
+           "params": [{"kind": "pointer", "size": 8},
+                      {"kind": "struct", "size": 24}],
+           "variadic": False}
+    args = input_vectors(abi, count=1)[0]
+    assert _copies(placement(abi), args) == frozenset({2})
+
+
+def test_without_a_fill_buffers_are_not_judged():
+    """The second tier and the older callers judge without the input fill,
+    and the observation needs it, so it is left out there."""
+    q_a = q_b = done(ret_int=7, writes={BUF: b"out!"})
+    k_a = k_b = done(ret_int=7)
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.SURVIVED

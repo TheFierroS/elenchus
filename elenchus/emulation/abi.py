@@ -56,6 +56,9 @@ class IntArg:
     stack_offset: int | None  # bytes above the shadow space, or None
     size: int
     signed: bool
+    # A pointer to a copy of a by-value aggregate the caller made: the
+    # callee's own memory, which it may use as scratch (F43).
+    by_reference: bool = False
 
 
 @dataclass(frozen=True)
@@ -183,7 +186,7 @@ def placement(abi: dict) -> Placement:
             args.append(FloatArg(register, on_stack, size))
         elif by_reference:
             # The argument is the address of the copy, so eight bytes.
-            args.append(IntArg(register, on_stack, 8, False))
+            args.append(IntArg(register, on_stack, 8, False, by_reference=True))
         else:
             signed = bool(param.get("signed"))
             args.append(IntArg(register, on_stack, size or 8, signed))

@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from elenchus.emulation.abi import Placement
-from elenchus.emulation.census import trace
+from elenchus.emulation.census import changed_buffers, trace
 from elenchus.emulation.harness import (
     PAGE,
     STACK_SIZE,
@@ -48,6 +48,7 @@ from elenchus.emulation.harness import (
     Status,
     run,
 )
+from elenchus.emulation.inputs import BUFFER_BASE, BUFFER_STRIDE
 from elenchus.emulation.stubs import LOCKS, STREAM_OUTPUT
 
 # The two fill seeds. Different, both non-zero (zero means input memory, which
@@ -296,7 +297,8 @@ def _is_null(outcome):
     return outcome.ret_int == 0
 
 
-def _effect_difference(q_a, q_b, k_a, k_b, placement: Placement):
+def _effect_difference(q_a, q_b, k_a, k_b, placement: Placement,
+                       variant=None, copies=frozenset()):
     """A difference in what the runs did beyond the memory they wrote, or None.
 
     Returns (reason, detail). An observation is compared only where each
@@ -311,6 +313,15 @@ def _effect_difference(q_a, q_b, k_a, k_b, placement: Placement):
         # null is the function's answer, not an address.
         observed.append(("a returned pointer is null in one version only",
                          _is_null))
+    if variant is not None:
+        # Which argument buffers hold something other than the fill we put
+        # there - not which were written, since a compiler may drop a store
+        # of the value already in place (F41). A by-value aggregate's copy
+        # is the callee's own and is left out (F43).
+        def changed(outcome):
+            return tuple(sorted(changed_buffers(outcome, variant) - copies))
+        observed.append(("a different set of argument buffers changed",
+                         changed))
     for reason, read in observed:
         q, q_other, k, k_other = (read(o) for o in (q_a, q_b, k_a, k_b))
         if q is None or k is None or q != q_other or k != k_other:
@@ -320,8 +331,21 @@ def _effect_difference(q_a, q_b, k_a, k_b, placement: Placement):
     return None
 
 
+def _copies(placement: Placement, args) -> frozenset:
+    """The buffers that are copies of a by-value aggregate, by index.
+
+    The placement marks the argument and the argument's value is its
+    buffer's address; buffers sit a stride apart from the base, in the
+    order input_vectors hands them out (F43).
+    """
+    return frozenset((value - BUFFER_BASE) // BUFFER_STRIDE
+                     for arg, value in zip(placement.args, args)
+                     if getattr(arg, "by_reference", False))
+
+
 def _judge(q_a, q_b, k_a, k_b, placement: Placement,
-           foreign=(), effects: bool = True) -> InputResult:
+           foreign=(), effects: bool = True, variant=None,
+           copies=frozenset()) -> InputResult:
     """Compare the two versions on one input, each already run twice.
 
     `effects` False leaves out what the runs did beyond their memory - the
@@ -390,7 +414,7 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement,
     effect = None
     if effects:
         effect = None if invented else _effect_difference(
-            q_a, q_b, k_a, k_b, placement)
+            q_a, q_b, k_a, k_b, placement, variant, copies)
     if effect is not None:
         reason, detail = effect
         return InputResult(Verdict.REFUTED, reason, detail)
@@ -556,6 +580,7 @@ def compare(q_loader: Loader, q_address: int,
         # the functions (F24).
         per_variant = []
         variant_traces = []
+        copies = _copies(placement, args)
         for variant in (VARIANT_A, VARIANT_B):
             runs = [
                 run(loader, address, placement, args, seed=seed, budget=budget,
@@ -578,7 +603,8 @@ def compare(q_loader: Loader, q_address: int,
                 trace(r, run_seed, variant, garbage_return=garbage)
                 for r, run_seed in zip(runs, (SEED_A, SEED_B, SEED_A, SEED_B))))
             per_variant.append(
-                _judge(q_a, q_b, k_a, k_b, placement, foreign))
+                _judge(q_a, q_b, k_a, k_b, placement, foreign,
+                       variant=variant, copies=copies))
 
         result = _combine_variants(per_variant)
         results.append(result)

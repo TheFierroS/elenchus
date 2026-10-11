@@ -209,7 +209,7 @@ class RunTrace:
     garbage_return: bool = False   # this input's return moved with the seed
 
 
-def _changed_buffers(outcome, variant: int) -> frozenset:
+def changed_buffers(outcome, variant: int) -> frozenset:
     """The argument buffers that hold, after the run, bytes we did not put
     there.
 
@@ -256,7 +256,7 @@ def trace(outcome, seed: int, variant: int,
             arena_bytes += size
     completed = outcome.status is Status.COMPLETED
     return RunTrace(
-        buffers_changed=_changed_buffers(outcome, variant),
+        buffers_changed=changed_buffers(outcome, variant),
         status=outcome.status.value,
         instructions=outcome.instructions,
         calls=tuple(outcome.calls),
