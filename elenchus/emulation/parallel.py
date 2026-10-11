@@ -4,8 +4,9 @@ V0's 3000 pairs took 112 minutes, of which 81 were kernel time: every run maps
 the binary's image into a fresh emulator, and there are tens of thousands of
 runs. The runs are entirely independent - each one builds its own emulator,
 its own arena and its own stack, and nothing is carried between them - so in
-principle the cost divides by the cores given to it. Measured, it stops at
-two (F36, MAX_WORKERS below).
+principle the cost divides by the cores given to it. Measured, it stopped at
+two (F36) until F42 and F46 removed what the processes were waiting on; see
+MAX_WORKERS below.
 
 Two properties this must hold, because the measurements are worthless without
 them:
@@ -49,18 +50,26 @@ from concurrent.futures import ProcessPoolExecutor
 # done where it belongs instead: v0 and r0 keep the last few loaders, so a
 # worker's footprint does not depend on how long it lives.
 
-# Measured, not chosen (experiments/scan_workers.sh, 100 R0 pairs on a
-# twenty-core machine):
+# Measured, not chosen. F36 scanned 100 R0 pairs on a twenty-core machine and
+# found a flat ceiling at two:
 #
 #   workers   1      2      4      8
 #   pairs/s   1.50   2.47   2.43   2.16
 #
-# Two is the whole of it. Four buys nothing and eight is worse than two, on a
-# machine with twenty cores - so the work is not CPU-bound past that point: it
-# is waiting on something the processes share, and what every run asks the
-# kernel for is memory, mapped and given up again. More workers then only add
-# contention. The ceiling stands until that cost comes down.
-MAX_WORKERS = 2
+# The processes were waiting on something they shared, and it was memory -
+# though not the bytes each run maps, which F36 rightly ruled out. A rare
+# decode built a four-gigabyte buffer (F42); fixed, the same scan gave
+#
+#   workers   1      2      4      8
+#   pairs/s   5.24   8.55   13.69  14.92
+#
+# and every emulator outlived its run, because closing it had failed in
+# silence since Unicorn 2.1, which crashed runs past two workers (F46). Fixed,
+# 3,000 pairs took V0 10.1 minutes at four workers and 5.7 at eight, R0 150
+# and 98 seconds, with verdicts identical at both and 5 GB of a 10 GB machine
+# free at eight. Eight is the most that was measured, so it is the cap;
+# default_workers still takes half the cores below it.
+MAX_WORKERS = 8
 
 
 def default_workers() -> int:
