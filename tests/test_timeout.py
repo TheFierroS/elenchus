@@ -40,3 +40,26 @@ def test_a_run_within_its_time_completes():
     loader, address, place = _sum()
     out = run(loader, address, place, [BUF, 9], budget=5_000_000)
     assert out.status is Status.COMPLETED
+
+
+# ------------------------------------------- the translation buffer (F45)
+
+
+def test_each_run_asks_for_a_small_translation_buffer(monkeypatch):
+    """Unicorn's default is 1 GiB per emulator; a run asks for TCG_BUFFER,
+    and still computes what it computed."""
+    from unicorn import Uc
+
+    from elenchus.emulation.harness import TCG_BUFFER
+    asked = []
+    original = Uc.ctl_set_tcg_buffer_size
+
+    def spy(self, size):
+        asked.append(size)
+        return original(self, size)
+
+    monkeypatch.setattr(Uc, "ctl_set_tcg_buffer_size", spy)
+    loader, address, place = _sum()
+    out = run(loader, address, place, [BUF, 9], budget=5_000_000)
+    assert out.status is Status.COMPLETED
+    assert asked == [TCG_BUFFER]

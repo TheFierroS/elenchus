@@ -97,6 +97,15 @@ INPUT_REGION_END = 0x0000_2000_1000_0000     # 256 MiB of buffer space
 DEFAULT_TIMEOUT_US = 2_000_000       # 2 seconds
 TIMEOUT_CHECK = 256                  # instructions between looks at the clock
 
+# Unicorn 2 gives every emulator a 1 GiB buffer for translated code, and a
+# run here makes a fresh emulator to execute at most a few thousand
+# instructions. Workers held one to two gigabytes each, eight of them pushed
+# WSL deep into swap, and under that pressure libunicorn segfaulted at the
+# same instruction four times (F45). 32 MiB is still hundreds of times what a
+# run translates; the buffer only holds translated code, and Unicorn flushes
+# it when full, so what a run computes cannot depend on its size.
+TCG_BUFFER = 32 * 1024 * 1024
+
 # The largest single read or write a stub may perform. A stub takes a size or
 # length from the function's arguments, and V0 feeds functions garbage, so
 # that size can be nonsense - forty billion, a pointer reinterpreted as a
@@ -687,6 +696,8 @@ def run(loader: Loader, address: int, placement: Placement, args,
     from unicorn import UC_ARCH_X86, UC_MODE_64, Uc
 
     uc = Uc(UC_ARCH_X86, UC_MODE_64)
+    # Before anything is mapped: the buffer is sized when the engine starts.
+    uc.ctl_set_tcg_buffer_size(TCG_BUFFER)
     # The run's mutable state lives here rather than inside the body, so what
     # a recorded run saw can be attached however the body exited - a run that
     # faulted still took branches on the way, and those are worth keeping.
