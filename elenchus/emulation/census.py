@@ -43,9 +43,11 @@ from elenchus.emulation.harness import (
     INPUT_REGION_BASE,
     INPUT_REGION_END,
     NULL_GUARD,
+    PAGE,
     STACK_SIZE,
     STACK_TOP,
     Status,
+    _fill,
     _stack_garbage,
 )
 from elenchus.emulation.inputs import BUFFER_STRIDE
@@ -203,6 +205,38 @@ class RunTrace:
     read_invented: bool
     seed: int
     variant: int
+    buffers_changed: frozenset = frozenset()   # buffers left unlike the fill
+
+
+def _changed_buffers(outcome, variant: int) -> frozenset:
+    """The argument buffers that hold, after the run, bytes we did not put
+    there.
+
+    A compiler may remove a store that writes back the value already in
+    memory - leptonica's lheapSortStrictOrder restores a count its loop
+    never changed, and -O3 drops the store (F41) - so which buffers were
+    *written* is the compiler's. Which buffers *changed* is the function's.
+    An input buffer starts as the fill under the run's input variant, so a
+    byte is changed where the recorded page differs from that fill.
+    """
+    fills, changed = {}, set()
+    for address, size in outcome.write_ranges:
+        if not INPUT_REGION_BASE <= address < INPUT_REGION_END:
+            continue
+        index = (address - INPUT_REGION_BASE) // BUFFER_STRIDE
+        if index in changed:
+            continue
+        for byte in range(address, address + size):
+            page = byte & ~(PAGE - 1)
+            content = outcome.writes.get(page)
+            if content is None:
+                continue
+            if page not in fills:
+                fills[page] = _fill(page, variant)
+            if content[byte - page] != fills[page][byte - page]:
+                changed.add(index)
+                break
+    return frozenset(changed)
 
 
 def trace(outcome, seed: int, variant: int) -> RunTrace:
@@ -220,6 +254,7 @@ def trace(outcome, seed: int, variant: int) -> RunTrace:
             arena_bytes += size
     completed = outcome.status is Status.COMPLETED
     return RunTrace(
+        buffers_changed=_changed_buffers(outcome, variant),
         status=outcome.status.value,
         instructions=outcome.instructions,
         calls=tuple(outcome.calls),
@@ -250,6 +285,7 @@ OBSERVATIONS = {
         None if t.calls_overflow
         else _multiset(c for c in t.calls if c in ALLOW_LIST)),
     "buffers written": lambda t: t.buffers,
+    "buffers changed": lambda t: t.buffers_changed,
     "arena bytes written": lambda t: t.arena_bytes,
     "allocations": lambda t: _multiset(t.allocations),
 }

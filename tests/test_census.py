@@ -371,3 +371,40 @@ def test_which_observations_differed_is_kept_for_the_union():
     assert found.differing == ("calls",)
     summary = aggregate([(None, found)], 5_000)
     assert summary["differing"] == [["inconclusive", ["calls"], ""]]
+
+
+# ------------------------------------------------- net effect (F41)
+
+
+def test_a_store_of_the_value_already_there_changes_no_buffer():
+    """lheapSortStrictOrder restores a count its loop never changed; -O0
+    stores it and -O3 does not. Written, but not changed."""
+    page = INPUT_REGION_BASE
+    restored = Outcome(Status.COMPLETED, ret_int=1,
+                       write_ranges=((page + 4, 4),),
+                       writes={page: _fill(page, VARIANT_A)})
+    t = trace(restored, SEED_A, VARIANT_A)
+    assert t.buffers == frozenset({0})
+    assert t.buffers_changed == frozenset()
+
+
+def test_a_store_of_a_new_value_changes_its_buffer():
+    page = INPUT_REGION_BASE + BUFFER_STRIDE
+    content = bytearray(_fill(page, VARIANT_B))
+    content[6] ^= 0xFF
+    altered = Outcome(Status.COMPLETED, ret_int=1,
+                      write_ranges=((page + 4, 4),),
+                      writes={page: bytes(content)})
+    assert trace(altered, SEED_A, VARIANT_B).buffers_changed \
+        == frozenset({1})
+
+
+def test_a_change_is_read_against_the_runs_own_fill():
+    """The same bytes are unchanged under the fill that put them there and
+    changed under the other."""
+    page = INPUT_REGION_BASE
+    same = Outcome(Status.COMPLETED, ret_int=1,
+                   write_ranges=((page, 8),),
+                   writes={page: _fill(page, VARIANT_A)})
+    assert trace(same, SEED_A, VARIANT_A).buffers_changed == frozenset()
+    assert trace(same, SEED_A, VARIANT_B).buffers_changed == frozenset({0})
