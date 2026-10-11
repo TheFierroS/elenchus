@@ -675,6 +675,28 @@ def _run_stub(uc, stub, mapped, seed, arena, input_variant=0, record=None,
     uc.reg_write(UC_X86_REG_RIP, return_address)
 
 
+def _close(uc) -> None:
+    """Free an emulator's memory now, through Unicorn's own finalizer.
+
+    F19 closed every emulator with uc.release_handle() in a finally, under a
+    bare except. Unicorn 2.1 made release_handle a static method that takes
+    the raw handle, so the call raised TypeError on every run, the except
+    swallowed it, and each emulator lived until the garbage collector broke
+    the cycle its hooks make - about 10 MB a run, gigabytes a worker, and
+    under that pressure libunicorn segfaulted (F46).
+
+    The finalizer Unicorn registers is the one safe door: calling it closes
+    the handle once and marks itself done, so the collector does not close it
+    a second time. It is a private name, so if a Unicorn release renames it
+    this raises rather than leaking again in silence.
+    """
+    finalizer = getattr(uc, "_Uc__finalizer", None)
+    if finalizer is None:
+        raise RuntimeError("this Unicorn has no finalizer to close an emulator "
+                           "with; see harness._close")
+    finalizer()
+
+
 def run(loader: Loader, address: int, placement: Placement, args,
         seed: int = 1, budget: int = 5_000_000, stub_resolver=None,
         timeout_us: int = DEFAULT_TIMEOUT_US,
@@ -741,10 +763,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
         # run - V0's thousands of pairs - that leaks gigabytes and the process
         # is killed (F19). Releasing the handle here frees it at once, and the
         # emulator is one per run anyway, so nothing outlives the finally.
-        try:
-            uc.release_handle()
-        except Exception:                        # noqa: BLE001
-            pass
+        _close(uc)
 
 
 def _decoder_over(uc):

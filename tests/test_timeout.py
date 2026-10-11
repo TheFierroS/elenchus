@@ -63,3 +63,49 @@ def test_each_run_asks_for_a_small_translation_buffer(monkeypatch):
     out = run(loader, address, place, [BUF, 9], budget=5_000_000)
     assert out.status is Status.COMPLETED
     assert asked == [TCG_BUFFER]
+
+
+# ------------------------------------------- closing the emulator (F46)
+
+
+def _recording(monkeypatch):
+    """Make run() build its emulator through a function that keeps it.
+
+    Unicorn's Uc hands back an architecture's own class when built, so a
+    subclass of it breaks; a function that calls the real one and records
+    what came back does not.
+    """
+    import unicorn
+
+    made = []
+    real = unicorn.Uc
+
+    def make(*args, **kwargs):
+        emulator = real(*args, **kwargs)
+        made.append(emulator)
+        return emulator
+
+    monkeypatch.setattr(unicorn, "Uc", make)
+    return made
+
+
+def test_a_run_closes_its_emulator(monkeypatch):
+    """F19's release_handle() had been raising TypeError since Unicorn 2.1,
+    and a bare except hid it. This checks the emulator is closed, not that
+    something was asked to close it."""
+    made = _recording(monkeypatch)
+    loader, address, place = _sum()
+    out = run(loader, address, place, [BUF, 9], budget=5_000_000)
+    assert out.status is Status.COMPLETED
+    assert len(made) == 1
+    assert not made[0]._Uc__finalizer.alive
+
+
+def test_a_faulting_run_closes_its_emulator(monkeypatch):
+    """The finally covers every way out, a fault included."""
+    made = _recording(monkeypatch)
+    loader, address, place = _sum()
+    out = run(loader, address, place, [0, 9], budget=5_000_000)
+    assert out.status is not Status.COMPLETED
+    assert len(made) == 1
+    assert not made[0]._Uc__finalizer.alive
