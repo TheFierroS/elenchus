@@ -27,6 +27,7 @@ first smoke test forced (docs/verifier.md, risk 2):
 from __future__ import annotations
 
 import struct
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -85,9 +86,16 @@ INPUT_REGION_END = 0x0000_2000_1000_0000     # 256 MiB of buffer space
 # A wall-clock ceiling per run, the last safety net. The instruction budget
 # and the page limit catch the patterns we know; this catches whatever they
 # do not, so no single function can ever hang the verifier. A run past it is
-# TIMED_OUT - inconclusive, like the budget, never a refutation. Unicorn takes
-# the timeout in microseconds.
+# TIMED_OUT - inconclusive, like the budget, never a refutation.
+#
+# It is checked from the code hook, every TIMEOUT_CHECK instructions, and not
+# by Unicorn's own timeout. Unicorn's starts a thread per emu_start that calls
+# emu_stop when it fires, while the hooks call emu_stop from the emulation's
+# own thread; two threads stopping one emulator segfaulted inside libunicorn,
+# twice in four runs once F42 made runs fast enough to meet it (F44). Here the
+# stop comes from one place, on the emulating thread.
 DEFAULT_TIMEOUT_US = 2_000_000       # 2 seconds
+TIMEOUT_CHECK = 256                  # instructions between looks at the clock
 
 # The largest single read or write a stub may perform. A stub takes a size or
 # length from the function's arguments, and V0 feeds functions garbage, so
@@ -687,6 +695,7 @@ def run(loader: Loader, address: int, placement: Placement, args,
              "pending": None,      # a branch whose outcome is not known yet
              "selectivity": None,  # the last compare's distance
              "resume_at": None,    # where a forced branch is being sent
+             "deadline": None,     # monotonic time this segment must end by
              "write_log": [],      # (address, size, value) when asked for
              "write_ranges": [],   # (address, size) of every recorded store
              "partial_writes": [],  # stores reaching outside comparable memory
@@ -980,6 +989,11 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
         # it also counts them: how many a function took is what V0 reads to
         # set the real budget.
         state["count"] += 1
+        if (state["count"] % TIMEOUT_CHECK == 0
+                and time.monotonic() > state["deadline"]):
+            state["status"] = Status.TIMED_OUT
+            uc.emu_stop()
+            return
         if watching:
             _watch_branch(uc, addr, size, state, decoder, force, seed,
                           input_variant)
@@ -1047,9 +1061,11 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             remaining = budget - state["count"]
             if remaining <= 0:
                 return Status.BUDGET_EXHAUSTED
+             # Each segment gets the whole allowance, as Unicorn's own timeout
+            # gave it; the code hook enforces it (F44).
+            state["deadline"] = time.monotonic() + timeout_us / 1_000_000
             try:
-                uc.emu_start(entry, SENTINEL, timeout=timeout_us,
-                             count=remaining)
+                uc.emu_start(entry, SENTINEL, count=remaining)
             except UcError:
                 return state["status"] or Status.FAULT
             if state["status"] is not None:
