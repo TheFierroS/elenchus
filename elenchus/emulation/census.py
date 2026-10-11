@@ -206,6 +206,7 @@ class RunTrace:
     seed: int
     variant: int
     buffers_changed: frozenset = frozenset()   # buffers left unlike the fill
+    garbage_return: bool = False   # this input's return moved with the seed
 
 
 def _changed_buffers(outcome, variant: int) -> frozenset:
@@ -239,7 +240,8 @@ def _changed_buffers(outcome, variant: int) -> frozenset:
     return frozenset(changed)
 
 
-def trace(outcome, seed: int, variant: int) -> RunTrace:
+def trace(outcome, seed: int, variant: int,
+          garbage_return: bool = False) -> RunTrace:
     """The census's record of one run, from the harness's Outcome.
 
     A buffer's index is its distance from the region's base in strides,
@@ -267,6 +269,7 @@ def trace(outcome, seed: int, variant: int) -> RunTrace:
         read_invented=outcome.read_invented,
         seed=seed,
         variant=variant,
+        garbage_return=garbage_return,
     )
 
 
@@ -296,9 +299,11 @@ def _settled(variant, extract):
 
     The gates are the verifier's own, so the census measures rules that could
     actually be written: all four runs completed, none read memory only we
-    could have made (F32), and each version's two seeds agree (F22, F33).
+    could have made (F32), no return moved with the seed (F33), and each
+    version's two seeds agree on the observation (F22).
     """
-    if any(t.status != COMPLETED or t.read_invented for t in variant):
+    if any(t.status != COMPLETED or t.read_invented or t.garbage_return
+           for t in variant):
         return None
     q_a, q_b, k_a, k_b = (extract(t) for t in variant)
     if q_a is None or k_a is None or q_a != q_b or k_a != k_b:

@@ -146,12 +146,13 @@ def test_only_the_runs_own_constants_are_tried():
 
 def run_trace(status=Status.COMPLETED, calls=(), seed=SEED_A,
               variant=VARIANT_A, read_invented=False, first_wild=None,
-              allocations=(), writes=(), ret=1, overflow=False):
+              allocations=(), writes=(), ret=1, overflow=False,
+              garbage=False):
     out = Outcome(status, ret_int=ret, write_ranges=tuple(writes),
                   calls=tuple(calls), calls_overflow=overflow,
                   first_wild=first_wild, allocations=tuple(allocations),
                   read_invented=read_invented)
-    return trace(out, seed, variant)
+    return trace(out, seed, variant, garbage_return=garbage)
 
 
 def under(variant, q, k, q_seed_b=None, k_seed_b=None):
@@ -408,3 +409,13 @@ def test_a_change_is_read_against_the_runs_own_fill():
                    writes={page: _fill(page, VARIANT_A)})
     assert trace(same, SEED_A, VARIANT_A).buffers_changed == frozenset()
     assert trace(same, SEED_A, VARIANT_B).buffers_changed == frozenset({0})
+
+
+def test_a_run_whose_return_moved_with_the_seed_is_not_compared():
+    """F33: silk_NLSF_del_dec_quant's byte came out of the same computation
+    as a return that changed with the seed. The verifier never compares
+    such a run, so the census must not count a difference in it either."""
+    found = census_of(both_fills({"calls": ("memcpy",), "garbage": True},
+                                 {"calls": ("strlen",)}))
+    assert not found.comparable["calls"]
+    assert not found.differs["calls"]

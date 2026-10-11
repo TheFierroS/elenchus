@@ -568,9 +568,14 @@ def compare(q_loader: Loader, q_address: int,
             ]
             q_a, q_b, k_a, k_b = runs[0], runs[1], runs[2], runs[3]
             peak = max(peak, *(r.instructions for r in runs))
-            # What the census keeps of these four runs; never compared.
+            # What the census keeps of these four runs; never compared. A
+            # return that moved with the seed taints the whole input for the
+            # verdict (F33), so the census is told, and measures only what a
+            # rule behind the verifier's own gates could see.
+            garbage = (_stable_return(q_a, q_b, placement) is None
+                       or _stable_return(k_a, k_b, placement) is None)
             variant_traces.append(tuple(
-                trace(r, run_seed, variant)
+                trace(r, run_seed, variant, garbage_return=garbage)
                 for r, run_seed in zip(runs, (SEED_A, SEED_B, SEED_A, SEED_B))))
             per_variant.append(
                 _judge(q_a, q_b, k_a, k_b, placement, foreign))
