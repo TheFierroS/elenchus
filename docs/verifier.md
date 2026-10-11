@@ -1819,9 +1819,10 @@ repeat. That limit is the one outcome here that depends on the machine. It
 can move a pair between inconclusive buckets and never refute, but it is
 the one exception to every verdict replaying exactly.
 
-Eight workers broke the run. A worker holds about 1.2 GB, and eight do not
-fit in ten; why a worker holds that much is the next thing to measure.
-Until then four is used by hand and `MAX_WORKERS` stays at two.
+Eight workers broke the run, and this paragraph first said why: a worker
+holding about 1.2 GB, eight not fitting in ten. Half of that was right. It
+was memory, but a leak rather than a footprint, and the run died of a
+segfault rather than the OOM killer. F46 has the whole of it.
 
 ## Buffers a run changed (F43) - protocol
 
@@ -1858,6 +1859,75 @@ it, and the measurement shows none.
 every layer with zero disagreements; bare may differ by one wall-clock
 timeout (F42). R0 refutes more and lets no more survive, bounded by the
 census at 551 pairs, 18.4%, from 451; leaving copies out may lower that.
+
+### Measured
+
+V0 at 3,000 gave the run before it in every bucket of every layer, zero
+disagreements. R0 at 3,000 refuted 551 wrong pairs, 18.4%, which is the
+census's bound reached exactly a second time; leaving the copies out cost
+nothing. Survivals fell from 247 to 226, forced-only ones rose from 75 to
+78 by F24's mechanism, as in F40. A feasible survival now comes from 4.9% of
+wrong pairs against 51.4% of true ones, a likelihood ratio of about 10.4.
+
+Across F40 and F43, refutation went from 10.8% to 18.4%, and not one verdict
+on a true pair moved.
+
+## The crash, and two wrong readings of it (F44, F45, F46)
+
+After F42, 3,000-pair runs at four and eight workers began to die with
+`BrokenProcessPool`. The kernel log named a segfault inside libunicorn every
+time, at one of two neighbouring instructions, reading at or near null - four
+times, where dozens of runs before F42 had never once crashed. It was not a
+pair: the same 3,000 pairs run in four independent processes finished clean.
+
+**F44, the first reading: a timer race.** Unicorn's timeout starts a thread
+per `emu_start` that calls `emu_stop` when it fires, while the hooks call
+`emu_stop` from the emulating thread. The clock moved into the code hook,
+read every 256 instructions, so every stop comes from one place. One run at
+four workers then finished clean, and the next at eight crashed the same
+way; two of four runs had been clean before it, so the clean one proved
+nothing. Kept, as the sounder design, and not the cause.
+
+**F45, the second reading: memory.** Logged at eight workers, free memory fell
+to 21 MB with six gigabytes in swap, and workers held 0.7 to 2.3 GB each.
+Unicorn 2.1.4 gives every emulator a 1 GiB buffer for translated code, so it
+was set to 32 MiB. The next run crashed the same way, with memory just as
+high. Kept, since 32 MiB is still hundreds of times what a run translates,
+and not the cause.
+
+**F46, measured rather than read.** `faulthandler` in the workers named the
+call: `emu_start`, inside `helper_ret_stb_mmu`, a store helper, on a run of
+the second tier. A single process with no pool peaked at 5.6 GB over 300
+pairs. Tracked pair by pair, the growth came in steps; on the first pair the
+process went from 129 MB to 1.9 GB while `tracemalloc` saw Python hold 48 MB,
+so it was in C; and of 174 runs none grew it by 20 MB, so it was about 10 MB
+left behind by every run.
+
+Calling `uc.release_handle()` in the open raised `TypeError`. Unicorn 2.1
+made it a static method that takes the raw handle, and `run` called it in a
+`finally` under a bare `except`, so since that upgrade it had failed on every
+run and the failure was swallowed. F19's tests checked that the method was
+called, not that the emulator was freed, and passed throughout. Each emulator
+lived until the collector broke the cycle its hooks make. Before F42 runs were
+slow enough for the collector to keep up; after it the leak outran it, four
+or eight workers pushed WSL into swap, and under that pressure libunicorn
+crashed in a store helper - most likely on an allocation it does not check,
+which is a reading, not a measurement.
+
+The emulator is now closed through the finalizer Unicorn registers, which
+closes the handle once and marks itself done, so the collector does not close
+it again. The name is private, so a release that renames it raises rather
+than leaking in silence. The same pair ends at 185 MB. At eight workers V0 ran
+3,000 pairs in 5.7 minutes and R0 in 98 seconds, with 5.2 GB of a 10 GB
+machine still free, no segfault, and verdicts identical to the run before in
+every layer and on R0.
+
+Three things are worth keeping from it. A bare `except` hid a broken fix for
+as long as it was broken. A test that checks a call was made, rather than
+what the call did, passed the whole time. And two readings fitted the
+evidence well enough to be built on before the third was measured; each
+change was kept on its own merits, and each is recorded here as not the
+cause.
 
 ## Hardening - the core is built, these make it stronger
 
