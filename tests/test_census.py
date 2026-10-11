@@ -370,4 +370,4 @@ def test_which_observations_differed_is_kept_for_the_union():
     found = census_of(both_fills({"calls": ("a",)}, {"calls": ("b",)}))
     assert found.differing == ("calls",)
     summary = aggregate([(None, found)], 5_000)
-    assert summary["differing"] == [["inconclusive", ["calls"]]]
+    assert summary["differing"] == [["inconclusive", ["calls"], ""]]

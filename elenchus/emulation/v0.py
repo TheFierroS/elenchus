@@ -366,6 +366,8 @@ def judge_true_pair(task):
                                  budget=budget)
             abandoned += 1
         result.package, result.name = package, name
+        if result.census is not None:
+            result.census.label = f"{package}/{name}"
         results.append(result)
     return both_chains, abandoned, results
 

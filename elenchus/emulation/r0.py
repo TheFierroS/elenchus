@@ -152,7 +152,10 @@ def judge_false_pair(task):
     process. A pair the harness cannot even set up says nothing about the
     verifier's judgement, so it is left out rather than counted as a miss.
     """
-    q_path, q_address, q_abi, k_path, k_address, budget = task
+    q_path, q_address, q_abi, k_path, k_address, budget = task[:6]
+    # Which pair this is, so the census can name it; the tests hand over
+    # the six fields without it.
+    label = task[6] if len(task) > 6 else ""
     abi = json.loads(q_abi)
     try:
         place = placement(abi)
@@ -166,6 +169,7 @@ def judge_false_pair(task):
         return None
     summary = summarise(result.verdict.value, result.forced_only,
                         result.inputs, result.traces, place.ret.kind)
+    summary.label = label
     return result.verdict.value, result.forced_only, summary
 
 
@@ -193,7 +197,7 @@ def run_r0(conn, count=300, seed=0, budget=R0_BUDGET, split="train",
     print("  sampling pairs...", file=sys.stderr, flush=True)
     sampled = sample_false_pairs(conn, count=count, seed=seed, split=split)
     tasks = [(q["path"], q["address"], q["abi"], k["path"], k["address"],
-              budget)
+              budget, f"{q['package']}/{q['name']} vs {k['name']}")
              for q, k in sampled]
     print(f"  {len(tasks)} pairs over {workers} worker(s)",
           file=sys.stderr, flush=True)

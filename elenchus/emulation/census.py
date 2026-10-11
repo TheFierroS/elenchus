@@ -322,6 +322,7 @@ class PairCensus:
     wild_origin: str | None     # one of ORIGINS
     wild_status: str | None     # how the run that touched it ended
     differing: tuple = ()       # every observation that differed, for unions
+    label: str = ""             # which pair, so one can be read back
 
 
 def summarise(verdict: str, forced_only: bool, inputs, traces,
@@ -412,7 +413,7 @@ def aggregate(entries, budget: int) -> dict:
         if pair.wild_origin is not None:
             anatomy[f"{ended} | {pair.wild_origin}"] += 1
         if pair.differing:
-            differing.append([pair.verdict, list(pair.differing)])
+            differing.append([pair.verdict, list(pair.differing), pair.label])
     runs.sort()
 
     def percentile(p):
