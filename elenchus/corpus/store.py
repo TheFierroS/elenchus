@@ -63,6 +63,12 @@ def store_ground_truth(conn, stripped_binary_id, debug_path):
     total = 0
     matched = 0
     with conn:
+        # The debug file is the whole truth for this binary. Rows for
+        # addresses it no longer has are stale, and INSERT OR REPLACE alone
+        # left them behind - 1,941 of them in corpus2.db. Inside the same
+        # transaction, so a debug file that fails to read loses nothing.
+        conn.execute("DELETE FROM ground_truth WHERE binary_id = ?",
+                     (stripped_binary_id,))
         for gt in ground_truth(debug_path):
             function_id = function_id_by_address.get(gt.address)
             if function_id is not None:

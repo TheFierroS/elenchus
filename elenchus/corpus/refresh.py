@@ -8,8 +8,8 @@ session. That is minutes against hours, and it is only possible because
 compilation, scanning, and truth extraction were kept as separate steps.
 
 The stripped twin keeps its function rows and its instruction listings
-untouched; only the ground_truth rows attached to it are rewritten, keyed by
-address as before.
+untouched; only the ground_truth rows attached to it are replaced - all of
+them, so a function the debug file no longer has does not linger.
 """
 
 import time

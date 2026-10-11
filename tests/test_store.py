@@ -106,3 +106,38 @@ def test_unmatched_ground_truth_is_still_stored(db):
         (bid,),
     ).fetchone()
     assert nulls["n"] == total
+
+
+def _count(db, bid):
+    return db.execute(
+        "SELECT COUNT(*) n FROM ground_truth WHERE binary_id = ?", (bid,)
+    ).fetchone()["n"]
+
+
+def test_a_second_store_leaves_no_row_the_debug_file_no_longer_has(db):
+    """A function gone from the rebuilt debug file is gone from the table.
+    INSERT OR REPLACE alone kept it, keyed by an address nothing is at."""
+    bid = _binary(db, "sha-strip4")
+    store_ground_truth(db, bid, FIXTURE)
+    db.execute(
+        "INSERT INTO ground_truth (binary_id, address, name) "
+        "VALUES (?, ?, 'stale')",
+        (bid, 0xDEAD0000),
+    )
+    db.commit()
+
+    total, _ = store_ground_truth(db, bid, FIXTURE)
+    names = {row["name"] for row in db.execute(
+        "SELECT name FROM ground_truth WHERE binary_id = ?", (bid,))}
+    assert "stale" not in names
+    assert _count(db, bid) == total
+
+
+def test_a_store_leaves_other_binaries_alone(db):
+    first = _binary(db, "sha-strip5")
+    second = _binary(db, "sha-strip6")
+    store_ground_truth(db, first, FIXTURE)
+    before = _count(db, first)
+
+    store_ground_truth(db, second, FIXTURE)
+    assert _count(db, first) == before
