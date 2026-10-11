@@ -1599,6 +1599,108 @@ wrong pair was the right answer reached for a reason the rules forbid, and the
 same hole on a true pair would have been a false refutation. Once in 500 wrong
 pairs it was live. This was not a tidy-up.
 
+## What the census found, and the rule it admits (F40) - protocol
+
+Written 11 October, after the census's 3,000-pair runs and before any rule
+code. The thresholds were written with the census protocol, before the runs;
+this applies them and adds nothing to them.
+
+**What it measured.** V0 at 3,000 true pairs (2,941 with a stubbed layer to
+read) and R0 at 3,000 wrong pairs, both after F38 and F39, zero
+disagreements in all three layers.
+
+| observation | risk (V0 true pairs) | ceiling (R0, not refuted) |
+|---|---|---|
+| calls on the allow-list | **0** | 2.3% |
+| null return (pointer returns) | **0** | 2.4% |
+| allocations | **0** | 2.3% |
+| buffers written | 1 | 4.6% |
+| arena bytes written | 11 | 3.2% |
+| status split | 21 | 34.2% |
+| all calls | 66 | 4.7% |
+
+The 66 are what risk 4 said they would be: memset 50, memcpy 12, memcmp 4,
+strlen 3 - calls a compiler invents. Not one name on the allow-list differed
+on a true pair, which is the argument for the list, measured.
+
+**Applied to the thresholds** - zero risk in 3,000 and a ceiling of at least
+two points:
+
+- *Calls on the allow-list* and *null return* pass, and the argument agrees
+  with the measurement: a compiler can neither add nor remove a lock or a
+  write to a stream, and cannot change whether a function hands back null.
+  Together they differ on 162 wrong pairs, 127 of them not already refuted.
+- *Allocations* pass the numbers and are declined on the argument. Risk 5
+  says a compiler may remove a malloc/free pair; GCC's two levels did not
+  do it in 3,000 pairs, and MSVC is not GCC. Zero in one compiler is not a
+  reason that holds for all of them. It stays in the census and is measured
+  again on the MSVC arm.
+- *Buffers written* is the strongest ceiling and fails on one true pair. 500
+  pairs had shown none, which is F30's lesson again. The census did not
+  record which pair it was; it now does, and that pair is read before
+  anything is built on this observation.
+- *Status split* has the largest ceiling and 21 true pairs against it. It
+  counts a budget exhausted against a completion, which is a resource limit
+  and not behaviour - -O0 runs more instructions - and even narrowed to a
+  fault against a completion it is not safe: -O3 may delete a load whose
+  value is unused, null or not. Recorded, not built.
+
+**Survival grading** was to be pursued if a threshold on compared bytes kept
+80% of V0's survivals and at least doubled a survival's likelihood ratio.
+A survival that compared some bytes is far stronger than one that compared
+only a return - 30.1% of true pairs against 1.07% of wrong ones, a ratio of
+about 28, where a return-only survival is about 3.8 and all survivals 7.7.
+But the threshold keeps 58.6% of survivals, not 80%. The criterion as
+written is not met, and it is not rewritten after the fact; the grading
+goes to the claim/verdict layer with a protocol of its own.
+
+**Input repair** was to be pursued if pointers read out of our fill
+explained a third of the faulting pairs. They explain almost none: of the
+faulting pairs whose first wild touch could be read, 197 are "other" and
+56 null, and the fill accounts for none of them. Two sources were added
+before the run - a pointer out of the stack's garbage, a real base plus a
+garbage offset - and they explain little: the second appears mostly on runs
+that completed. Not pursued. What sends a function off its memory is still
+mostly unexplained.
+
+**Instructions per run** (for S6): median 60, p90 5,000, and 8,245 of 80,848
+first-tier runs at the budget.
+
+### The rule
+
+Two observations, beyond the memory a run wrote, may now refute:
+
+1. **Calls a compiler can neither add nor remove**: locks counted by name,
+   and stream output counted as one family. A compiler rewrites one stream
+   call into another - GCC turns `fprintf(f, "%s", s)` into `fputs(s, f)` -
+   and MSVC does not, so across compilers the names differ where the count
+   does not. GCC's two levels rewrite alike, which is why the census never
+   saw it; the MSVC arm would. The residual risk is a call whose output is
+   provably empty, `printf("")`, which a compiler may delete; it was not
+   seen, and is recorded so that it is recognised if it is.
+2. **For a returned pointer, whether it was null.** The value is never
+   compared (F18); null or not is the function's answer.
+
+This narrows risk 4 rather than reversing it, as F35 narrowed F15: the
+sequence of calls is still never compared, and neither is anything a
+compiler can invent.
+
+Each passes the gates every other observation passes: all four runs under
+a fill completed, each version's two seeds agree on it (F22, F33), no run
+read invented memory (F32), and the difference appears under both input
+fills (F24). A call list cut at 256 is not compared.
+
+**Only a refutation is drawn from them.** An agreement on these is not yet
+an observation in F34's sense, and the second tier does not judge them: one
+change at a time, and a change that only adds refutations can be measured
+exactly, since on true pairs it must change nothing at all.
+
+### Exit criterion
+
+V0 at 3,000 gives the census run's buckets in every layer to the pair, with
+zero disagreements. R0 at 3,000 refutes more and lets no more survive; the
+census bounds it at 15.0% refuted, from 10.8%, and 25 fewer survivals.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
