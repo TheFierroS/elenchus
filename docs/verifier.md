@@ -1823,6 +1823,42 @@ Eight workers broke the run. A worker holds about 1.2 GB, and eight do not
 fit in ten; why a worker holds that much is the next thing to measure.
 Until then four is used by hand and `MAX_WORKERS` stays at two.
 
+## Buffers a run changed (F43) - protocol
+
+Written 11 October, before the rule's code. Behind the verifier's own gates
+(F41), "which argument buffers a run left different from the fill we put
+there" differed on 0 of 2,941 true pairs and on 100 wrong pairs not already
+refuted, 3.3%. It sees what `_judge` cannot: `_judge` compares bytes both
+versions wrote, so two functions changing different buffers share no byte
+and the difference is never seen.
+
+**The argument.** A buffer the caller handed over is the function's
+output, and what it holds afterwards is what a compiler must preserve.
+Which stores put it there is not (F41).
+
+**One exception, made by argument rather than measurement.** A struct
+larger than eight bytes passed by value travels as a pointer to a copy the
+caller made, and the copy belongs to the callee. It may use it as scratch,
+the caller never reads it again, and -O0 may write it where -O3 keeps the
+same work in registers. 3,000 pairs never showed this, and as with
+allocations in F40, zero in one compiler is not a reason. The placement
+now marks such an argument, and its buffer is left out. A hidden return
+buffer stays in: writing it is the function's job.
+
+**Gates**, F40's: all four runs under a fill completed, no invented memory
+(F32), no garbage return (F33), each version's seeds agree on the set
+(F22), the difference appears under both fills (F24). First tier only;
+refutation only; the second tier does not judge it.
+
+**Residual risk.** A write that runs a megabyte past one buffer lands in
+the next, which only undefined behaviour does. F24 and F32 cover most of
+it, and the measurement shows none.
+
+**Exit criterion.** V0 at 3,000 gives the buckets of the run before it in
+every layer with zero disagreements; bare may differ by one wall-clock
+timeout (F42). R0 refutes more and lets no more survive, bounded by the
+census at 551 pairs, 18.4%, from 451; leaving copies out may lower that.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
