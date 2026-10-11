@@ -77,6 +77,14 @@ COMPARE_MNEMONICS = {"cmp", "test", "sub", "and"}
 UNCONDITIONAL = {"jmp", "ljmp"}
 
 
+# The longest x86 instruction is 15 bytes. Unicorn reports an instruction it
+# could not decode with a size of 0xf1f1f1f1, and asking the emulator for that
+# many bytes built a four-gigabyte buffer before the read failed - most of a
+# run's time, in the second tier, where forced paths land on garbage (F42).
+# The read failed and nothing was decoded, so refusing it is the same answer.
+MAX_INSTRUCTION = 15
+
+
 class Decoder:
     """Decodes instructions on demand and remembers what it found.
 
@@ -92,6 +100,8 @@ class Decoder:
         self._compares: dict[int, Compare | None] = {}
 
     def _decode(self, address: int, size: int):
+        if size > MAX_INSTRUCTION:
+            return None
         if self._md is None:
             self._md = _decoder()
         try:
