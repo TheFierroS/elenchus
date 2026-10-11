@@ -1722,6 +1722,41 @@ on a feasible path, against 51.4% of true pairs: a likelihood ratio of
 about 9, where it was 7.7. A refutation is still never wrong on a true
 pair, now at 0 in 3,000 with this rule in place.
 
+## A store that changes nothing (F41)
+
+The census found one true pair in 3,000 where "buffers written" differed:
+leptonica's `lheapSortStrictOrder`, -O0 writing four bytes into the heap it
+is handed and -O3 writing nothing, under both seeds and both fills, with no
+invented memory read. Had that observation been made a rule, this was a
+false refutation.
+
+The write log says what happened. The four bytes are at offset 4 of the
+`L_HEAP`, its count `n`, and the value written is the value already there,
+byte for byte the fill. The function saves `n`, shrinks it while it sorts,
+and restores it at the end:
+
+    size = lh->n;
+    for (i = 0; i < size; i++) { ...; lh->n--; ... }
+    lh->n = size;                  /* restore the size */
+
+Our fill makes `n` negative, the loop never runs, and the restore writes
+back what was there. -O0 performs that store; -O3 does not, since on that
+path it writes back the value it just loaded, and a compiler may remove a
+store that changes nothing.
+
+So "which buffers were written" counts stores, and stores are not what a
+compiler must preserve - what memory holds afterwards is. The observation
+is unsafe as defined. That one pair in 3,000 showed it, after 500 had
+shown none, is why it was measured before anything was built on it.
+
+The comparison itself was never exposed: `_judge` compares only bytes both
+versions wrote (F31), and -O3 wrote none here.
+
+What a compiler must preserve is the net effect: which buffers hold, after
+the run, something other than what we put there. The census records that
+next, beside the old observation, and it is measured on both halves before
+anything is built on it.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
