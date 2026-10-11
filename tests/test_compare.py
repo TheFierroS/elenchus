@@ -700,3 +700,96 @@ def test_r0_hands_the_census_a_summary_with_its_verdict():
          s3["mix64"].address, 5_000))
     assert verdict == "refuted"
     assert summary.verdict == "refuted"
+
+
+# ------------------------------------------- effects beyond memory (F40)
+
+
+def pointer_place():
+    return placement({"return": {"kind": "pointer", "size": 8},
+                      "params": [], "variadic": False})
+
+
+def with_calls(*names, ret_int=7):
+    outcome = done(ret_int=ret_int)
+    outcome.calls = tuple(names)
+    return outcome
+
+
+def test_a_stream_write_on_one_side_only_refutes():
+    q_a = q_b = with_calls("fputs")
+    k_a = k_b = with_calls()
+    result = _judge(q_a, q_b, k_a, k_b, place())
+    assert result.verdict is Verdict.REFUTED
+    assert "calls" in result.reason
+
+
+def test_a_lock_on_one_side_only_refutes():
+    q_a = q_b = with_calls("EnterCriticalSection", "LeaveCriticalSection")
+    k_a = k_b = with_calls()
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.REFUTED
+
+
+def test_stream_output_renamed_by_a_compiler_does_not_refute():
+    """GCC rewrites fprintf(f, "%s", s) as fputs(s, f) and not every
+    compiler does. The count of stream writes is the function's; the name
+    is the compiler's."""
+    q_a = q_b = with_calls("fprintf")
+    k_a = k_b = with_calls("fputs")
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.SURVIVED
+
+
+def test_a_call_a_compiler_can_add_does_not_refute():
+    """-O3 turns a loop into memset (risk 4); that is not evidence."""
+    q_a = q_b = with_calls("memset", "memcpy", "strlen")
+    k_a = k_b = with_calls()
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.SURVIVED
+
+
+def test_calls_the_seeds_disagree_on_do_not_refute():
+    """A call that comes and goes with the seed came out of garbage."""
+    q_a = with_calls("fputs")
+    q_b = with_calls()
+    k_a = k_b = with_calls()
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.SURVIVED
+
+
+def test_calls_after_reading_invented_memory_do_not_refute():
+    """F32's asymmetry: the difference may be ours, and the agreement on the
+    return still stands."""
+    q_a = q_b = with_calls("fputs")
+    k_a = k_b = with_calls()
+    q_a.read_invented = True
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.SURVIVED
+
+
+def test_an_overflowing_call_list_is_not_compared():
+    q_a = q_b = with_calls("fputs")
+    k_a = k_b = with_calls()
+    q_a.calls_overflow = True
+    assert _judge(q_a, q_b, k_a, k_b, place()).verdict is Verdict.SURVIVED
+
+
+def test_a_null_return_against_a_real_pointer_refutes():
+    """The pointer's value is never compared (F18); whether it was null is."""
+    q_a = q_b = done(ret_int=0)
+    k_a = k_b = done(ret_int=0x3000_0000_0010)
+    result = _judge(q_a, q_b, k_a, k_b, pointer_place())
+    assert result.verdict is Verdict.REFUTED
+    assert "null" in result.reason
+
+
+def test_two_different_non_null_pointers_do_not_refute():
+    q_a = q_b = done(ret_int=0x1_4000_1000)
+    k_a = k_b = done(ret_int=0x1_8000_1000)
+    assert _judge(q_a, q_b, k_a, k_b, pointer_place()).verdict \
+        is not Verdict.REFUTED
+
+
+def test_the_forced_tier_does_not_judge_effects():
+    """The second tier only counts agreements; this rule draws refutations,
+    so it is left out there."""
+    q_a = q_b = with_calls("fputs")
+    k_a = k_b = with_calls()
+    assert _judge(q_a, q_b, k_a, k_b, place(),
+                  effects=False).verdict is Verdict.SURVIVED

@@ -34,6 +34,7 @@ hand-built Outcomes as well as end to end through the harness.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -47,6 +48,7 @@ from elenchus.emulation.harness import (
     Status,
     run,
 )
+from elenchus.emulation.stubs import LOCKS, STREAM_OUTPUT
 
 # The two fill seeds. Different, both non-zero (zero means input memory, which
 # is filled from the address alone); a value that depends on garbage will
@@ -264,9 +266,67 @@ def _invented(*outcomes) -> bool:
     return any(getattr(outcome, "read_invented", False) for outcome in outcomes)
 
 
+# Stream output is counted as one family rather than by name: a compiler
+# rewrites one into another - GCC turns fprintf(f, "%s", s) into fputs(s, f)
+# - and not every compiler alike, so across compilers the names differ where
+# the count does not (F40).
+STREAM = "stream output"
+
+
+def _effects(outcome):
+    """The calls a run made that a compiler can neither add nor remove.
+
+    Locks by name, stream output as one count. Everything else - memcpy,
+    strlen, malloc - a compiler can inline, invent or delete, and is left
+    out (docs/verifier.md, risk 4 and F40). None if the list overflowed: a
+    truncated multiset misleads as much as a truncated sequence.
+    """
+    if outcome.calls_overflow:
+        return None
+    counted = Counter()
+    for name in outcome.calls:
+        if name in LOCKS:
+            counted[name] += 1
+        elif name in STREAM_OUTPUT:
+            counted[STREAM] += 1
+    return tuple(sorted(counted.items()))
+
+
+def _is_null(outcome):
+    return outcome.ret_int == 0
+
+
+def _effect_difference(q_a, q_b, k_a, k_b, placement: Placement):
+    """A difference in what the runs did beyond the memory they wrote, or None.
+
+    Returns (reason, detail). An observation is compared only where each
+    version's two seeds agree on it - one that moves with the seed came out
+    of garbage (F22, F33). The caller asks only where no run read invented
+    memory (F32), and both fills are asked (F24), so these pass the gates
+    every other observation passes.
+    """
+    observed = [("calls a compiler cannot add or remove differ", _effects)]
+    if placement.ret.kind == "pointer":
+        # A returned pointer's value is never compared (F18); whether it was
+        # null is the function's answer, not an address.
+        observed.append(("a returned pointer is null in one version only",
+                         _is_null))
+    for reason, read in observed:
+        q, q_other, k, k_other = (read(o) for o in (q_a, q_b, k_a, k_b))
+        if q is None or k is None or q != q_other or k != k_other:
+            continue
+        if q != k:
+            return reason, {"Q": q, "K": k}
+    return None
+
+
 def _judge(q_a, q_b, k_a, k_b, placement: Placement,
-           foreign=()) -> InputResult:
-    """Compare the two versions on one input, each already run twice."""
+           foreign=(), effects: bool = True) -> InputResult:
+    """Compare the two versions on one input, each already run twice.
+
+    `effects` False leaves out what the runs did beyond their memory - the
+    second tier's setting, which only counts agreements (F40).
+    """
     # Any run that did not complete makes the input inconclusive. Carry the
     # first non-completed status exactly, so the caller buckets on the enum
     # rather than on the wording of `reason`.
@@ -322,6 +382,18 @@ def _judge(q_a, q_b, k_a, k_b, placement: Placement,
                                {"pages": differing})
         return InputResult(Verdict.REFUTED, "written memory differs",
                            {"pages": differing})
+
+    # What the runs did beyond the memory they wrote (F40). Only a refutation
+    # is drawn from it. Where a run read invented memory the difference may
+    # be ours and is passed over, so an agreement elsewhere still stands -
+    # the asymmetry of F32 and F33.
+    effect = None
+    if effects:
+        effect = None if invented else _effect_difference(
+            q_a, q_b, k_a, k_b, placement)
+    if effect is not None:
+        reason, detail = effect
+        return InputResult(Verdict.REFUTED, reason, detail)
 
     if ret_verdict is None and placement.ret.kind != "void":
         # Nothing could be compared: the return was garbage-dependent and no
@@ -444,7 +516,7 @@ def _forced_agreement(q_loader, q_address, k_loader, k_address, placement,
             for variant in (VARIANT_A,)
         ]
         judged = _judge(runs[0], runs[1], runs[2], runs[3], placement,
-                        foreign)
+                        foreign, effects=False)
         if judged.verdict is Verdict.SURVIVED:
             agreements += 1
     return attempts, agreements
