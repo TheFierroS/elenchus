@@ -1757,6 +1757,72 @@ the run, something other than what we put there. The census records that
 next, beside the old observation, and it is measured on both halves before
 anything is built on it.
 
+### F41, measured
+
+The census ran "buffers changed" beside "buffers written" on the same 3,000
+pairs. `lheapSortStrictOrder` no longer differed. One other true pair did,
+opus's `silk_NLSF_del_dec_quant`, and there the census was wrong, not the
+observation. That function is F33's: its return moves with the fill seed,
+and the byte it writes comes out of the same computation. The census's
+gates checked invented memory and seed agreement on the observation, but
+not a garbage return, which the verifier treats as tainting the whole
+input - so the census measured the risk of a rule that could not be
+written. `compare` now tells the census which inputs the verdict treats as
+tainted.
+
+Behind that gate, "buffers changed" differs on 0 of 2,941 true pairs and
+on 100 wrong pairs not already refuted, 3.3%. It passes both thresholds
+and is a rule candidate, taken up as its own change.
+
+The gate moved the census's other counts slightly, always toward safety:
+two fewer comparable pairs, all calls 66 to 65. Every count before it
+erred the safe way - risk over-stated, ceilings slightly high - and F40 is
+untouched, since that rule sits behind `_judge`'s own gates.
+
+## Four gigabytes at a time (F42)
+
+Profiled with cProfile on 100 R0 pairs and one worker, a run spent 68 of
+its 103 seconds in ctypes' `create_string_buffer`, under the decoder the
+second tier uses to find branches, and 69 of the 103 in the kernel. The
+per-instruction Python hook S6 suspected cost about a second and a half;
+it was what ran inside it.
+
+Unicorn reports an instruction it cannot decode with a size of
+0xf1f1f1f1. The decoder asked the emulator for that many bytes, Python
+built a zero-filled buffer of four gigabytes - touching every page - and
+then the read failed and the decode returned None. It is rare, 4 of
+13,400 decodes over 20 pairs, and each one cost seconds.
+
+A size past the longest x86 instruction, 15 bytes, now returns None
+without the read, which is the answer the failed read gave. On the same
+100 pairs: 89 seconds to 19 at one worker, kernel time 68 to 4, verdicts
+and census identical.
+
+**And it was F36's ceiling.** Scanned again over 100 pairs:
+
+| workers | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| pairs/s before | 1.45 | 2.37 | 2.40 | 1.97 |
+| pairs/s after | 5.24 | 8.55 | 13.69 | 14.92 |
+
+The verdicts were identical at every count. What the processes shared and
+saturated was memory: every worker occasionally asking for four gigabytes,
+on a WSL given ten. F36 ruled out the bytes each run maps, correctly, and
+the refactor it declined would have reached the same wall. The cause was in
+none of the four ideas it measured, and one profile found it.
+
+At 3,000 pairs and four workers V0 takes 11 minutes and R0 3, where they
+took 69 and 21. The verdicts matched the run before, except one bare pair
+that moved between two inconclusive buckets: a run reaching the 2-second
+wall-clock limit (F16) under the heavier load, which the next run did not
+repeat. That limit is the one outcome here that depends on the machine. It
+can move a pair between inconclusive buckets and never refute, but it is
+the one exception to every verdict replaying exactly.
+
+Eight workers broke the run. A worker holds about 1.2 GB, and eight do not
+fit in ten; why a worker holds that much is the next thing to measure.
+Until then four is used by hand and `MAX_WORKERS` stays at two.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
@@ -1849,3 +1915,10 @@ function that is what it is claimed to be.
 - **Other compilers.** Nothing above assumes MinGW beyond the calling
   convention and the debug format; MSVC (v2) changes both, and the design
   keeps them in one place each.
+- **Clones.** -O3 makes `.isra` and `.constprop` copies of a function with
+  its signature changed. The corpus's ground truth never contains one -
+  DWARF names the original, `dwarf.py` does not follow abstract origins,
+  and of 48,901 identities none has a signature that differs between -O0
+  and -O3 - so V0 cannot sample the case. In use it is real: a function in
+  an analyst's binary may be a clone, called with the original's signature.
+  That is measured end to end, on binaries we did not build.
