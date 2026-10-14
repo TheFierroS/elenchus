@@ -1929,6 +1929,25 @@ evidence well enough to be built on before the third was measured; each
 change was kept on its own merits, and each is recorded here as not the
 cause.
 
+## Parsing only what a run reads (F47)
+
+A profile taken after F42 and F46, 100 R0 pairs on one worker, put 17.7 s of
+37 in `Loader.__init__`, which parsed every binary with `fast_load=False`.
+12 s of that was pefile walking the exception directory, and a full parse
+also counts every byte of the file to report suspicious padding. A run reads
+none of it: base, size, the import table, the header and the section bytes
+are all the emulator maps.
+
+The Loader now parses the headers and the import directory alone. Checked
+before the change on every stripped binary in the corpus, 543 of them with
+33,098 imports between them: base, size, import slots, traps, header and
+section bytes identical to the full parse in every one, and loading them took
+3.0 s against 20.6 s. Identical inputs to the emulator mean no run can
+differ, which is a stronger guarantee than a sample of pairs.
+
+pefile's `close()` still runs a full `gc.collect()` on every call, about 5 ms
+a binary in this process. It is kept: closing the file is what F20 rests on.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

@@ -240,15 +240,24 @@ class Loader:
     """
 
     def __init__(self, path: str | Path):
-        pe = pefile.PE(str(path), fast_load=False)
+        # Only the headers and the import table are parsed. A full parse also
+        # walks the exception directory, the relocations and the resources,
+        # and counts every byte of the file, none of which a run reads:
+        # profiled on 100 R0 pairs it was 17.7 s of 37, 12 s of it the
+        # exception directory. On all 543 stripped corpus binaries this gives
+        # the same base, size, import slots and traps, header and section
+        # bytes as a full parse, in 3.0 s against 20.6 s (F47).
+        pe = pefile.PE(str(path), fast_load=True)
+        pe.parse_data_directories(
+            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
         self.base = pe.OPTIONAL_HEADER.ImageBase
         self.size = (pe.OPTIONAL_HEADER.SizeOfImage + PAGE - 1) & ~(PAGE - 1)
         self.slots, self.traps = self._import_traps(pe)
 
         # Keep only what mapping needs - the header and each section's bytes at
         # its virtual address - as plain bytes, and drop the pefile object.
-        # A PE parsed with fast_load=False holds the whole file and its parsed
-        # structures, 100+ MB for a large binary; over V0's ~100 distinct
+        # A parsed PE holds the whole file and its parsed structures, 100+ MB
+        # for a large binary when fully parsed; over V0's ~100 distinct
         # binaries, retaining every pefile object leaked gigabytes (F20). The
         # raw bytes are a few MB and are all write_sections ever reads.
         self._header = bytes(pe.header)
