@@ -53,6 +53,9 @@ class R0Report:
     forced_survivals: int = 0
     elapsed: float = 0.0
     census: list = field(default_factory=list)  # (None, PairCensus)
+    # Pairs that could not be set up, by reason. Kept out of the verdicts
+    # and the rates, and reported beside them, never dropped.
+    unjudged: Counter = field(default_factory=Counter)
 
     @property
     def refuted(self) -> int:
@@ -145,28 +148,46 @@ def _loader_for(path):
     return loader
 
 
+@dataclass(frozen=True)
+class Unjudged:
+    """A pair the harness could not set up, and why.
+
+    Such a pair says nothing about the verifier's judgement, so it stays out
+    of the verdicts - but it is counted and reported, never dropped. Dropped
+    in silence, a run could judge fewer pairs than it was asked to and
+    report its rates over whatever was left, with nothing to show it.
+    """
+    reason: str
+
+
 def judge_false_pair(task):
-    """One false pair's verdict, or None if it could not be set up.
+    """One false pair's verdict, or Unjudged if its binaries cannot be opened.
 
     Module-level and taking only plain data, so it can be handed to a worker
-    process. A pair the harness cannot even set up says nothing about the
-    verifier's judgement, so it is left out rather than counted as a miss.
+    process.
+
+    Only opening the binaries is guarded, as V0 guards it. Anything that goes
+    wrong inside the comparison is the verifier's own failure and stops the
+    run: _close raises on purpose when Unicorn can no longer close an
+    emulator (F46), and the handler that used to sit here caught every
+    exception, so it would have swallowed exactly that.
     """
     q_path, q_address, q_abi, k_path, k_address, budget = task[:6]
     # Which pair this is, so the census can name it; the tests hand over
     # the six fields without it.
     label = task[6] if len(task) > 6 else ""
     abi = json.loads(q_abi)
+    # The sample was drawn through placement already (sample_false_pairs),
+    # so this cannot decline here; if it ever does, that is a bug to see.
+    place = placement(abi)
     try:
-        place = placement(abi)
-        result = compare(_loader_for(q_path), q_address,
-                         _loader_for(k_path), k_address, place,
-                         input_vectors(abi, count=6), budget=budget,
-                         stub_resolver=resolver)
-    except Undecidable:
-        return None
-    except Exception:                              # noqa: BLE001
-        return None
+        q_loader = _loader_for(q_path)
+        k_loader = _loader_for(k_path)
+    except Exception as exc:                       # noqa: BLE001
+        return Unjudged(f"load failed: {type(exc).__name__}")
+    result = compare(q_loader, q_address, k_loader, k_address, place,
+                     input_vectors(abi, count=6), budget=budget,
+                     stub_resolver=resolver)
     summary = summarise(result.verdict.value, result.forced_only,
                         result.inputs, result.traces, place.ret.kind)
     summary.label = label
@@ -211,7 +232,8 @@ def run_r0(conn, count=300, seed=0, budget=R0_BUDGET, split="train",
 
     for judged in mapped(judge_false_pair, tasks, workers,
                          order_by=lambda task: task[0], on_result=tick):
-        if judged is None:
+        if isinstance(judged, Unjudged):
+            report.unjudged[judged.reason] += 1
             continue
         verdict, forced_only, summary = judged
         report.add(verdict, forced_only=forced_only)
@@ -232,6 +254,11 @@ def _print_report(report: R0Report) -> None:
           f"   saw agreement between different functions")
     if report.forced_survivals:
         print(f"     of those, {report.forced_survivals} only on forced paths")
+    if report.unjudged:
+        print(f"\n  NOT JUDGED   {sum(report.unjudged.values()):5}   could not be "
+              f"set up, and are left out of the rates above:")
+        for reason, n in report.unjudged.most_common():
+            print(f"      {reason:40} {n:5}")
     print("\n  Survived is never zero and should not be: two unrelated "
           "functions given\n  data that means nothing to them can do the same "
           "observable nothing.\n  Read it beside V0 - a change that cleans one "
@@ -269,6 +296,7 @@ def cmd_verify_r0(args):
                         "total": report.total,
                         "verdicts": dict(report.verdicts),
                         "forced_survivals": report.forced_survivals,
+                        "unjudged": dict(report.unjudged),
                         "elapsed": report.elapsed,
                         "census": census}, handle, indent=1)
         print(f"\nwritten to {args.out}")

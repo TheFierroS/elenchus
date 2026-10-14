@@ -6,13 +6,13 @@
 # found, so the verdicts are read from the JSON here rather than trusted from
 # the exit code.
 #
-# It fails hard on what must never happen - a true pair refuted, or an R0 pair
-# silently dropped - and separately on a drift from the expected counts. A
+# It fails hard on what must never happen - a true pair refuted, or R0 judging
+# fewer pairs than asked - and separately on a drift from the expected counts. A
 # drift can be harmless: the 2 s wall clock is the one load-dependent result,
 # and a pair that times out moves between buckets. It is also what a rule
 # change does on purpose, which is why it has its own exit code.
 #
-# Exit codes: 0 as expected; 1 DISAGREED, a dropped pair, or a failed run;
+# Exit codes: 0 as expected; 1 DISAGREED, an unjudged pair, or a failed run;
 # 2 the counts drifted from the expected ones below.
 #
 # The expected counts are v0.7.1's on seed 0's first 40 pairs. A change meant
@@ -72,11 +72,11 @@ for layer, expected in EXPECTED_AGREED.items():
     if agreed != expected:
         drift.append(f"V0 {layer}: agreed {agreed}, expected {expected}")
 
-# R0 leaves out a pair it could not set up rather than counting it
-# (r0.judge_false_pair), so a total short of the count is a silent loss.
+# R0 keeps a pair it could not set up out of its verdicts and counts it
+# under "unjudged"; any such pair means the rates are over fewer pairs.
 if r0["total"] != count:
-    fatal.append(f"R0: judged {r0['total']} of {count} pairs, "
-                 f"{count - r0['total']} dropped without a trace")
+    fatal.append(f"R0: judged {r0['total']} of {count} pairs; "
+                 f"not judged: {r0.get('unjudged', {})}")
 verdicts = r0["verdicts"]
 print(f"R0 refuted {verdicts.get('refuted', 0)}, "
       f"survived {verdicts.get('survived', 0)} "

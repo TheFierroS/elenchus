@@ -124,3 +124,42 @@ def test_r0_runs_and_refutes_at_least_something(corpus):
     assert report.total > 0
     assert report.refuted + report.survived + report.inconclusive == report.total
     assert report.refuted > 0
+
+
+# ---------------------------------------------------- what is not judged
+
+
+def test_a_pair_that_cannot_be_opened_is_counted_not_dropped(corpus):
+    """A binary that cannot be opened leaves its pairs unjudged, and the
+    report says how many: a run that judged fewer pairs than it was asked
+    to must not look like one that judged them all."""
+    corpus.execute("UPDATE binaries SET path = '/nonexistent/cases_O3.dll' "
+                   "WHERE sha256 = 'sha-O3'")
+    report = run_r0(corpus, count=10, seed=0)
+    assert report.total == 0
+    assert sum(report.unjudged.values()) == 10
+    assert all(reason.startswith("load failed") for reason in report.unjudged)
+
+
+def test_a_failure_inside_the_comparison_is_not_swallowed(monkeypatch):
+    """Only opening the binaries is guarded. An error in the comparison is
+    the verifier's own, and _close raises on purpose when Unicorn can no
+    longer be closed (F46): swallowed, it would leave R0 reporting rates
+    over whatever pairs happened not to fail."""
+    from elenchus.emulation import r0
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("the comparison failed")
+
+    monkeypatch.setattr(r0, "compare", broken)
+    path = str((FIXTURES / "cases_O0.dll").resolve())
+    abi = json.dumps({"params": [], "return": {"kind": "void", "size": 0}})
+    with pytest.raises(RuntimeError, match="the comparison failed"):
+        r0.judge_false_pair((path, 0, abi, path, 0, 5_000, "demo/a vs b"))
+
+
+def test_what_was_not_judged_stays_out_of_the_rates():
+    report = R0Report()
+    report.add("refuted")
+    report.unjudged["load failed: FileNotFoundError"] += 1
+    assert (report.total, report.refuted) == (1, 1)
