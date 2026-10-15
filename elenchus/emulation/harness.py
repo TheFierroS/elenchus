@@ -73,6 +73,13 @@ TRAP_STRIDE = 0x10
 # rather than being filled like any other first-touched address.
 NULL_GUARD = 0x1_0000
 
+# The end of user space on 64-bit Windows, 128 TiB. Every region the harness
+# maps lies below it - the stack is the highest. Above it are the kernel's
+# half and the non-canonical hole, where a user-mode access faults on a real
+# machine; mapping a page there for a wild pointer left libunicorn's memory
+# map in a state that crashed it in one process in five (F48).
+USER_SPACE_END = 0x0000_8000_0000_0000
+
 # Where input buffers live. inputs.input_vectors hands a pointer argument an
 # address in this region, and memory here is the function's *input*: it is
 # filled from its address alone, identical in both runs and both versions, so
@@ -942,6 +949,14 @@ def _run_in(uc, loader, address, placement, args, seed, budget, stub_resolver,
             state["detail"] = f"null dereference at {addr:#x}"
             if state["first_wild"] is None:
                 state["first_wild"] = ("null", addr)
+            return False
+        if addr >= USER_SPACE_END:
+            # A user-mode access here faults on Windows, and is not ours to
+            # fill: it ends the run as the null guard does (F48).
+            state["status"] = Status.FAULT
+            state["detail"] = f"access above user space at {addr:#x}"
+            if state["first_wild"] is None:
+                state["first_wild"] = (kind, addr)
             return False
         if len(mapped) >= UNMAPPED_FILL_LIMIT:
             state["status"] = Status.TOO_MUCH_MEMORY

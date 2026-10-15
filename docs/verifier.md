@@ -1948,6 +1948,49 @@ differ, which is a stronger guarantee than a sample of pairs.
 pefile's `close()` still runs a full `gc.collect()` on every call, about 5 ms
 a binary in this process. It is kept: closing the file is what F20 rests on.
 
+## Pages above user space (F48)
+
+After F47, 3,000-pair runs at eight workers died again with the crash of
+F44-F46: a segfault inside libunicorn, under `helper_ret_stb_mmu`, then
+`iotlb_to_section` or `memory_region_dispatch_write`, always in a second-tier
+run. F46 had read it as memory pressure; this time 8 GB were free.
+
+It was narrowed one variable at a time on a reproducer that took half a
+minute: V0's 118 flecs pairs in eight processes at once, about one process
+in five crashing. Not the pool, the forkserver or JPype - independent
+processes crash, spawned workers crash, and without JPype they crash, less
+often. Not the wall clock: at ten minutes, 6 of 24. Not address-space or hash
+randomisation: with both fixed, 5 of 24. Not F45's TCG buffer: at Unicorn's
+1 GiB default, 8 of 10. Not stopping and restarting the emulator for a forced
+branch: redirecting it by writing RIP inside the hook, as Unicorn 2's FAQ
+describes, 4 of 24. Not stale bytes in a fresh mapping: 12,516 images read
+back all zero before their sections were written. Valgrind found nothing on
+the crashing pairs run alone.
+
+Tracing every run in eight identically started processes showed the
+emulation deterministic - the clean traces byte for byte the same - and one
+second-tier run that was not: it faulted after 2,891 instructions in most
+processes, after 2,907 in one, and killed another. Four crashes in four
+functions came from branches forced to one instruction, inside MinGW's
+vsnprintf: forcing its `size == 0` test the other way sends
+`snprintf(NULL, 0, ...)`, flecs measuring a string, down the path that
+writes, ending with a byte stored at `buf[-1]`.
+
+The harness mapped any page a run touched outside the null guard. Above the
+end of user space, 0x8000_0000_0000 on 64-bit Windows, a real machine
+faults; here a page was mapped. One pass over the flecs pairs mapped 41,736
+such pages. With them refused, 0 of 24 processes crashed, where five
+configurations of the same reproducer had crashed 25 of 120.
+
+An access above user space now faults, as the null guard does. What it
+breaks inside libunicorn is not measured; the fix does not need it, being
+what the machine does.
+
+A run that touched such a page had read memory only our data could address,
+so its differences could never refute (F32). So refutations should not move,
+and agreements that rested on such a run become inconclusive; the 3,000-pair
+runs measure how many.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero
