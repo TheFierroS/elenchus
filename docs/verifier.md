@@ -1991,6 +1991,46 @@ so its differences could never refute (F32). So refutations should not move,
 and agreements that rested on such a run become inconclusive; the 3,000-pair
 runs measure how many.
 
+### Measured
+
+3,000 pairs at eight workers, V0 then R0, finished without a crash - the
+first full run at eight workers to do so since F47.
+
+| | before (v0.7.1) | after |
+|---|---|---|
+| V0 agreed, bare / stubbed / chained | 1105 / 1511 / 1517 | 929 / 1261 / 1273 |
+| V0 disagreements | 0 / 0 / 0 | 0 / 0 / 0 |
+| V0 stubbed: fault | 268 | 848 |
+| V0 stubbed: mapped too much memory | 125 | 2 |
+| V0 stubbed: budget exhausted | 176 | 97 |
+| V0 stubbed: timed out | 3 | 0 |
+| V0 chained: completed only on forced paths | 166 | 213 |
+| R0 refuted / inconclusive / survived | 551 / 2223 / 226 | 551 / 2293 / 156 |
+| R0 survivals on forced paths only | 78 | 66 |
+
+Refutation did not move, as written before the run. Coverage did, by more
+than the paragraph above led one to expect: 8.4 points in the stubbed layer.
+Functions handed invented data reach above user space far more often than
+was assumed - one pass over the flecs pairs had mapped 41,736 such pages -
+and a run that used to be given a page of fill there, and could run on to an
+agreement, now faults as it would on the machine. Lost walks end at their
+first such touch, which is why mapped-too-much-memory all but vanished,
+budget exhaustion halved and no run timed out. Where those addresses come
+from the census mostly cannot say: the first wild touch of a faulting pair
+is "other" 754 times, which leaves S8 open.
+
+What was lost was mostly weak evidence. Feasible survivals fell by 16.5% on
+true pairs (1,511 to 1,261) and by 39% on wrong ones (148 to 90). A feasible
+survival is now about 14 times likelier on a true pair than on a wrong one -
+42.9% of the 2,941 placeable true pairs against 3.0% of wrong pairs - where
+it was about 10.4. The verifier says yes less often, and is right more often
+when it does.
+
+V0 took 6.5 minutes and R0 106 seconds. The run before F47 on the same
+evening took 10.1 minutes for V0, and F46's run three days earlier 5.7; the
+machine varies by more than the effect, so no figure is claimed for F47
+beyond its 6.8x on loading.
+
 ## Hardening - the core is built, these make it stronger
 
 The core runs (abi, harness, compare) and refutes true fixture pairs zero

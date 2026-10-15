@@ -15,7 +15,7 @@
 # Exit codes: 0 as expected; 1 DISAGREED, an unjudged pair, or a failed run;
 # 2 the counts drifted from the expected ones below.
 #
-# The expected counts are v0.7.1's on seed 0's first 40 pairs. A change meant
+# The expected counts are F48's on seed 0's first 40 pairs. A change meant
 # to move verdicts updates them in the same commit as its measurement.
 set -euo pipefail
 
@@ -48,8 +48,8 @@ python - "$OUT/v0.json" "$OUT/r0.json" "$COUNT" <<'EOF'
 import json
 import sys
 
-EXPECTED_AGREED = {"bare": 14, "stubbed": 18, "chained": 19}
-EXPECTED_R0 = {"refuted": 10, "survived": 1}
+EXPECTED_AGREED = {"bare": 14, "stubbed": 17, "chained": 18}
+EXPECTED_R0 = {"refuted": 10, "survived": 0}
 
 v0 = json.load(open(sys.argv[1]))
 r0 = json.load(open(sys.argv[2]))
